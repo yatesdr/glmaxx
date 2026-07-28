@@ -126,4 +126,4 @@ nvidia-smi \
   --format=csv,noheader \
   | tee "${GLMAXX_EVIDENCE_DIR}/gpu-clocks-after.csv"
 
-echo "Correctness matrix finished. Do not benchmark unless summary.json reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures."
+echo "Eager correctness matrix finished. Do not benchmark unless summary.json reports 135 positive cases, 9 negative rejections, 2 eager deterministic cases, and zero failures; graph-captured repetition remains a separate gate."

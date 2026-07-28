@@ -46,8 +46,9 @@
     "illegal_fallback_count": 0,
     "runtime_repack_bytes": 0,
     "persistent_dequant_bytes": 0,
-    "repeat_count": 20,
-    "determinism": "bitwise output within one pinned build and graph mode",
+    "eager_repeat_count": 20,
+    "eager_determinism": "bitwise output within one pinned build",
+    "graph_determinism": "separate required gate after graph capture is implemented; no eager result may satisfy it",
     "determinism_cases": [
       "M1 one-hot-expert-0 deterministic-random-v1",
       "M256 one-hot-expert-0 deterministic-random-v1"

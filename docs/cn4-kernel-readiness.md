@@ -119,7 +119,7 @@ The external evidence directory must contain:
 - CMake configure/build output and compiler command lines;
 - the 393,216-comparison CUTLASS layout-probe result;
 - one JSON correctness report for each of the 135 positive cases, a summary
-  proving all nine negative route cases were rejected, two 20-repeat
+  proving all nine negative route cases were rejected, two 20-repeat eager
   determinism gates, and SHA-256 for every report;
 - later, separate kernel and inclusive timing, control results, profiler
   reports, and a provenance/result manifest.
@@ -140,8 +140,9 @@ nibble, and gross accumulation failures without pretending to be the final
 quality threshold. The report retains maximum absolute/relative error and
 every failing element. No NaN/Inf, illegal fallback, runtime weight repack, or
 persistent dequantization is allowed. The frozen M1 decode and M256 prefill
-representatives each run twenty times and must be bit-identical within one
-pinned build before timing.
+representatives each run twenty eager iterations and must be bit-identical.
+Graph-captured repetition remains a separate required gate before timing; an
+eager result cannot satisfy it.
 
 The matrix and controls are frozen in
 `benchmarks/sm120-fc1-matrix-v1.json`. Passing M1 and M256 is the minimum

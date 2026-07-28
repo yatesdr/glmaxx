@@ -242,7 +242,7 @@ struct GpuMatrixSummary {
     positive_cases: usize,
     negative_route_cases: usize,
     failed_elements: usize,
-    deterministic_cases: usize,
+    eager_deterministic_cases: usize,
     evidence_directory: String,
 }
 
@@ -260,8 +260,8 @@ struct GpuCaseReport {
     tolerance: &'static str,
     maximum_absolute_error: Option<f32>,
     maximum_relative_error: Option<f32>,
-    repeat_count: usize,
-    bitwise_deterministic: bool,
+    eager_repeat_count: usize,
+    eager_bitwise_deterministic: bool,
     failures: Vec<GpuFailure>,
 }
 
@@ -299,7 +299,7 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
     let mut positive_cases = 0_usize;
     let mut negative_route_cases = 0_usize;
     let mut failed_elements = 0_usize;
-    let mut deterministic_cases = 0_usize;
+    let mut eager_deterministic_cases = 0_usize;
 
     let routing_fixture =
         generate_numerical_fixture(NumericalCase::DeterministicRandom, max_rows, n, k)?;
@@ -328,7 +328,7 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
             let repeats = if routing == RoutingCase::OneHotExpert0
                 && (rows == DECODE_ROWS[0] || rows == max_rows)
             {
-                deterministic_cases += 1;
+                eager_deterministic_cases += 1;
                 20
             } else {
                 1
@@ -389,7 +389,7 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
         positive_cases,
         negative_route_cases,
         failed_elements,
-        deterministic_cases,
+        eager_deterministic_cases,
         evidence_directory: evidence_directory.display().to_string(),
     };
     let summary_bytes = serde_json::to_vec_pretty(&summary)?;
@@ -397,7 +397,7 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
     println!("{}", String::from_utf8(summary_bytes)?);
     if positive_cases != 135
         || negative_route_cases != 9
-        || deterministic_cases != 2
+        || eager_deterministic_cases != 2
         || failed_elements != 0
     {
         return Err("SM120 correctness matrix did not satisfy the frozen gate".into());
@@ -430,7 +430,7 @@ fn execute_gpu_case(
         &route_tokens,
         &route_slots,
     )?;
-    let mut bitwise_deterministic = true;
+    let mut eager_bitwise_deterministic = true;
     for _ in 1..repeat_count {
         let repeated = device.run(
             activation_bf16,
@@ -439,7 +439,7 @@ fn execute_gpu_case(
             &route_tokens,
             &route_slots,
         )?;
-        bitwise_deterministic &= repeated == first;
+        eager_bitwise_deterministic &= repeated == first;
     }
     let local_intermediate = ModelConstants::default().local_intermediate as usize;
     let mut maximum_absolute = 0.0_f32;
@@ -480,13 +480,13 @@ fn execute_gpu_case(
             }
         }
     }
-    if !bitwise_deterministic {
+    if !eager_bitwise_deterministic {
         failures.push(GpuFailure {
             assignment: usize::MAX,
             column: usize::MAX,
             reference_f32_bits: 0,
             actual_bf16_bits: 0,
-            reason: "repeat output was not bitwise deterministic",
+            reason: "eager repeat output was not bitwise deterministic",
         });
     }
     Ok(GpuCaseReport {
@@ -501,8 +501,8 @@ fn execute_gpu_case(
         tolerance: "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.02 * abs(cpu)",
         maximum_absolute_error: finite_errors.then_some(maximum_absolute),
         maximum_relative_error: finite_errors.then_some(maximum_relative),
-        repeat_count,
-        bitwise_deterministic,
+        eager_repeat_count: repeat_count,
+        eager_bitwise_deterministic,
         failures,
     })
 }
