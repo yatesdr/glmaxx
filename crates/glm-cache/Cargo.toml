@@ -1,0 +1,12 @@
+[package]
+name = "glm-cache"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+glm-format = { path = "../glm-format" }
+
+[lints]
+workspace = true

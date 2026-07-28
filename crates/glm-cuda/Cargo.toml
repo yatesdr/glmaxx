@@ -1,0 +1,17 @@
+[package]
+name = "glm-cuda"
+build = "build.rs"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+cuda-ffi = []
+
+[dependencies]
+glm-format = { path = "../glm-format" }
+
+[lints]
+workspace = true

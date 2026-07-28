@@ -1,0 +1,177 @@
+# cn4 kernel readiness
+
+Date: 2026-07-28
+
+Phase: A complete only after the repository checks, commit, and push recorded
+in the handoff
+
+Target: four RTX PRO 6000 Blackwell GPUs, SM120, PCIe, no NVLink
+
+Operator: TP4 rank-local GLM-5.2 routed-expert FC1/gate-up
+
+Kernel ABI: `glmaxx.sm120.nvfp4.routed_fc1.v1`
+
+## Current verdict
+
+The CPU/reference package and direct CUDA correctness baseline are
+engineering-ready for cn4. M2 execution is still gate-blocked until an
+independent reviewer accepts the generated operation manifest and the v0.2.2
+physical/cache ABI amendment. Separate operator authorization is also
+required. The kernel is not yet qualified as functional on SM120, and it is
+not a performance candidate yet. No CUDA compiler or GPU was available during
+Phase A, so there is no CUDA compile, launch, counter, or timing evidence.
+
+The first cn4 session must establish correctness before replacing the
+CUDA-core dot product with the CUTLASS block-scaled MMA path. A source file
+existing in Git is not a GPU pass.
+
+## Proven locally
+
+- Rust 1.92 workspace builds without a tensor framework.
+- E2M1 codes, E4M3 finite classes, tie rounding, zero encoding, corrupt
+  metadata, overflow checks, and direct byte accounting are tested.
+- Value order is logical row-major with even-low/odd-high nibbles.
+- The SFB closed form is bijective for the real `[1024,6144]` rank shard.
+- The deterministic actual-shape fixture has:
+
+  - 3,145,728 value bytes;
+  - 393,216 scale bytes;
+  - 128 metadata bytes;
+  - packed digest
+    `a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5`.
+
+- The deterministic rank container has content-derived identities, zero
+  timestamp, CRC32C, SHA-256 checks, fixed descriptors, corruption rejection,
+  and complete range/overlap validation.
+- The operation manifest freezes gate/up TP4 slicing, route order, operation
+  order, reduction boundary, 75 sparse layers, all 21 target IndexShare
+  groups, and the logical one-layer MTP recurrence. Independent review is
+  pending.
+- The 368-byte KV and 132-byte indexer records have CPU writers/readers.
+- Round-robin DCP4 gives exactly 4,096 full pages per rank at 1M positions.
+- Every page-state pair is checked against the transition table.
+- MTP0 through MTP6 tentative/commit/rollback transitions are checked,
+  including context-limit clamping.
+- The cache calculator derives 33,529,266,176 aggregate bytes at 1M with MTP:
+  30,098,325,504 target KV, 2,906,652,672 target indexer keys, 385,875,968
+  draft KV, and 138,412,032 draft indexer keys.
+- Rust and C agree on a 224-byte, 16-byte-aligned descriptor.
+- The source baseline directly consumes packed weights, dynamically quantizes
+  BF16 rows once, reuses them for gate/up, accumulates in FP32, fuses the two
+  dot products with SwiGLU, and does not materialize a gate/up tensor. Decode
+  uses a fixed persistent CTA pool; prefill uses a grouped two-dimensional
+  schedule.
+
+## Unproven until cn4
+
+- CUDA 13.3 and CUTLASS 4.6.1 compilation for `sm_120f`;
+- compiler agreement with the frozen CUTLASS SFB offset;
+- hardware conversion agreement for every scale/value boundary;
+- successful descriptor launch and asynchronous error behavior;
+- numerical agreement for decode M `1,2,4,8,16,32,64,128` and prefill M 256;
+- graph capture, repeatability, leak freedom, and route-edge GPU behavior;
+- physical bytes read, achieved bandwidth, occupancy, register pressure,
+  shared memory, launch overhead, or speed;
+- block-scaled tensor-core use;
+- any comparison with BF16, FP8, vLLM, SGLang, llama.cpp, or EXL3.
+
+## First authorized session
+
+Do not run these commands until the manifest/ABI review gate passes and the
+operator separately authorizes cn4.
+Start from an exclusive shell on cn4. The script performs read-only inventory
+first and exits without launching if `nvidia-smi` reports a compute PID.
+
+```bash
+cd /path/to/glmaxx
+export CUTLASS_DIR=/path/to/cutlass-4.6.1
+export GLMAXX_EVIDENCE_DIR=/path/outside/repo/glmaxx-m2-$(date -u +%Y%m%dT%H%M%SZ)
+export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
+export GLMAXX_CN4_AUTHORIZATION=phase-b-authorized
+./scripts/cn4-phase-b.sh
+```
+
+The expected environment is Rust 1.92, CMake at least 3.28, Ninja, CUDA
+13.3, and CUTLASS commit
+`e05f953a5b3d38adc240df2ff928e0421c2abba3`. A mismatch stops the session; do
+not edit pins after seeing results.
+
+## Expected evidence
+
+The external evidence directory must contain:
+
+- GPU names, UUIDs, PCI addresses, driver, memory, and topology;
+- source commit and clean status;
+- Rust/Cargo/CMake/nvcc versions and CUTLASS commit;
+- SHA-256 of both specs, the operation manifest, and test matrix;
+- complete Rust test output;
+- CMake configure/build output and compiler command lines;
+- the 393,216-comparison CUTLASS layout-probe result;
+- one JSON correctness report for every M bucket;
+- later, separate kernel and inclusive timing, control results, profiler
+  reports, and a provenance/result manifest.
+
+Raw outputs remain outside Git. Only a compact, reviewed result record and
+artifact hashes may be committed.
+
+## Frozen correctness gate
+
+Before looking at GPU output, the element rule is:
+
+```text
+finite(gpu) and abs(gpu - cpu) <= 0.5 + 0.02 * abs(cpu)
+```
+
+This intentionally broad first-launch threshold detects layout, scale,
+nibble, and gross accumulation failures without pretending to be the final
+quality threshold. The report retains maximum absolute/relative error and
+every failing element. No NaN/Inf, illegal fallback, runtime weight repack, or
+persistent dequantization is allowed. Twenty repeated outputs must be
+bit-identical within one pinned build before timing.
+
+The matrix and controls are frozen in
+`benchmarks/sm120-fc1-matrix-v1.json`. Passing M1 and M256 is the minimum
+functional definition; all listed M and route/numerical cases are required
+for the complete M2 correctness matrix.
+
+## Risks and rollback
+
+- CUTLASS/CUDA may reject `sm_120f` or expose a changed layout. Stop and record
+  the build; do not repack around it silently.
+- The baseline may disagree because CPU and GPU conversion ties differ.
+  Preserve bytes and failing indices, add a minimal boundary fixture, and
+  revise only after a reviewed arithmetic decision.
+- The direct baseline may be very slow. That is expected and is not a reason
+  to skip correctness or relabel it as a performance result.
+- The source currently assumes compacted route arrays. Route-compaction GPU
+  qualification is a separate matrix line; CPU compaction is the initial
+  deterministic control.
+- If cn4 becomes occupied or unstable, synchronize the active stream if one
+  was created, exit, preserve the external evidence directory, and leave
+  other processes untouched.
+
+Rollback means returning to the Phase A commit and its fixture digest. No
+checkpoint or cache migration exists, and the laboratory rank file is
+regenerable. Never delete shared model weights or neighboring repository
+artifacts.
+
+## Ordered performance punchlist
+
+1. Pass the direct-layout baseline on M1 and M256; retain its result.
+2. Replace the CUDA-core dot product with pinned CUTLASS SM120 block-scaled
+   MMA, keeping FP32 accumulation and the same bytes.
+3. Measure fused activation quantization separately, then feed the exact SFA
+   swizzle to MMA without a transform.
+4. Add deterministic GPU route histogram/prefix-sum/compaction and tune the
+   retained persistent small-M schedule; keep the CPU-compacted control.
+5. Fuse the CUTLASS epilogue into BF16 SwiGLU without a gate/up global
+   intermediate and prove it against the retained accumulator control.
+6. Sweep decode tiles, stages, warp specialization, cluster shape, register
+   caps, and persistent CTA count on SM120 only.
+7. Add grouped prefill scheduling and tune M `128..3072` independently from
+   decode.
+8. Implement FC2 direct-packed consumption, route weighting/scatter, shared
+   expert combination, and the single TP4 reduction boundary.
+9. Run TP4 one-layer replay with exact routes and downstream logits.
+10. Only after M2/M3, add graph-captured repetition and matched BF16/FP8
+    controls, then begin EXL3 codec work.

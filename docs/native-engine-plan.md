@@ -1,6 +1,6 @@
 # SM120-native GLM-5.2 inference engine plan
 
-Status: design note revised after Fable adversarial review; re-review pending
+Status: Fable v2 accepted; Phase-A manifest/ABI amendment pending review
 
 Date: 2026-07-28
 
@@ -33,10 +33,10 @@ EXL3 is not on the M1–M4 NVFP4 bring-up path; it is mandatory before M5.
 NVFP4-first does not mean all-NVFP4-full-checkpoint-first. At the published
 753B geometry, the 724.776B target routed-expert parameters alone occupy
 379.6875 GiB with packed E2M1 values plus the direct group-16 E4M3 scale
-plane. Even a hypothetical compact 2D scale plane plus one-byte storage for
-all remaining parameters, target/draft 1M KV, and a 1-GiB/rank escrow totals
-398.813243 GiB before runtime overhead. An all-NVFP4 serving checkpoint
-cannot exist on this target.
+plane. Even a hypothetical compact 2D scale plane, the estimated remaining
+parameters at the 0.5625-byte NVFP4 1D floor, target/indexer/draft 1M cache,
+and a 1-GiB/rank escrow total 390.148958 GiB before runtime overhead. An
+all-NVFP4 serving checkpoint cannot exist on this target.
 
 NVFP4 proves the codec, kernel, one-layer executor, and hot-expert path first.
 A reviewed EXL3 policy is required before the full-checkpoint gate, and
@@ -60,8 +60,12 @@ Reserve KV capacity before assigning the weight budget. Use the already
 proven dynamic per-token NVFP4 MLA record with FP8 RoPE as the first KV
 format. At 368 bytes per layer per token, 78 target layers and 1,048,576
 tokens require 28.03125 GiB aggregate. The attention-bearing MTP draft layer
-adds a 0.359375-GiB sidecar, for 28.390625 GiB aggregate or 7.09765625 GiB
-per rank under DCP4.
+adds 0.359375 GiB of KV and 0.12890625 GiB of indexer keys.
+
+The sparse indexer additionally caches 21 refresh groups of 132-byte
+E4M3-plus-FP32-scale keys, adding 2.70703125 GiB aggregate. The MTP-capable
+target, indexer, and draft total is therefore 31.2265625 GiB aggregate or
+7.806640625 GiB per rank before page slack.
 The existing EXL3 control has already reported 1,101,312 physical GPU KV
 tokens, so the immediate problem is to make the full request admissible and
 fast, not to invent a smaller KV representation.
@@ -423,8 +427,11 @@ For the exact 1,048,576-token model limit:
 ```text
 target: 368 bytes × 78 layers × 1,048,576 = 28.03125 GiB
 draft:  368 bytes ×  1 layer  × 1,048,576 =  0.359375 GiB
-MTP-capable total:                              28.390625 GiB
-per rank at DCP4:                                7.09765625 GiB
+index:  132 bytes × 21 groups × 1,048,576 =  2.70703125 GiB
+draft index:
+         132 bytes ×  1 group  × 1,048,576 =  0.12890625 GiB
+MTP-capable total:                              31.22656250 GiB
+per rank at DCP4:                                7.806640625 GiB
 ```
 
 At boot, reserve in this order:
@@ -432,7 +439,8 @@ At boot, reserve in this order:
 1. CUDA modules, immutable control data, and a measured driver allowance;
 2. maximum decode and prefill scratch slabs;
 3. CUDA graph argument and workspace slabs;
-4. at least 262,144 local KV token slots per rank;
+4. at least 262,144 local target, indexer-key, and optional draft token slots
+   per rank;
 5. a measured emergency/diagnostic escrow;
 6. weights using the remaining hard budget.
 
@@ -499,10 +507,12 @@ layer-major for attention kernels; GPU pack/unpack kernels and fixed pinned
 staging rings convert between layer fragments and the contiguous tiering
 record without changing payload bytes.
 
-An MTP-capable prefix carries a separate 23,552-byte draft-KV sidecar for the
-same page. Target and draft publish atomically; a valid target without its
-sidecar is attachable only as MTP0. Tentative target and draft tail writes
-commit or roll back together.
+Every prefix carries a mandatory 177,408-byte target-indexer sidecar, and an
+MTP-capable prefix carries a separate 32,000-byte composite sidecar containing
+23,552 draft-KV bytes and 8,448 draft-indexer bytes for the same page. Target
+plus target-indexer publish atomically; a valid pair without the composite
+draft sidecar is attachable only as MTP0. Tentative target and draft tail
+writes commit or roll back together.
 
 The DRAM tier is bounded and process-volatile, with a small registered/pinned
 transfer window; do not pin the entire cache. The NVMe tier uses aligned,
@@ -514,9 +524,9 @@ requirement.
 
 Each record carries a content key, sequence/block identity, logical token
 range, valid-token count, advisory writer rank, payload checksum, and
-generation. Publish a journal only after all required target/draft pieces are
-durable. Crash recovery ignores incomplete generations and orphan draft
-records.
+generation. Publish a journal only after all required target/indexer/draft
+pieces are durable. Crash recovery ignores incomplete generations and orphan
+sidecars.
 
 Eviction prefers unreferenced, cold, cheaply recomputable pages and protects
 high-fanout shared prefixes. Restore is asynchronous: a request enters the
@@ -571,6 +581,11 @@ Implement exact global top-2,048 selection:
 Reuse an indexer result only in the layer pattern declared by the pinned
 model. The shared top-k buffer is transient and recycled across the
 four-layer IndexShare group; do not persist 2,048 indices per token.
+
+Cache each full-indexer layer's 128 E4M3 key bytes and one FP32 power-of-two
+scale per token. The 21-group, 132-byte record store follows target KV
+ownership and is a mandatory independently namespaced tier sidecar. It is
+not allocator overhead and is restored atomically with its target page.
 
 ## Prefill plan
 
@@ -646,19 +661,20 @@ This query/candidate/partial-state schedule is part of the rank-invariant
 MTP is initially off for reference qualification, but support for the pinned
 draft layer and depths 0–6 is mandatory for the serving milestone.
 
-The draft is a complete attention-plus-MoE layer and owns one 368-byte KV
-record per position. An MTP-capable prompt computes and stores that
-0.359375-GiB-at-1M sidecar. A restored target prefix without the paired draft
-sidecar remains MTP0-only.
+The draft is a complete attention-plus-MoE layer and owns one 368-byte KV plus
+one 132-byte indexer-key record per committed position. An MTP-capable prompt
+computes and stores that 0.48828125-GiB-at-1M composite sidecar. A restored
+target prefix without the paired draft sidecar remains MTP0-only.
 
 For each speculative cycle:
 
-1. recurrently apply the single draft layer up to the selected depth;
+1. recurrently apply the single draft layer up to the selected depth using
+   the exact manifest recurrence and step-zero IndexShare winner list;
 2. retain draft probabilities, sampled tokens, and RNG state;
 3. execute one target verification plan with `depth + 1` rows per request;
 4. accept the valid prefix under the pinned greedy or probabilistic rule;
-5. commit accepted target and draft-KV slots and roll back both rejected
-   speculative tails;
+5. commit accepted target, draft-KV, and draft-indexer slots and roll back all
+   rejected speculative tails;
 6. emit only accepted useful tokens.
 
 The memory planner reserves the worst configured verifier rows and draft KV
@@ -926,7 +942,8 @@ stability, cache recovery, cancellation, and long-duration reliability.
 The next work should remain CPU-only:
 
 1. have Fable adversarially review the design and both v0 specifications;
-2. resolve CPU-phase blockers and freeze the pinned model operation manifest;
+2. incorporate Fable v2's cached-indexer-key and DCP-ledger conditions and
+   freeze the pinned model operation manifest;
 3. revise the specifications and record the accepted review disposition;
 4. scaffold the Rust workspace through `glm-format` and `glm-reference`;
 5. implement physical-byte and 1M-admission accounting;

@@ -1,14 +1,14 @@
 # GLM-5.2 SM120 native engine specification v0
 
-Status: **DRAFT — FABLE CONDITIONS INCORPORATED; RE-REVIEW REQUIRED**
+Status: **DRAFT — FABLE V2 CONDITIONS PLUS PHASE-A IMPLEMENTATION AMENDMENT**
 
-Specification revision: 0.2.0
+Specification revision: 0.2.2
 
 Date: 2026-07-28
 
 Intended reviewer: Fable
 
-Implementation status: none
+Implementation status: M1 CPU-proof candidate; post-manifest review pending
 
 ## 1. Normative language
 
@@ -127,9 +127,12 @@ against the checkpoint manifest:
 | routed scaling factor | `2.5` |
 | router arithmetic | FP32 |
 
-The exact 78-entry indexer reuse pattern, tensor list, tensor shapes, and
-operation order SHALL live in a generated, reviewed model manifest. That
-manifest is a blocking OPEN item for M1.
+The exact 78-entry indexer reuse pattern, tensor list, tensor shapes, operation
+order, indexer-key production/attachment mapping, and layer-78 recurrence
+SHALL live in the generated model manifest
+`manifests/glm52-operation-v1.json`. The Phase-A candidate is generated from
+Rust; independent review of that artifact remains a blocking OPEN item for an
+M1 pass.
 
 ## 5. Weight profiles
 
@@ -259,9 +262,11 @@ The planner SHALL account for:
 6. graph objects and graph argument slabs;
 7. TP and DCP communication slabs;
 8. HBM/DRAM tier staging rings;
-9. KV pages and page tables;
-10. MTP draft-layer committed and transactional KV pages;
-11. an emergency diagnostic escrow.
+9. target and draft KV pages and their page tables;
+10. sparse-indexer key pages and their page table;
+11. immutable model and execution-plan metadata;
+12. MTP draft-layer committed and transactional KV plus indexer-key pages;
+13. an emergency diagnostic escrow.
 
 An MTP0 capacity profile SHALL reserve at least:
 
@@ -272,8 +277,10 @@ An MTP0 capacity profile SHALL reserve at least:
 at DCP4. Page rounding, active sequence tail slack, and MTP tentative slots
 are additional and SHALL NOT consume those committed slots.
 
-An MTP-enabled capacity profile SHALL additionally reserve the one-layer
-draft-KV sidecar defined in section 16.
+Every attention-capable profile SHALL reserve the cached sparse-indexer key
+store defined in section 16.1. An MTP-enabled capacity profile SHALL
+additionally reserve the one-layer draft KV plus draft-indexer sidecar defined
+in section 16.
 
 ### 8.1 Normative infeasibility bound
 
@@ -305,15 +312,20 @@ routed experts. A deliberately optimistic lower-bound table is:
 | Mandatory component | GiB aggregate |
 |---|---:|
 | hypothetical compact 2D target experts | 340.136719 |
-| all remaining parameters at one byte each | 26.285899 |
+| estimated remaining 28.224B parameters at 0.5625 byte each | 14.785677 |
 | 78-layer target KV at 1M | 28.031250 |
+| 21-group sparse-indexer key cache at 1M | 2.707031 |
 | one-layer draft KV at 1M | 0.359375 |
+| one-layer draft indexer key cache at 1M | 0.128906 |
 | minimum 1-GiB/rank escrow | 4.000000 |
-| lower-bound total | 398.813243 |
+| lower-bound total | 390.148958 |
 
-This already exceeds nominal HBM and excludes CUDA contexts, modules,
-metadata, graph objects, workspaces, communication slabs, staging, padding,
-and page slack. Therefore `nvfp4-laboratory` is subset-only and
+The remaining-parameter count is an estimate derived from the rounded 753B
+model total until the generated tensor inventory replaces it. Even pricing
+every remaining parameter at NVFP4's 0.5625-byte 1D physical rate, the total
+exceeds 390 GiB. This already exceeds nominal HBM and excludes CUDA contexts,
+modules, metadata, graph objects, workspaces, communication slabs, staging,
+padding, and page slack. Therefore `nvfp4-laboratory` is subset-only and
 `hybrid-serve` is the only NVFP4-bearing serving profile.
 
 ### 8.2 Profile budget artifact
@@ -324,6 +336,8 @@ freeze, per rank and aggregate:
 - the smallest measured post-context HBM bytes;
 - physical bytes by tensor role and codec;
 - target and draft KV committed/slack bytes;
+- target and draft sparse-indexer key committed/slack bytes;
+- immutable model metadata and every target/draft/indexer page table;
 - graph, maximum-workspace, collective, and staging bytes;
 - padding and allocator fragmentation;
 - emergency escrow;
@@ -343,6 +357,10 @@ weight_bytes[r]
 + collective_and_staging_bytes[r]
 + target_kv_committed_and_slack_bytes[r]
 + draft_kv_committed_and_slack_bytes[r]
++ indexer_key_committed_and_slack_bytes[r]
++ draft_indexer_key_committed_and_slack_bytes[r]
++ model_metadata_bytes[r]
++ target_draft_indexer_page_table_bytes[r]
 + allocator_padding_bytes[r]
 + escrow_bytes[r]
 <= measured_usable_hbm_bytes[r]
@@ -574,9 +592,11 @@ For every layer and real query row:
 
 1. TP ranks all-gather their local query heads in rank order so each DCP page
    owner can process every head against owner-local KV.
-2. Each owner computes sparse-index scores only for its owned committed
-   positions and selects up to 2,048 local candidates ordered by descending
-   FP32 score, then ascending logical position as the tie-break.
+2. At each full-indexer layer, each owner reads the paired 132-byte cached
+   indexer-key record for each owned committed position, computes sparse-index
+   scores, and selects up to 2,048 local candidates ordered by descending FP32
+   score, then ascending logical position as the tie-break. Shared layers reuse
+   the winner list exactly as declared by the operation manifest.
 3. Owners all-gather `(score, logical_position)` candidates. Every rank
    performs the same fixed four-way merge and obtains one identical global
    top-2,048 position list. A nonfinite score is fatal to the request.
@@ -598,13 +618,23 @@ vector. The fixed merge uses FP32 and is part of the numerical ABI. Query
 transport, candidate exchange, partial-state return, and their order SHALL
 appear in the `StepPlan` collective schedule.
 
+The coordinator MAY omit a rank from a layer exchange only when its page
+tables prove that rank owns zero committed pages for every sequence in the
+step. The owner subset is rank-invariant and SHALL be encoded in the
+`StepPlan`; a worker cannot make this decision. Layer data dependencies
+prevent query-gather or partial-return batching across an IndexShare group in
+v0. Candidate exchange occurs only on the group's full-indexer layer and its
+winner list is reused by the following shared layers.
+
 ## 15. Decode and MTP
 
 ### 15.1 Target-only decode
 
 MTP0 SHALL be the correctness reference. Greedy MTP0 SHALL match the pinned
-reference token sequence under the declared numerical tolerance and sampling
-configuration.
+reference token sequence under the sampling ABI's stable-position and
+tie-adjacent classification. Stable-position mismatches fail; permitted
+tie-adjacent divergences SHALL retain both tokens, the top-two logits, and
+the margin.
 
 ### 15.2 Draft semantics
 
@@ -619,15 +649,42 @@ The pinned layer-78 draft module contains:
 - one 256-routed-expert plus shared-expert MoE block;
 - the shared normalized LM-head path.
 
-The exact hidden-state, embedding, position, IndexShare, and tensor inputs to
-each recurrence are a blocking OPEN item to be extracted from the pinned
-reference into the operation manifest.
+The logical recurrence, frozen in `manifests/glm52-operation-v1.json`, is:
 
-An MTP-capable sequence SHALL have draft KV for every committed position.
-Prompt prefill for an MTP-capable cache entry SHALL execute the draft layer
-over the prompt rows and populate its draft-KV sidecar. A target-only prefix
-without that sidecar MAY be attached only with MTP0; it MUST NOT enable MTP
-later unless the complete missing draft prefix is recomputed and validated.
+1. recurrence zero consumes the current target input token, its logical
+   position, and the corresponding final target hidden state;
+2. embed that token, replacing the embedding with zero only at logical
+   position zero;
+3. independently RMS-normalize the embedding with `enorm` and prior hidden
+   state with `hnorm`, concatenate them in that order, and apply
+   `eh_proj[6144,12288]`;
+4. execute checkpoint layer 78's MLA attention, routed/shared MoE, residual,
+   and TP reduction;
+5. form `pre_final = residual + block_output`, then
+   `recycled_hidden = shared_head.RMSNorm(pre_final)`;
+6. compute draft logits as `shared_vocab_head(recycled_hidden)`;
+7. recurrence `i+1` consumes the token sampled at recurrence `i`, position
+   `position+i+1`, and that `recycled_hidden`.
+
+There is exactly one independent draft layer. `spec_step_idx mod 1` therefore
+selects checkpoint layer 78 for every recurrence. The manifest pins both the
+generic and NVIDIA-fused source hashes; fused execution MUST preserve the
+logical recurrence above.
+
+At recurrence zero, layer 78 computes its exact top-2,048 sparse-attention
+winner list. Later recurrences in the same speculative cycle reuse that
+transient winner list. This reuse skips index scoring, not committed-state
+production: every committed layer-78 position SHALL have its own 132-byte
+indexer key. An implementation MAY backfill accepted tentative keys during
+the synchronization pass, but it MUST do so before the page is sealed,
+shared, evicted, or used by a later fresh index selection.
+
+An MTP-capable sequence SHALL have draft KV and a draft indexer key for every
+committed position. Prompt prefill for an MTP-capable cache entry SHALL
+execute the draft layer over the prompt rows and populate both records in its
+draft sidecar. A target-only prefix without that sidecar MAY be attached only
+with MTP0; it MUST NOT enable MTP later unless the complete missing draft
+prefix is recomputed and validated.
 
 ### 15.3 Greedy verification
 
@@ -717,11 +774,13 @@ sampled token and final counter SHALL be broadcast before the next
 
 ### 15.6 Transactional KV
 
-Target draft-position writes, draft-layer KV writes, and verifier writes
-SHALL target tentative slots in their respective page tables.
+Target draft-position writes, draft-layer KV/indexer writes, and verifier
+writes SHALL target tentative slots in their respective page tables.
 
-- Accepted target and draft-KV slots SHALL commit in the same order.
-- Rejected target and draft-KV slots SHALL become unreachable before reuse.
+- Accepted target, draft-KV, and draft-indexer slots SHALL commit in the same
+  order.
+- Rejected target, draft-KV, and draft-indexer slots SHALL become unreachable
+  before reuse.
 - A shared sealed prefix SHALL never be modified.
 - Target/draft sidecar page hashes and tier journals SHALL include only
   committed tokens.
@@ -778,7 +837,7 @@ be rejected. The ABI string is:
 nvfp4_ds_mla:fp8-rope-368:dynamic-token-v1
 ```
 
-Target and draft layers use the same numerical record ABI but different
+Target and draft layers use the same numerical KV record ABI but different
 content namespaces and page tables. At 1,048,576 positions:
 
 ```text
@@ -786,6 +845,76 @@ target: 368 × 78 × 1,048,576 = 28.03125 GiB aggregate
 draft:  368 ×  1 × 1,048,576 =  0.359375 GiB aggregate
 MTP-capable total:                         28.390625 GiB aggregate
 ```
+
+### 16.1 Sparse-indexer key record ABI
+
+The production indexer path SHALL cache, rather than recompute from MLA
+latents, one key record for each position at every full-indexer layer. The
+21 full-indexer layer IDs are:
+
+```text
+0, 1, 2, 6, 10, 14, 18, 22, 26, 30, 34,
+38, 42, 46, 50, 54, 58, 62, 66, 70, 74
+```
+
+Each record is exactly 132 bytes:
+
+| Byte range | Meaning |
+|---|---|
+| `[0,128)` | 128 saturated-finite E4M3 key values |
+| `[128,132)` | one FP32 little-endian scale |
+
+For key vector `k`, the stored scale is the smallest power of two greater
+than or equal to `max(max(abs(k)), 1e-4) / 448`, matching the pinned
+`ue8m0` scale policy, and the value bytes encode `k / scale`. The record ABI
+string is:
+
+```text
+glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1
+```
+
+The HBM store is full-indexer-group-major and uses the same 64-token logical
+page ordinal, owner, and generation as target KV:
+
+```text
+indexer_k[full_group=0..20][local_page_id][token=0..63][record=132]
+```
+
+At 1,048,576 positions this consumes:
+
+```text
+132 × 21 × 1,048,576 = 2,906,652,672 bytes
+                         = 2.70703125 GiB aggregate
+                         = 0.6767578125 GiB per DCP4 rank
+```
+
+A committed target page and its indexer-key sidecar SHALL publish atomically.
+The indexer sidecar is mandatory for an attention-capable target prefix and
+SHALL be evicted, restored, integrity-checked, and reattached with that target
+page. An orphan or generation mismatch is invalid.
+
+Layer 78 is an additional full indexer and SHALL use the same 132-byte
+record. Its HBM store is separate from the 21 target groups:
+
+```text
+draft_indexer_k[draft_layer=0][local_page_id][token=0..63][record=132]
+```
+
+At 1,048,576 positions the draft indexer consumes 138,412,032 bytes,
+0.12890625 GiB aggregate, or 0.0322265625 GiB per DCP4 rank. The complete
+MTP-capable committed cache is therefore:
+
+```text
+target KV       28.03125000 GiB
+target indexer   2.70703125 GiB
+draft KV         0.35937500 GiB
+draft indexer    0.12890625 GiB
+total           31.22656250 GiB aggregate
+per DCP4 rank    7.806640625 GiB
+```
+
+The optional MTP draft sidecar contains both its KV and indexer records and
+remains a third, separately namespaced attachment.
 
 ## 17. HBM page layout and DCP ownership
 
@@ -818,12 +947,13 @@ and owner to:
 
 ```text
 draft_kv[draft_layer=0][local_page_id][64][368]
+draft_indexer_k[draft_layer=0][local_page_id][64][132]
 ```
 
-The committed draft sidecar fragment is 23,552 bytes per logical page. At
-DCP4 it adds 0.08984375 GiB per rank at the model limit before tail slack.
-Target and draft page generations SHALL commit atomically for an MTP-capable
-sequence.
+The committed draft sidecar fragment is 32,000 bytes per logical page. At
+DCP4 it adds 0.1220703125 GiB per rank at the model limit before tail slack.
+Target and indexer page generations SHALL commit atomically. The draft page
+generation SHALL join that commit for an MTP-capable sequence.
 
 The proposed modulo ownership is a blocking OPEN item until a CPU ownership
 proof and comparison with the pinned control are reviewed. The final mapping
@@ -874,10 +1004,12 @@ The NVMe tier SHALL:
   that cap is reached;
 - expose read/write bytes, write amplification, restore latency, and errors.
 
-For an MTP-capable page, publication SHALL make the target record and its
-draft sidecar visible in one index generation. Recovery SHALL expose either
-both or only the independently valid target record as MTP0-only; it SHALL
-never expose an orphan draft record.
+Publication SHALL make the target record and mandatory target-indexer sidecar
+visible in one index generation. For an MTP-capable page, that generation
+SHALL also publish its combined draft-KV/draft-indexer sidecar. Recovery SHALL
+expose either all three tier records or the independently valid
+target/target-indexer pair as MTP0-only; it SHALL never expose an orphan
+sidecar.
 
 GPUDirect Storage is OPTIONAL and MUST be a matched optimization, not a
 correctness dependency.
@@ -890,7 +1022,7 @@ The content namespace hash SHALL cover:
 
 - model and weight policy hashes;
 - tokenizer and chat-template hashes;
-- target or draft KV ABI and record role;
+- target, indexer, or draft cache ABI and record role;
 - page size;
 
 It SHALL NOT include DCP ownership, writer rank, HBM layout, or a kernel
@@ -909,7 +1041,7 @@ token_ids
 HBM attachment SHALL separately validate an attachment ABI covering:
 
 - fixed DCP4 ownership mapping;
-- target/draft page-table layout;
+- target/indexer/draft page-table layout;
 - kernel ABI and alignment;
 - current destination owner.
 
@@ -919,8 +1051,10 @@ the exact bytes into that owner's HBM layout. The tier header's writer owner
 is advisory only.
 
 Full target page hits MAY attach an HBM page or restore an exact DRAM/NVMe
-page. MTP requires the paired draft hit. Partial page matches SHALL be
-recomputed into a private mutable target/draft tail as applicable.
+page only with the paired target-indexer sidecar. MTP additionally requires a
+paired draft hit containing both draft KV and draft-indexer keys. Partial page
+matches SHALL be recomputed into private mutable target/indexer/draft tails as
+applicable.
 
 Reference counts and state changes SHALL be atomic with respect to scheduler
 admission. Eviction SHALL NOT invalidate a page referenced by an active or
@@ -939,8 +1073,8 @@ Metrics SHALL distinguish:
 The service SHALL publish:
 
 - total physical HBM KV slots;
-- committed free target and draft HBM slots;
-- tentative/slack target and draft HBM slots;
+- committed free target, indexer, and draft HBM slots;
+- tentative/slack target, indexer, and draft HBM slots;
 - DRAM resident and free bytes;
 - NVMe resident and free bytes;
 - maximum admissible single sequence;
@@ -994,6 +1128,11 @@ Version zero SHALL provide:
 - cancellation;
 - health and metrics endpoints.
 
+If `top_p < 1`, clients MUST also provide `top_k` in `1..256`. The service
+SHALL return a structured `UNBOUNDED_TOP_P_UNSUPPORTED` error otherwise.
+Clients that want conventional nucleus sampling SHOULD send `top_k=256`;
+the service SHALL NOT silently substitute it.
+
 The pinned GLM chat template SHALL define message and tool-schema rendering.
 The service is not required to reproduce unrelated vLLM/SGLang flags or
 extension APIs.
@@ -1022,6 +1161,8 @@ Per step:
 - collective schedule hash;
 - kernel, TP, DCP, and host time;
 - query, sparse-candidate, partial-softmax, and sampling collective bytes;
+- a separate DCP query-gather/candidate/partial-LSE latency line, including
+  owner-subset size;
 - HBM allocation and KV page deltas.
 
 Per service:
@@ -1067,6 +1208,8 @@ full-checkpoint `capacity-exl3` or `hybrid-serve` load.
 
 - exact routes and index winners;
 - DCP4 decode query transport and fixed-order FP32 LSE merge;
+- an exclusive DCP collective-chain ledger line, separated from indexer
+  compute, attention compute, and framework overhead;
 - layer output and downstream logit comparison;
 - four-rank collective agreement;
 - exclusive phase ledger.
@@ -1107,12 +1250,13 @@ satisfy M5. M5 SHALL retain matched NVFP4 laboratory/operator controls.
 
 ## 25. Blocking OPEN items for Fable review
 
-1. Complete GLM tensor inventory and fixed operation graph.
+1. Independently review the generated GLM tensor/operation manifest,
+   including the 21-group indexer-key production and IndexShare mapping.
 2. Exact EXL3 trellis payload/reconstruction ABI from pinned source; this
    does not block M1–M4 NVFP4 bring-up but blocks M5–M7.
 3. Final SM120 NVFP4 weight layout and CUDA/CUTLASS pin.
-4. Exact MTP recurrent hidden-state/position semantics and draft-KV
-   production, residency, tiering, attach, and rollback contract.
+4. Independently review the Phase-A MTP recurrence and the combined
+   draft-KV/draft-indexer residency, tiering, attach, and rollback amendment.
 5. Probabilistic sampling/RNG ABI, including post-filter distributions,
    sharded-vocabulary execution, and residual/bonus sampling.
 6. Greedy batch-shape numerical equivalence thresholds and tie-adjacent

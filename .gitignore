@@ -13,13 +13,17 @@ offload/
 results/
 scratch/
 
-# CUDA/JIT build products.
+# Rust and CUDA build products.
+target/
 build/
 dist/
 *.so
+*.g5n
+*.bin
+*.ptx
 *.cubin
 *.fatbin
-*.ptx
+compile_commands.json
 
 # Local configuration and secrets.
 .env

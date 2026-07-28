@@ -1,0 +1,64 @@
+{
+  "schema": "glmaxx.sm120-fc1-matrix.v1",
+  "kernel_abi": "glmaxx.sm120.nvfp4.routed_fc1.v1",
+  "geometry": {
+    "hidden": 6144,
+    "expert_intermediate": 2048,
+    "tp": 4,
+    "rank_gate_rows": 512,
+    "rank_up_rows": 512,
+    "rank_gate_up_rows": 1024,
+    "experts": 256,
+    "top_k": 8
+  },
+  "decode_rows": [1, 2, 4, 8, 16, 32, 64, 128],
+  "prefill_rows": [256],
+  "routing_cases": [
+    "one-hot-expert-0",
+    "one-hot-expert-255",
+    "uniform-all-experts",
+    "zipf-skew",
+    "empty-experts",
+    "same-token-duplicate-expert-rejected",
+    "route-slot-permutation",
+    "tail-assignment-count"
+  ],
+  "numerical_cases": [
+    "all-zero",
+    "all-e2m1-codes",
+    "all-e4m3-finite-scale-classes",
+    "bf16-extrema",
+    "subnormal-block-scale",
+    "single-outlier-per-block",
+    "alternating-sign",
+    "deterministic-random-v1"
+  ],
+  "acceptance": {
+    "finite_output_required": true,
+    "element_rule": "abs(gpu-cpu) <= 0.5 + 0.02 * abs(cpu)",
+    "nan_inf_count": 0,
+    "illegal_fallback_count": 0,
+    "runtime_repack_bytes": 0,
+    "persistent_dequant_bytes": 0,
+    "repeat_count": 20,
+    "determinism": "bitwise output within one pinned build and graph mode"
+  },
+  "timing": {
+    "warmup": 20,
+    "iterations": 200,
+    "report": [
+      "activation_quantization_us",
+      "route_compaction_us",
+      "core_fc1_us",
+      "swiglu_epilogue_us",
+      "launch_and_descriptor_us",
+      "inclusive_operator_us"
+    ],
+    "controls": [
+      "same-shape-bf16",
+      "same-shape-fp8",
+      "direct-nvfp4-cuda-core-baseline",
+      "direct-nvfp4-cutlass-mma"
+    ]
+  }
+}

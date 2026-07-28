@@ -1,0 +1,496 @@
+{
+  "schema": "glmaxx.glm52.operation.v1",
+  "model": "zai-org/GLM-5.2",
+  "model_revision": "b4734de4facf877f85769a911abafc5283eab3d9",
+  "constants": {
+    "target_layers": 78,
+    "sparse_layers": 75,
+    "hidden": 6144,
+    "expert_intermediate": 2048,
+    "routed_experts": 256,
+    "top_k": 8,
+    "tp": 4,
+    "local_intermediate": 512,
+    "local_gate_up_rows": 1024
+  },
+  "source_pins": [
+    {
+      "name": "transformers-modeling-sha256",
+      "identity": "adb8317a21716b01273046e46c807f14f0dbaf035af59b60d52bd6bc3007cf72"
+    },
+    {
+      "name": "transformers-configuration-sha256",
+      "identity": "5a81164be746307431ad998f789b6b0bca20eb4c14a726552eb3730268413997"
+    },
+    {
+      "name": "glm52-opt-read-only-head",
+      "identity": "d213925ee6701072f117aec59ca94f1bf00d5e7f"
+    },
+    {
+      "name": "deepseek-mtp-pinned-source-sha256",
+      "identity": "3a8a0b30e5dc5eb8c1f0ddb2ce317c375dc094de5b5ba8ba78f71d5481deae6d"
+    },
+    {
+      "name": "deepseek-v32-nvidia-mtp-pinned-source-sha256",
+      "identity": "8e09e33823d4a6feb5071eb4ef3a5822bf79c1fab7ab59b9e5220be67b5571ca"
+    },
+    {
+      "name": "cutlass",
+      "identity": "e05f953a5b3d38adc240df2ff928e0421c2abba3"
+    }
+  ],
+  "sparse_layer_ids": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77
+  ],
+  "tensor_contracts": [
+    {
+      "role_id": 1281,
+      "role": "routed_expert_gate_up",
+      "source_names": [
+        "model.layers.{3..77}.mlp.experts.{0..255}.gate_proj.weight",
+        "model.layers.{3..77}.mlp.experts.{0..255}.up_proj.weight"
+      ],
+      "source_shape": [
+        2048,
+        6144
+      ],
+      "source_tp_axis": 0,
+      "rank_shape": [
+        1024,
+        6144
+      ],
+      "packed_order": "rank-local gate[512,K], then rank-local up[512,K]",
+      "codec": "sm120-nvfp4-1d-block16-direct-v1"
+    },
+    {
+      "role_id": 1282,
+      "role": "routed_expert_down",
+      "source_names": [
+        "model.layers.{3..77}.mlp.experts.{0..255}.down_proj.weight"
+      ],
+      "source_shape": [
+        6144,
+        2048
+      ],
+      "source_tp_axis": 1,
+      "rank_shape": [
+        6144,
+        512
+      ],
+      "packed_order": "rank-local K slice, output rows unsharded",
+      "codec": "sm120-nvfp4-1d-block16-direct-v1"
+    },
+    {
+      "role_id": 769,
+      "role": "router_weight",
+      "source_names": [
+        "model.layers.{3..77}.mlp.gate.weight"
+      ],
+      "source_shape": [
+        256,
+        6144
+      ],
+      "source_tp_axis": -1,
+      "rank_shape": [
+        256,
+        6144
+      ],
+      "packed_order": "replicated protected FP32 arithmetic",
+      "codec": "protected-source-precision"
+    },
+    {
+      "role_id": 770,
+      "role": "router_correction_bias",
+      "source_names": [
+        "model.layers.{3..77}.mlp.gate.e_score_correction_bias"
+      ],
+      "source_shape": [
+        256
+      ],
+      "source_tp_axis": -1,
+      "rank_shape": [
+        256
+      ],
+      "packed_order": "replicated protected FP32 arithmetic",
+      "codec": "protected-source-precision"
+    }
+  ],
+  "routed_fc1_steps": [
+    {
+      "ordinal": 0,
+      "operation": "router",
+      "arithmetic": "FP32 linear, sigmoid, group-limited top-8, normalized weights ×2.5",
+      "output": "identical expert IDs and weights on all TP ranks",
+      "collective_boundary": "none; replicated protected router"
+    },
+    {
+      "ordinal": 1,
+      "operation": "stable route compaction",
+      "arithmetic": "expert ascending, then token ascending, then route slot ascending",
+      "output": "group offsets and compacted BF16 rows",
+      "collective_boundary": "none; descriptors must hash-identically"
+    },
+    {
+      "ordinal": 2,
+      "operation": "dynamic activation quantization",
+      "arithmetic": "per compacted row FP32 amax, NVFP4 block-16 E4M3 scales",
+      "output": "one packed A row reused for gate and up",
+      "collective_boundary": "none"
+    },
+    {
+      "ordinal": 3,
+      "operation": "rank-local routed FC1",
+      "arithmetic": "NVFP4×NVFP4 MMA, FP32 accumulate",
+      "output": "gate[assignments,512] and up[assignments,512]",
+      "collective_boundary": "none"
+    },
+    {
+      "ordinal": 4,
+      "operation": "SwiGLU",
+      "arithmetic": "FP32 SiLU(gate) × up, then BF16 store",
+      "output": "rank-local FC2 input[assignments,512]",
+      "collective_boundary": "none"
+    },
+    {
+      "ordinal": 5,
+      "operation": "rank-local routed FC2 and weighted scatter",
+      "arithmetic": "FP32 accumulate; route weight after down projection",
+      "output": "partial hidden[M,6144]",
+      "collective_boundary": "one TP4 all-reduce after routed and shared partials are combined"
+    }
+  ],
+  "indexer_groups": [
+    {
+      "group": 0,
+      "full_layer": 0,
+      "consumers": [
+        0
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 1,
+      "full_layer": 1,
+      "consumers": [
+        1
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 2,
+      "full_layer": 2,
+      "consumers": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 3,
+      "full_layer": 6,
+      "consumers": [
+        6,
+        7,
+        8,
+        9
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 4,
+      "full_layer": 10,
+      "consumers": [
+        10,
+        11,
+        12,
+        13
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 5,
+      "full_layer": 14,
+      "consumers": [
+        14,
+        15,
+        16,
+        17
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 6,
+      "full_layer": 18,
+      "consumers": [
+        18,
+        19,
+        20,
+        21
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 7,
+      "full_layer": 22,
+      "consumers": [
+        22,
+        23,
+        24,
+        25
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 8,
+      "full_layer": 26,
+      "consumers": [
+        26,
+        27,
+        28,
+        29
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 9,
+      "full_layer": 30,
+      "consumers": [
+        30,
+        31,
+        32,
+        33
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 10,
+      "full_layer": 34,
+      "consumers": [
+        34,
+        35,
+        36,
+        37
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 11,
+      "full_layer": 38,
+      "consumers": [
+        38,
+        39,
+        40,
+        41
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 12,
+      "full_layer": 42,
+      "consumers": [
+        42,
+        43,
+        44,
+        45
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 13,
+      "full_layer": 46,
+      "consumers": [
+        46,
+        47,
+        48,
+        49
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 14,
+      "full_layer": 50,
+      "consumers": [
+        50,
+        51,
+        52,
+        53
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 15,
+      "full_layer": 54,
+      "consumers": [
+        54,
+        55,
+        56,
+        57
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 16,
+      "full_layer": 58,
+      "consumers": [
+        58,
+        59,
+        60,
+        61
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 17,
+      "full_layer": 62,
+      "consumers": [
+        62,
+        63,
+        64,
+        65
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 18,
+      "full_layer": 66,
+      "consumers": [
+        66,
+        67,
+        68,
+        69
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 19,
+      "full_layer": 70,
+      "consumers": [
+        70,
+        71,
+        72,
+        73
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    },
+    {
+      "group": 20,
+      "full_layer": 74,
+      "consumers": [
+        74,
+        75,
+        76,
+        77
+      ],
+      "key_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+    }
+  ],
+  "mtp_contract": {
+    "checkpoint_layer_id": 78,
+    "independent_layer_count": 1,
+    "maximum_recurrent_depth": 6,
+    "recurrence": [
+      "embed the current input token; replace its embedding with zero at logical position 0",
+      "RMSNorm the embedding with enorm and the prior hidden state with hnorm",
+      "concatenate [normalized embedding, normalized prior hidden] and apply eh_proj[6144,12288]",
+      "execute checkpoint layer 78 MLA attention, routed/shared MoE, residual, and TP reduction",
+      "form pre_final = residual + block_output and recycled_hidden = shared_head.RMSNorm(pre_final)",
+      "compute draft logits as shared vocabulary head(recycled_hidden)",
+      "for the next recurrence use the sampled token embedding, logical position + 1, and recycled_hidden"
+    ],
+    "index_selection": "recurrence 0 computes an exact layer-78 top-2048 list; recurrences 1..5 reuse that transient list, but every committed position retains its own layer-78 indexer key",
+    "committed_state": [
+      "one 368-byte layer-78 KV record per committed position",
+      "one 132-byte layer-78 indexer-key record per committed position",
+      "target, target-indexer, draft-KV, and draft-indexer generations publish atomically for MTP-capable prefixes",
+      "rejected speculative KV and indexer-key writes become unreachable before slot reuse"
+    ],
+    "draft_kv_record": "nvfp4_ds_mla:fp8-rope-368:dynamic-token-v1",
+    "draft_indexer_record": "glm52_dsa_index_k:e4m3-128:fp32-ue8m0-scale:v1"
+  },
+  "invariants": [
+    "all TP ranks use identical routes and group offsets",
+    "no rank-local collective fallback",
+    "gate and up shards split each source projection independently before concatenation",
+    "route weight is applied after down projection",
+    "shared expert output is added before the sparse-layer residual",
+    "indexer key pages share owner and generation with target KV pages",
+    "MTP depth reuses one checkpoint layer rather than loading independent layers",
+    "an MTP-capable committed draft position has both KV and indexer-key records"
+  ]
+}

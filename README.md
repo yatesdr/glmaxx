@@ -54,6 +54,11 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Fable adversarial review](fable-adversarial.md)
 - [Fable review disposition](docs/fable-review-disposition.md)
 - [Fable v0.2 re-review handoff](docs/fable-review-handoff.md)
+- [Fable v0.2 adversarial re-review](fable-adversarial-v2.md)
+- [Fable v2 disposition](docs/fable-v2-disposition.md)
+- [Generated GLM-5.2 operation manifest](manifests/glm52-operation-v1.json)
+- [Frozen first NVFP4 physical ABI](docs/nvfp4-physical-abi.md)
+- [cn4 kernel readiness and punchlist](docs/cn4-kernel-readiness.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Draft roadmap](docs/roadmap.md)
@@ -68,5 +73,12 @@ kernel, and engine work stays here.
 
 ## Current status
 
-Documentation scaffold only. No format ABI, checkpoint converter, or CUDA
-kernel has been selected or implemented.
+Phase A now contains a Rust CPU/reference workspace, deterministic direct
+NVFP4 packer and rank reader, KV/indexer/cache proofs, the fixed routed-FC1
+Rust/C ABI, and an SM120 CUDA correctness baseline. The actual TP4 gate/up
+fixture is reproducible from a committed recipe and digest.
+
+No GPU claim has been made. CUDA compilation and SM120 correctness remain
+blocked on independent review of the generated manifest/v0.2.2 amendment and
+a separately authorized cn4 session. The first performance task is to replace
+the retained CUDA-core control with CUTLASS block-scaled MMA.

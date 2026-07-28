@@ -1,0 +1,26 @@
+[package]
+name = "glm-cli"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "glmaxx"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda-ffi = ["glm-cuda/cuda-ffi"]
+
+[dependencies]
+glm-cache = { path = "../glm-cache" }
+glm-cuda = { path = "../glm-cuda" }
+glm-format = { path = "../glm-format" }
+glm-reference = { path = "../glm-reference" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

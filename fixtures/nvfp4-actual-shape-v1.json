@@ -1,0 +1,28 @@
+{
+  "schema": "glmaxx.nvfp4-actual-shape-fixture.v1",
+  "model": "zai-org/GLM-5.2",
+  "model_revision": "b4734de4facf877f85769a911abafc5283eab3d9",
+  "tensor_role": "rank-local-routed-expert-gate-up",
+  "logical_shape": [1024, 6144],
+  "source_projection_shape": [2048, 6144],
+  "tp": 4,
+  "packing": {
+    "codec": "sm120-nvfp4-1d-block16-direct-v1",
+    "value_layout_id": 4609,
+    "scale_layout_id": 4609,
+    "value_bytes": 3145728,
+    "scale_bytes": 393216,
+    "metadata_bytes": 128,
+    "nibble_order": "even-low-odd-high"
+  },
+  "generator": "glm-cli actual_shape_values v1",
+  "generator_definition": "u64(index)*0x9e3779b97f4a7c15 rotate_left(17), signed high16; every 4093rd value divided by 128, all others by 8192",
+  "packed_fixture_sha256": "a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5",
+  "rank0_laboratory_file": {
+    "sha256": "ea706d83c4aa89fda26f977f03e7fa72862b71cf36c2c77cead70d68bc7b3093",
+    "file_uuid": "f411c5cf2e7ef452dcab5c8715f5116d",
+    "conversion_uuid": "a1e0b6dcc961821ec8900eb2d3d4bd54"
+  },
+  "payload_committed": false,
+  "note": "Only the deterministic recipe and digest belong in Git; generated packed bytes are ignored."
+}
