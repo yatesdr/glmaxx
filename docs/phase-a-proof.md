@@ -3,10 +3,10 @@
 Status: PASS for host-available checks; GPU and post-manifest review gates
 remain open
 
-Recorded UTC: 2026-07-28T23:16:00Z
+Recorded UTC: 2026-07-28T23:18:29Z
 
 Implementation commit:
-`1551c6c1dbe010e8a2be428f323a30b75884c40d`
+`7fdd600eb55bd8c66c1474e79192baf9549e2da8`
 
 Model: `zai-org/GLM-5.2`
 
@@ -79,13 +79,13 @@ No cn4 access, CUDA compilation, GPU launch, or GPU measurement occurred.
 | `spec/format-v0.md` | `fbe147ebe5c8a88b2fe81dfdb871bd32d43395f1b5ccf5c7162779a3f8cf7b77` |
 | operation manifest | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | physical ABI note | `8936c8a60a1d6a7a2038fcd7f3f4a352b80477c359a6f3f2f89ea3903d2a9e99` |
-| correctness matrix | `148354bb955c8129596b933f15375593e08a2ee9723724ab104c2911db7d270b` |
+| correctness matrix | `d5a0286d0c9d06ce1036085d4f1712d929273fb533601806b26b9f774c360e74` |
 | generated matrix proof | `5ebf329ee29e4cd95e2c92a41a99625808dcf4212f996c874d651d637cdb6eef` |
 | fixture recipe | `cce63cdf83d918e49f2f3fdc1d73fa14ed30e630a871d2ea1ac54087e070bf09` |
 | C ABI header | `e24424dd4040d5ed63ce925b917c4d271e2cc82b85e7b5512fee0ac8da056af6` |
 | CUDA source | `3b90e48baaeedd3b9dffc3a010a60da646d5e3ed83abcadaf43e96a8b4f9bbe8` |
 | local proof script | `3d48d6a16fec3cfa0dc96ecd7da99f0580060b2a8e2ae660b3c33513b4e24517` |
-| cn4 harness | `fa1709542ad4e5ee5f1d91d23546fe430d210cca17504c5973c8623f1bbeb7af` |
+| cn4 harness | `86fc49a99eac1fe9724b11c3a777e46eb5038fcb4eb2b291928113208f9a9aa7` |
 
 ## Remaining gates
 
