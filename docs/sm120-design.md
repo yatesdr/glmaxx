@@ -38,19 +38,27 @@ layout, tile selection, and TP/DCP communication remain important.
 
 Decode and prefill should have separate dispatch and packing decisions.
 
-## Candidate format: native heterogeneous blocks
+## First format: native heterogeneous blocks
 
-Version zero should use only formats the SM120 MMA can consume directly:
+The NVFP4-first runner should use formats the SM120 MMA can consume directly:
 
 | Tier | Candidate use |
 |---|---|
-| NVFP4 | ordinary routed-expert blocks |
+| NVFP4 | measured hot/quality-tolerant routed-expert blocks |
 | MXFP6/FP6 | blocks needing more dynamic range or precision |
 | FP8/MXFP8 | highly sensitive projections or experts |
 | BF16 | small critical tensors and reference fallback |
 
 The exact supported operand combinations must be proven with the selected
 CUTLASS/CUDA revision before freezing the ABI.
+
+EXL3 is the subsequent and mandatory serving-capacity backend. Its packed
+payload need not itself
+be a native MMA operand, but the custom kernel must consume it directly and
+reconstruct only the fragments immediately used by the MMA or accumulation
+path. Persistent whole-expert BF16/FP16 expansion is not acceptable. EXL3
+enters this design only after a pinned-source Rust CPU oracle and an inclusive
+SM120 timing win.
 
 ### Allocation inputs
 
@@ -103,10 +111,12 @@ Do not begin with a complete server. Build these layers:
 1. CPU format library and oracle.
 2. CUDA kernel library with a simple benchmark driver.
 3. One-layer GLM replay.
-4. PyTorch custom operation.
-5. Existing vLLM/SparkInfer integration for matched A/B.
-6. Minimal target-only engine if framework overhead remains material.
-7. API/scheduler work only after the target-only engine is correct.
+4. Minimal Rust TP4 target runner and checkpoint smoke.
+5. Existing vLLM/SparkInfer adapter only where it makes a matched A/B easier.
+6. Whole-model quality and one-million-token qualification.
+7. Continuous batching, MTP0–MTP6, prefix sharing, and tiered KV.
+8. Minimal serving API after the concurrent executor is correct.
 
-The existing runtime is initially an oracle and experiment host, not an enemy
-that must be replaced wholesale.
+The existing runtime is an oracle, evidence source, and performance control.
+It is not the architecture of the final engine and does not need to be
+modified before the Rust runner can proceed.

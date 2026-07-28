@@ -12,14 +12,16 @@ MoE paths may therefore leave substantial performance unused.
 
 The project will test that thesis rather than assume it. Its first goal is to
 measure where time goes. Its second is to build an SM120-native routed-expert
-laboratory. A new checkpoint format or standalone engine follows only after a
-kernel-level result proves worthwhile.
+laboratory. Its destination is a lean Rust inference engine fixed to GLM-5.2,
+TP4, and four SM120 GPUs. Format and kernel gates still precede full-engine
+work so specialization is backed by measured value.
 
 ## Initial direction
 
 The leading candidate is a hardware-native heterogeneous expert format:
 
-- NVFP4 for most routed-expert weights;
+- EXL3 for the capacity-critical majority of routed-expert weights;
+- NVFP4 for a measured hot/quality-tolerant subset;
 - native 6-bit, FP8, or BF16 protection for sensitive experts/tensors;
 - router, sparse indexer, shared expert, dense front layers, LM head, and
   selected MTP tensors protected according to measured sensitivity;
@@ -28,6 +30,14 @@ The leading candidate is a hardware-native heterogeneous expert format:
 - separate decode-small-M and prefill-medium-M kernels;
 - fused routing, activation quantization, expert GEMMs, activation, and expert
   reduction where measurements justify it.
+- a Rust control plane with continuous batching, configurable MTP0–MTP6,
+  prefix caching, and HBM/DRAM/NVMe KV tiers;
+- EXL3/Trellis and NVFP4 as first-class weight backends, with a measured
+  per-tensor/per-expert hybrid allowed.
+
+Bring-up is NVFP4-first. EXL3 remains a required capacity backend, but it is
+added after the NVFP4 laboratory path and before any full-checkpoint serving
+gate. An all-NVFP4 serving profile cannot fit on the four-card target.
 
 An arbitrary software-decoded 3-bit format is not the first experiment. It
 must beat the hardware-native path after including unpack, dequantization,
@@ -38,6 +48,12 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Research charter](docs/charter.md)
 - [Hardware and lab plan](docs/hardware-lab.md)
 - [SM120-native design sketch](docs/sm120-design.md)
+- [From-scratch Rust engine plan](docs/native-engine-plan.md)
+- [Normative engine v0 specification](spec/engine-v0.md)
+- [Rank/checkpoint and KV format v0 specification](spec/format-v0.md)
+- [Fable adversarial review](fable-adversarial.md)
+- [Fable review disposition](docs/fable-review-disposition.md)
+- [Fable v0.2 re-review handoff](docs/fable-review-handoff.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Draft roadmap](docs/roadmap.md)

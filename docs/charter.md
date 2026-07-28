@@ -21,15 +21,18 @@ while preserving the established quality and long-context gates.
    block-scaled MMA ceilings?
 4. Can a hardware-native mixed-precision layout improve quality per byte
    without introducing software dequantization?
-5. Can a fused SM120-specific MoE kernel improve wall time inside the existing
-   runtime?
-6. After kernel success, is a purpose-built engine still justified?
+5. Can fused SM120-specific EXL3 and NVFP4 MoE kernels improve inclusive
+   operator and layer wall time?
+6. How much additional value can a fixed GLM-5.2 Rust executor obtain from
+   static memory planning, graph specialization, continuous batching, MTP,
+   prefix sharing, and topology-specific collectives?
 
 ## Non-goals for the first phase
 
 - Training GLM-5.2 from scratch.
 - Full-model QAT.
-- Replacing the serving API or scheduler before proving a kernel opportunity.
+- Building the complete serving API or scheduler before proving the fixed
+  executor and its kernel opportunities.
 - Optimizing B200/B300 and treating the result as proof for SM120.
 - Publishing a checkpoint based only on a small KLD smoke cell.
 

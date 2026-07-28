@@ -19,6 +19,22 @@ Read-only inventory on 2026-07-28:
 This is sufficient for inference, kernel development, and small conversion
 tests. It is not a comfortable full GLM-5.2 BF16 checkpoint factory.
 
+The free-space figures are not permission to co-locate the BF16 source,
+EXL3 control, an NVFP4 candidate, conversion scratch, and a large persistent
+KV cache. Before any full conversion or transfer, produce a placement ledger
+that reserves:
+
+- immutable source/checkpoint bytes;
+- one candidate's exact rank-file bytes;
+- temporary transfer and verification bytes;
+- configured NVMe KV-tier capacity;
+- index/journal headroom and a filesystem free-space floor.
+
+Convert away from cn4 when practical and stage only one fit-capable candidate
+at a time. Cold loading and cryptographically verifying hundreds of GiB is an
+order-minutes operation on this storage; measure and report it separately
+from engine initialization rather than hiding it in TTFT.
+
 ## Planned motherboard
 
 The Supermicro M12SWA-TF supports:
