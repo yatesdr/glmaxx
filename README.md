@@ -59,6 +59,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Generated GLM-5.2 operation manifest](manifests/glm52-operation-v1.json)
 - [Frozen first NVFP4 physical ABI](docs/nvfp4-physical-abi.md)
 - [cn4 kernel readiness and punchlist](docs/cn4-kernel-readiness.md)
+- [Phase A CPU preparation proof](docs/phase-a-proof.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Draft roadmap](docs/roadmap.md)
