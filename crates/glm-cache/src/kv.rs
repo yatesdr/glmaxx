@@ -77,7 +77,7 @@ impl KvRecord {
         }
         if self.0[256..288]
             .iter()
-            .any(|&code| !decode_e4m3(code).is_finite())
+            .any(|&code| code & 0x80 != 0 || !decode_e4m3(code).is_finite())
         {
             return Err(KvError::Encoding);
         }
@@ -219,6 +219,8 @@ mod tests {
 
         let mut bad_scale = KvRecord::encode(&[0.0; 512], &[0.0; 64]).unwrap();
         bad_scale.0[256] = 0x7f;
+        assert_eq!(bad_scale.decode(), Err(KvError::Encoding));
+        bad_scale.0[256] = 0x80;
         assert_eq!(bad_scale.decode(), Err(KvError::Encoding));
     }
 

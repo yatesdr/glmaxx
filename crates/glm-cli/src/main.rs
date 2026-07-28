@@ -5,9 +5,12 @@ use std::path::Path;
 use glm_cache::{Budget, CacheCapacity, MODEL_POSITIONS};
 use glm_cuda::{Fc1Descriptor, KernelPath, LaunchGeometry, workspace_bytes};
 use glm_format::{Codec, KERNEL_ABI, PackedNvfp4, RankFile, RankFileBuilder, TensorRecord};
-use glm_reference::{ModelConstants, operation_manifest_json};
-#[cfg(all(feature = "cuda-ffi", target_os = "linux"))]
-use glm_reference::{bf16_round, routed_fc1_oracle};
+use glm_reference::{
+    DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
+    generate_numerical_fixture, generate_routes, operation_manifest_json,
+};
+#[cfg(feature = "cuda-ffi")]
+use glm_reference::{NumericalCase, RoutingCase, bf16_round, routed_fc1_oracle};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +39,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some("cpu-proof") => cpu_proof()?,
+        Some("matrix-proof") => {
+            let report = matrix_proof()?;
+            let json = serde_json::to_vec_pretty(&report)?;
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("pack-actual") => {
             let path = arguments
                 .get(2)
@@ -48,7 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("budget") => print_budget()?,
         Some("abi-check") => abi_check()?,
-        #[cfg(all(feature = "cuda-ffi", target_os = "linux"))]
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
                 .get(2)
@@ -57,9 +70,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(1);
             gpu_smoke(rows)?;
         }
+        #[cfg(feature = "cuda-ffi")]
+        Some("gpu-matrix") => {
+            let path = arguments
+                .get(2)
+                .ok_or("gpu-matrix requires an external evidence directory")?;
+            gpu_matrix(Path::new(path))?;
+        }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|pack-actual path|inspect path|budget|abi-check|gpu-smoke>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|gpu-smoke [rows]|gpu-matrix evidence-dir>"
                     .into(),
             );
         }
@@ -67,7 +87,100 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(all(feature = "cuda-ffi", target_os = "linux"))]
+#[derive(Serialize)]
+struct MatrixProof {
+    schema: &'static str,
+    model_shape: [usize; 3],
+    row_buckets: Vec<usize>,
+    routing: Vec<RoutingProof>,
+    numerical: Vec<NumericalProof>,
+    positive_gpu_cases: usize,
+    negative_route_cases: usize,
+    expansion: &'static str,
+    gpu_evidence: &'static str,
+}
+
+#[derive(Serialize)]
+struct RoutingProof {
+    case: &'static str,
+    expected: &'static str,
+    assignments_by_rows: Vec<[usize; 2]>,
+}
+
+#[derive(Serialize)]
+struct NumericalProof {
+    case: &'static str,
+    activation_rows: usize,
+    activation_sha256: String,
+    packed_weight_sha256: String,
+    value_bytes: usize,
+    scale_bytes: usize,
+}
+
+fn matrix_proof() -> Result<MatrixProof, Box<dyn std::error::Error>> {
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let row_buckets: Vec<usize> = DECODE_ROWS.into_iter().chain(PREFILL_ROWS).collect();
+    let mut routing = Vec::with_capacity(ROUTING_CASES.len());
+    for case in ROUTING_CASES {
+        let mut assignments_by_rows = Vec::with_capacity(row_buckets.len());
+        for &rows in &row_buckets {
+            let routes = generate_routes(case, rows)?;
+            let compacted = compact_routes(&routes, rows);
+            if compacted.is_err() != case.expects_rejection() {
+                return Err(
+                    format!("routing case {} has wrong outcome at M={rows}", case.id()).into(),
+                );
+            }
+            assignments_by_rows.push([rows, compacted.map_or(0, |value| value.len())]);
+        }
+        routing.push(RoutingProof {
+            case: case.id(),
+            expected: if case.expects_rejection() {
+                "reject"
+            } else {
+                "launch"
+            },
+            assignments_by_rows,
+        });
+    }
+
+    let mut numerical = Vec::with_capacity(NUMERICAL_CASES.len());
+    let activation_rows = *PREFILL_ROWS.last().ok_or("no prefill rows declared")?;
+    for case in NUMERICAL_CASES {
+        let fixture = generate_numerical_fixture(case, activation_rows, n, k)?;
+        let activation_sha256 = f32_hash(&fixture.activations);
+        let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+        numerical.push(NumericalProof {
+            case: case.id(),
+            activation_rows,
+            activation_sha256,
+            packed_weight_sha256: packed_hash(&packed),
+            value_bytes: packed.values.len(),
+            scale_bytes: packed.scales.len(),
+        });
+    }
+
+    let positive_routes = ROUTING_CASES
+        .iter()
+        .filter(|case| !case.expects_rejection())
+        .count();
+    let row_count = DECODE_ROWS.len() + PREFILL_ROWS.len();
+    Ok(MatrixProof {
+        schema: "glmaxx.sm120-fc1-matrix-proof.v1",
+        model_shape: [n, k, constants.routed_experts as usize],
+        row_buckets,
+        routing,
+        numerical,
+        positive_gpu_cases: row_count * (positive_routes + NUMERICAL_CASES.len()),
+        negative_route_cases: row_count,
+        expansion: "routing rows x routing cases at deterministic-random-v1, plus numerical rows x numerical cases at one-hot-expert-0; not a cross product",
+        gpu_evidence: "none: deterministic CPU fixture expansion only",
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
 fn gpu_smoke(rows: u32) -> Result<(), Box<dyn std::error::Error>> {
     if rows == 0 || rows > 3072 {
         return Err("gpu-smoke rows must be in 1..=3072".into());
@@ -119,6 +232,303 @@ fn gpu_smoke(rows: u32) -> Result<(), Box<dyn std::error::Error>> {
         return Err("SM120 output exceeded predeclared tolerance".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuMatrixSummary {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    positive_cases: usize,
+    negative_route_cases: usize,
+    failed_elements: usize,
+    deterministic_cases: usize,
+    evidence_directory: String,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuCaseReport {
+    schema: &'static str,
+    suite: &'static str,
+    rows: usize,
+    routing: &'static str,
+    numerical: &'static str,
+    assignments: usize,
+    packed_weight_sha256: String,
+    output_sha256: String,
+    tolerance: &'static str,
+    maximum_absolute_error: Option<f32>,
+    maximum_relative_error: Option<f32>,
+    repeat_count: usize,
+    bitwise_deterministic: bool,
+    failures: Vec<GpuFailure>,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuFailure {
+    assignment: usize,
+    column: usize,
+    reference_f32_bits: u32,
+    actual_bf16_bits: u16,
+    reason: &'static str,
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_directory.is_dir() {
+        return Err("gpu-matrix evidence directory must already exist".into());
+    }
+    if evidence_directory.read_dir()?.next().is_some() {
+        return Err("gpu-matrix evidence directory must be empty".into());
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if evidence_directory.canonicalize()?.starts_with(repository) {
+        return Err("raw GPU evidence must be outside the Git repository".into());
+    }
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let max_rows = *PREFILL_ROWS.last().ok_or("no prefill row bucket")?;
+    let row_buckets: Vec<usize> = DECODE_ROWS.into_iter().chain(PREFILL_ROWS).collect();
+    let mut positive_cases = 0_usize;
+    let mut negative_route_cases = 0_usize;
+    let mut failed_elements = 0_usize;
+    let mut deterministic_cases = 0_usize;
+
+    let routing_fixture =
+        generate_numerical_fixture(NumericalCase::DeterministicRandom, max_rows, n, k)?;
+    let routing_packed = PackedNvfp4::pack(&routing_fixture.weights, n, k, Codec::OneDimensional)?;
+    let all_experts: Vec<u16> = (0_u16..=255).collect();
+    let routing_device = glm_cuda::NativeFc1Fixture::replicated(&routing_packed, &all_experts)?;
+    for &rows in &row_buckets {
+        let activation = &routing_fixture.activations[..rows * k];
+        let reference = routed_fc1_oracle(activation, rows, k, &routing_packed)?;
+        let activation_bf16 = to_bf16_bits(activation);
+        for routing in ROUTING_CASES {
+            let routes = generate_routes(routing, rows)?;
+            let compacted = compact_routes(&routes, rows);
+            if routing.expects_rejection() {
+                if compacted.is_ok() {
+                    return Err(format!(
+                        "negative routing case {} was accepted at M={rows}",
+                        routing.id()
+                    )
+                    .into());
+                }
+                negative_route_cases += 1;
+                continue;
+            }
+            let compacted = compacted?;
+            let repeats = if routing == RoutingCase::OneHotExpert0
+                && (rows == DECODE_ROWS[0] || rows == max_rows)
+            {
+                deterministic_cases += 1;
+                20
+            } else {
+                1
+            };
+            let report = execute_gpu_case(
+                &routing_device,
+                "routing",
+                rows,
+                routing,
+                NumericalCase::DeterministicRandom,
+                &activation_bf16,
+                &reference,
+                &routing_packed,
+                &compacted,
+                repeats,
+            )?;
+            failed_elements = failed_elements
+                .checked_add(report.failures.len())
+                .ok_or("failure count overflow")?;
+            write_gpu_case(evidence_directory, &report)?;
+            positive_cases += 1;
+        }
+    }
+
+    for numerical in NUMERICAL_CASES {
+        let fixture = generate_numerical_fixture(numerical, max_rows, n, k)?;
+        let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+        let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
+        for &rows in &row_buckets {
+            let activation = &fixture.activations[..rows * k];
+            let reference = routed_fc1_oracle(activation, rows, k, &packed)?;
+            let activation_bf16 = to_bf16_bits(activation);
+            let routes = generate_routes(RoutingCase::OneHotExpert0, rows)?;
+            let compacted = compact_routes(&routes, rows)?;
+            let report = execute_gpu_case(
+                &device,
+                "numerical",
+                rows,
+                RoutingCase::OneHotExpert0,
+                numerical,
+                &activation_bf16,
+                &reference,
+                &packed,
+                &compacted,
+                1,
+            )?;
+            failed_elements = failed_elements
+                .checked_add(report.failures.len())
+                .ok_or("failure count overflow")?;
+            write_gpu_case(evidence_directory, &report)?;
+            positive_cases += 1;
+        }
+    }
+
+    let summary = GpuMatrixSummary {
+        schema: "glmaxx.sm120-fc1-matrix-result.v1",
+        kernel_abi: KERNEL_ABI,
+        positive_cases,
+        negative_route_cases,
+        failed_elements,
+        deterministic_cases,
+        evidence_directory: evidence_directory.display().to_string(),
+    };
+    let summary_bytes = serde_json::to_vec_pretty(&summary)?;
+    fs::write(evidence_directory.join("summary.json"), &summary_bytes)?;
+    println!("{}", String::from_utf8(summary_bytes)?);
+    if positive_cases != 135
+        || negative_route_cases != 9
+        || deterministic_cases != 2
+        || failed_elements != 0
+    {
+        return Err("SM120 correctness matrix did not satisfy the frozen gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[allow(clippy::too_many_arguments)]
+fn execute_gpu_case(
+    device: &glm_cuda::NativeFc1Fixture,
+    suite: &'static str,
+    rows: usize,
+    routing: RoutingCase,
+    numerical: NumericalCase,
+    activation_bf16: &[u16],
+    reference: &[f32],
+    packed: &PackedNvfp4,
+    compacted: &[glm_reference::CompactedRoute],
+    repeat_count: usize,
+) -> Result<GpuCaseReport, Box<dyn std::error::Error>> {
+    let route_experts: Vec<u16> = compacted.iter().map(|route| route.expert).collect();
+    let route_tokens: Vec<u32> = compacted.iter().map(|route| route.token).collect();
+    let route_slots: Vec<u8> = compacted.iter().map(|route| route.slot).collect();
+    let rows_u32 = u32::try_from(rows)?;
+    let first = device.run(
+        activation_bf16,
+        rows_u32,
+        &route_experts,
+        &route_tokens,
+        &route_slots,
+    )?;
+    let mut bitwise_deterministic = true;
+    for _ in 1..repeat_count {
+        let repeated = device.run(
+            activation_bf16,
+            rows_u32,
+            &route_experts,
+            &route_tokens,
+            &route_slots,
+        )?;
+        bitwise_deterministic &= repeated == first;
+    }
+    let local_intermediate = ModelConstants::default().local_intermediate as usize;
+    let mut maximum_absolute = 0.0_f32;
+    let mut maximum_relative = 0.0_f32;
+    let mut finite_errors = true;
+    let mut failures = Vec::new();
+    for (assignment, route) in compacted.iter().enumerate() {
+        let token = usize::try_from(route.token)?;
+        for column in 0..local_intermediate {
+            let reference_value = reference[token * local_intermediate + column];
+            let actual_bits = first[assignment * local_intermediate + column];
+            let actual = f32::from_bits(u32::from(actual_bits) << 16);
+            let absolute = (reference_value - actual).abs();
+            let relative = absolute / reference_value.abs().max(1.0e-6);
+            if absolute.is_finite() && relative.is_finite() {
+                maximum_absolute = maximum_absolute.max(absolute);
+                maximum_relative = maximum_relative.max(relative);
+            } else {
+                finite_errors = false;
+            }
+            let reason = if !reference_value.is_finite() {
+                Some("non-finite CPU reference")
+            } else if !actual.is_finite() {
+                Some("non-finite GPU output")
+            } else if absolute > 0.5 + 0.02 * reference_value.abs() {
+                Some("element tolerance exceeded")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                failures.push(GpuFailure {
+                    assignment,
+                    column,
+                    reference_f32_bits: reference_value.to_bits(),
+                    actual_bf16_bits: actual_bits,
+                    reason,
+                });
+            }
+        }
+    }
+    if !bitwise_deterministic {
+        failures.push(GpuFailure {
+            assignment: usize::MAX,
+            column: usize::MAX,
+            reference_f32_bits: 0,
+            actual_bf16_bits: 0,
+            reason: "repeat output was not bitwise deterministic",
+        });
+    }
+    Ok(GpuCaseReport {
+        schema: "glmaxx.sm120-fc1-case-result.v1",
+        suite,
+        rows,
+        routing: routing.id(),
+        numerical: numerical.id(),
+        assignments: compacted.len(),
+        packed_weight_sha256: packed_hash(packed),
+        output_sha256: u16_hash(&first),
+        tolerance: "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.02 * abs(cpu)",
+        maximum_absolute_error: finite_errors.then_some(maximum_absolute),
+        maximum_relative_error: finite_errors.then_some(maximum_relative),
+        repeat_count,
+        bitwise_deterministic,
+        failures,
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn write_gpu_case(
+    evidence_directory: &Path,
+    report: &GpuCaseReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let filename = format!(
+        "{}-m{:03}-{}-{}.json",
+        report.suite, report.rows, report.routing, report.numerical
+    );
+    fs::write(
+        evidence_directory.join(filename),
+        serde_json::to_vec_pretty(report)?,
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn to_bf16_bits(values: &[f32]) -> Vec<u16> {
+    values
+        .iter()
+        .map(|&value| (bf16_round(value).to_bits() >> 16) as u16)
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -304,6 +714,23 @@ fn packed_hash(packed: &PackedNvfp4) -> String {
     hasher.update(packed.metadata.encode());
     hasher.update(&packed.values);
     hasher.update(&packed.scales);
+    hex(&hasher.finalize())
+}
+
+fn f32_hash(values: &[f32]) -> String {
+    let mut hasher = Sha256::new();
+    for value in values {
+        hasher.update(value.to_bits().to_le_bytes());
+    }
+    hex(&hasher.finalize())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn u16_hash(values: &[u16]) -> String {
+    let mut hasher = Sha256::new();
+    for value in values {
+        hasher.update(value.to_le_bytes());
+    }
     hex(&hasher.finalize())
 }
 

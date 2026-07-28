@@ -48,6 +48,10 @@ existing in Git is not a GPU pass.
   groups, and the logical one-layer MTP recurrence. Independent review is
   pending.
 - The 368-byte KV and 132-byte indexer records have CPU writers/readers.
+- Packed indexer scoring, deterministic owner-local/global top-k, packed-KV
+  decode, and fixed-rank log-sum-exp merge are exercised together against a
+  direct sparse-attention control. This is a record/merge proof, not a
+  model-layer replay.
 - Round-robin DCP4 gives exactly 4,096 full pages per rank at 1M positions.
 - Every page-state pair is checked against the transition table.
 - MTP0 through MTP6 tentative/commit/rollback transitions are checked,
@@ -61,6 +65,10 @@ existing in Git is not a GPU pass.
   dot products with SwiGLU, and does not materialize a gate/up tensor. Decode
   uses a fixed persistent CTA pool; prefill uses a grouped two-dimensional
   schedule.
+- A generated CPU matrix artifact freezes all nine row buckets, eight routing
+  cases, eight numerical cases, actual-shape fixture hashes, 135 positive GPU
+  launches, and nine required route rejections. The Rust GPU runner emits one
+  immutable JSON record per case and retains every failing element.
 
 ## Unproven until cn4
 
@@ -86,6 +94,7 @@ first and exits without launching if `nvidia-smi` reports a compute PID.
 cd /path/to/glmaxx
 export CUTLASS_DIR=/path/to/cutlass-4.6.1
 export GLMAXX_EVIDENCE_DIR=/path/outside/repo/glmaxx-m2-$(date -u +%Y%m%dT%H%M%SZ)
+export GLMAXX_CONTAINER_DIGEST=sha256:<64-lowercase-hex-container-digest>
 export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
 export GLMAXX_CN4_AUTHORIZATION=phase-b-authorized
 ./scripts/cn4-phase-b.sh
@@ -101,13 +110,17 @@ not edit pins after seeing results.
 The external evidence directory must contain:
 
 - GPU names, UUIDs, PCI addresses, driver, memory, and topology;
+- container digest and before/after GPU clocks, power limits, and persistence
+  mode;
 - source commit and clean status;
 - Rust/Cargo/CMake/nvcc versions and CUTLASS commit;
 - SHA-256 of both specs, the operation manifest, and test matrix;
 - complete Rust test output;
 - CMake configure/build output and compiler command lines;
 - the 393,216-comparison CUTLASS layout-probe result;
-- one JSON correctness report for every M bucket;
+- one JSON correctness report for each of the 135 positive cases, a summary
+  proving all nine negative route cases were rejected, two 20-repeat
+  determinism gates, and SHA-256 for every report;
 - later, separate kernel and inclusive timing, control results, profiler
   reports, and a provenance/result manifest.
 
@@ -126,8 +139,9 @@ This intentionally broad first-launch threshold detects layout, scale,
 nibble, and gross accumulation failures without pretending to be the final
 quality threshold. The report retains maximum absolute/relative error and
 every failing element. No NaN/Inf, illegal fallback, runtime weight repack, or
-persistent dequantization is allowed. Twenty repeated outputs must be
-bit-identical within one pinned build before timing.
+persistent dequantization is allowed. The frozen M1 decode and M256 prefill
+representatives each run twenty times and must be bit-identical within one
+pinned build before timing.
 
 The matrix and controls are frozen in
 `benchmarks/sm120-fc1-matrix-v1.json`. Passing M1 and M256 is the minimum

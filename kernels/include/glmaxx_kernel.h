@@ -66,6 +66,8 @@ int32_t glmaxx_stream_query(uint64_t stream, int32_t* complete);
 int32_t glmaxx_stream_synchronize(uint64_t stream);
 int32_t glmaxx_memcpy_h2d(uint64_t destination, const void* source,
                           uint64_t bytes, uint64_t stream);
+int32_t glmaxx_memcpy_d2d(uint64_t destination, uint64_t source,
+                          uint64_t bytes, uint64_t stream);
 int32_t glmaxx_memcpy_d2h(void* destination, uint64_t source,
                           uint64_t bytes, uint64_t stream);
 

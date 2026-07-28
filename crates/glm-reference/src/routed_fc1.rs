@@ -22,6 +22,8 @@ pub fn compact_routes(
     token_count: usize,
 ) -> Result<Vec<CompactedRoute>, Fc1Error> {
     let mut slot_counts = vec![0_u8; token_count];
+    let mut slot_masks = vec![0_u8; token_count];
+    let mut expert_masks = vec![[0_u64; 4]; token_count];
     let mut output = Vec::with_capacity(routes.len());
     for route in routes {
         let token = usize::try_from(route.token).map_err(|_| Fc1Error::Route)?;
@@ -29,9 +31,18 @@ pub fn compact_routes(
             || route.expert >= 256
             || route.slot >= 8
             || !route.weight.is_finite()
+            || route.weight < 0.0
         {
             return Err(Fc1Error::Route);
         }
+        let slot_bit = 1_u8 << route.slot;
+        let expert_word = usize::from(route.expert / 64);
+        let expert_bit = 1_u64 << (route.expert % 64);
+        if slot_masks[token] & slot_bit != 0 || expert_masks[token][expert_word] & expert_bit != 0 {
+            return Err(Fc1Error::Route);
+        }
+        slot_masks[token] |= slot_bit;
+        expert_masks[token][expert_word] |= expert_bit;
         slot_counts[token] = slot_counts[token].checked_add(1).ok_or(Fc1Error::Route)?;
         output.push(CompactedRoute {
             token: route.token,
@@ -107,7 +118,7 @@ fn silu(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Fc1Error {
     Shape,
     Route,
@@ -132,12 +143,6 @@ mod tests {
         let routes = [
             Route {
                 token: 1,
-                expert: 255,
-                slot: 0,
-                weight: 1.0,
-            },
-            Route {
-                token: 0,
                 expert: 3,
                 slot: 7,
                 weight: 1.0,
@@ -145,6 +150,12 @@ mod tests {
             Route {
                 token: 0,
                 expert: 3,
+                slot: 0,
+                weight: 1.0,
+            },
+            Route {
+                token: 1,
+                expert: 255,
                 slot: 0,
                 weight: 1.0,
             },
@@ -159,7 +170,7 @@ mod tests {
                     slot: 0
                 },
                 CompactedRoute {
-                    token: 0,
+                    token: 1,
                     expert: 3,
                     slot: 7
                 },
@@ -170,6 +181,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn duplicate_slot_expert_and_negative_weight_fail_closed() {
+        let base = Route {
+            token: 0,
+            expert: 7,
+            slot: 0,
+            weight: 1.0,
+        };
+        for invalid in [
+            Route { slot: 1, ..base },
+            Route { expert: 8, ..base },
+            Route {
+                expert: 8,
+                slot: 1,
+                weight: -0.01,
+                ..base
+            },
+        ] {
+            assert_eq!(compact_routes(&[base, invalid], 1), Err(Fc1Error::Route));
+        }
     }
 
     #[test]

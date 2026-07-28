@@ -237,6 +237,7 @@ bool valid_host_descriptor(const glmaxx_fc1_descriptor& descriptor) {
       descriptor.local_gate_up != kLocalGateUp ||
       descriptor.local_intermediate != kLocalIntermediate ||
       descriptor.experts != kExperts || descriptor.top_k != kTopK ||
+      descriptor.reserved0 != 0 ||
       descriptor.rows == 0 || descriptor.assignments == 0 ||
       descriptor.assignments > 65535 ||
       descriptor.assignments > descriptor.rows * kTopK ||
@@ -260,10 +261,19 @@ bool valid_host_descriptor(const glmaxx_fc1_descriptor& descriptor) {
          descriptor.expert_global_scales != 0 &&
          descriptor.route_experts_u16 != 0 &&
          descriptor.route_tokens_u32 != 0 &&
+         descriptor.route_slots_u8 != 0 &&
+         descriptor.route_weights_f32 != 0 &&
+         descriptor.expert_offsets_u32 != 0 &&
+         descriptor.compacted_input_bf16 != 0 &&
          descriptor.activation_values != 0 &&
          descriptor.activation_scales != 0 &&
          descriptor.activation_global_scales != 0 &&
-         descriptor.output_bf16 != 0;
+         descriptor.gate_up_accum_f32 != 0 &&
+         descriptor.output_bf16 != 0 &&
+         descriptor.expert_value_base % 256 == 0 &&
+         descriptor.expert_scale_base % 256 == 0 &&
+         descriptor.activation_values % 16 == 0 &&
+         descriptor.activation_scales % 16 == 0;
 }
 
 }  // namespace
@@ -346,6 +356,14 @@ extern "C" int32_t glmaxx_memcpy_h2d(uint64_t destination,
   return static_cast<int32_t>(cudaMemcpyAsync(
       reinterpret_cast<void*>(destination), source, bytes,
       cudaMemcpyHostToDevice, reinterpret_cast<cudaStream_t>(stream)));
+}
+
+extern "C" int32_t glmaxx_memcpy_d2d(uint64_t destination, uint64_t source,
+                                      uint64_t bytes, uint64_t stream) {
+  return static_cast<int32_t>(cudaMemcpyAsync(
+      reinterpret_cast<void*>(destination),
+      reinterpret_cast<const void*>(source), bytes,
+      cudaMemcpyDeviceToDevice, reinterpret_cast<cudaStream_t>(stream)));
 }
 
 extern "C" int32_t glmaxx_memcpy_d2h(void* destination, uint64_t source,

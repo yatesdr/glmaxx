@@ -2,7 +2,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::{Nvfp4Metadata, PackedNvfp4, crc32c};
+use crate::{Nvfp4Metadata, PackedNvfp4, crc32c, nvfp4::validate_scale_plane};
 
 pub const HEADER_BYTES: usize = 4096;
 const DESCRIPTOR_BYTES: usize = 256;
@@ -558,11 +558,12 @@ fn validate_tensor_regions(
         || metadata.start < metadata_region.start
         || metadata.end > metadata_region.end
         || sha256(&bytes[value]) != descriptor.payload_sha256
-        || sha256(&bytes[aux]) != descriptor.aux_sha256
+        || sha256(&bytes[aux.clone()]) != descriptor.aux_sha256
         || sha256(&bytes[metadata.clone()]) != descriptor.codec_metadata_sha256
     {
         return Err(RankFileError::TensorRegion);
     }
+    validate_scale_plane(&bytes[aux]).map_err(RankFileError::Nvfp4)?;
     let decoded = Nvfp4Metadata::decode(&bytes[metadata]).map_err(RankFileError::Nvfp4)?;
     if decoded.logical_n != descriptor.logical_shape[0]
         || decoded.logical_k != descriptor.logical_shape[1]

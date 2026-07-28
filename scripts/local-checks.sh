@@ -11,8 +11,14 @@ cargo fmt --all -- --check
 cargo test --workspace --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
 GLMAXX_KERNEL_LIB_DIR="${proof_dir}" \
-  cargo check --offline -p glm-cuda --features cuda-ffi
+  cargo check --offline -p glm-cli --features cuda-ffi
+GLMAXX_KERNEL_LIB_DIR="${proof_dir}" \
+  cargo clippy --offline -p glm-cli --features cuda-ffi -- -D warnings
 cargo run --release --offline -p glm-cli --bin glmaxx -- cpu-proof
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  matrix-proof "${proof_dir}/matrix-proof.json"
+cmp fixtures/sm120-fc1-matrix-proof-v1.json \
+  "${proof_dir}/matrix-proof.json"
 cargo run --offline -p glm-cli --bin glmaxx -- manifest "${proof_dir}/manifest.json"
 cmp manifests/glm52-operation-v1.json "${proof_dir}/manifest.json"
 cargo run --release --offline -p glm-cli --bin glmaxx -- \

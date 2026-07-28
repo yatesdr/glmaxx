@@ -13,6 +13,12 @@
   },
   "decode_rows": [1, 2, 4, 8, 16, 32, 64, 128],
   "prefill_rows": [256],
+  "suite_expansion": {
+    "routing": "each row bucket x each routing case with deterministic-random-v1 numerics",
+    "numerical": "each row bucket x each numerical case with one-hot-expert-0 routing",
+    "cross_product": false,
+    "reason": "isolates routing and numerical failures while retaining every declared row, route, and numerical class"
+  },
   "routing_cases": [
     "one-hot-expert-0",
     "one-hot-expert-255",
@@ -41,7 +47,17 @@
     "runtime_repack_bytes": 0,
     "persistent_dequant_bytes": 0,
     "repeat_count": 20,
-    "determinism": "bitwise output within one pinned build and graph mode"
+    "determinism": "bitwise output within one pinned build and graph mode",
+    "determinism_cases": [
+      "M1 one-hot-expert-0 deterministic-random-v1",
+      "M256 one-hot-expert-0 deterministic-random-v1"
+    ]
+  },
+  "case_counts": {
+    "routing_launches": 63,
+    "routing_rejections": 9,
+    "numerical_launches": 72,
+    "total_positive_launches": 135
   },
   "timing": {
     "warmup": 20,

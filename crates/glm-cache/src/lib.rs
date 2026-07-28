@@ -1,6 +1,7 @@
 //! CPU proof of KV/indexer records, page ownership, tier transitions, MTP
 //! transactions, and capacity accounting.
 
+mod attention;
 mod budget;
 mod kv;
 mod mtp;
@@ -19,3 +20,4 @@ pub const DRAFT_INDEXER_GROUPS: u64 = 1;
 pub const KV_RECORD_BYTES: u64 = 368;
 pub const INDEXER_RECORD_BYTES: u64 = 132;
 pub const DRAFT_COMMITTED_RECORD_BYTES: u64 = KV_RECORD_BYTES + INDEXER_RECORD_BYTES;
+pub use attention::{AttentionError, Candidate, LseState, deterministic_top_k, score_indexer_key};

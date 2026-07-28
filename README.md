@@ -76,8 +76,11 @@ kernel, and engine work stays here.
 
 Phase A now contains a Rust CPU/reference workspace, deterministic direct
 NVFP4 packer and rank reader, KV/indexer/cache proofs, the fixed routed-FC1
-Rust/C ABI, and an SM120 CUDA correctness baseline. The actual TP4 gate/up
-fixture is reproducible from a committed recipe and digest.
+Rust/C ABI, an executable 135-case qualification matrix, and an SM120 CUDA
+correctness baseline. The actual TP4 gate/up fixture is reproducible from a
+committed recipe and digest. CUDA C++ is restricted to the device kernel and
+thin native bridge; format, orchestration, validation, evidence generation,
+and ownership are Rust.
 
 No GPU claim has been made. CUDA compilation and SM120 correctness remain
 blocked on independent review of the generated manifest/v0.2.2 amendment and

@@ -269,6 +269,7 @@ impl PackedNvfp4 {
         {
             return Err(Nvfp4Error::ByteAccounting);
         }
+        validate_scale_plane(&self.scales)?;
         Ok(())
     }
 
@@ -300,6 +301,16 @@ impl PackedNvfp4 {
     pub fn physical_bytes(&self) -> usize {
         self.values.len() + self.scales.len() + Nvfp4Metadata::BYTES
     }
+}
+
+pub(crate) fn validate_scale_plane(scales: &[u8]) -> Result<(), Nvfp4Error> {
+    if scales
+        .iter()
+        .any(|&code| code & 0x80 != 0 || !decode_e4m3(code).is_finite())
+    {
+        return Err(Nvfp4Error::ScaleEncoding);
+    }
+    Ok(())
 }
 
 pub fn scale_offset(
@@ -437,6 +448,7 @@ pub enum Nvfp4Error {
     MetadataLength(usize),
     MetadataCrc,
     UnsupportedMetadata,
+    ScaleEncoding,
 }
 
 impl fmt::Display for Nvfp4Error {
@@ -526,5 +538,15 @@ mod tests {
             Nvfp4Metadata::decode(&metadata).unwrap_err(),
             Nvfp4Error::MetadataCrc
         );
+    }
+
+    #[test]
+    fn negative_zero_and_nan_scales_are_rejected() {
+        let mut packed =
+            PackedNvfp4::pack(&vec![1.0; 128 * 64], 128, 64, Codec::OneDimensional).unwrap();
+        packed.scales[0] = 0x80;
+        assert_eq!(packed.validate(), Err(Nvfp4Error::ScaleEncoding));
+        packed.scales[0] = 0x7f;
+        assert_eq!(packed.validate(), Err(Nvfp4Error::ScaleEncoding));
     }
 }

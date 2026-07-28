@@ -1,0 +1,427 @@
+{
+  "schema": "glmaxx.sm120-fc1-matrix-proof.v1",
+  "model_shape": [
+    1024,
+    6144,
+    256
+  ],
+  "row_buckets": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+  ],
+  "routing": [
+    {
+      "case": "one-hot-expert-0",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          16,
+          16
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "one-hot-expert-255",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          16,
+          16
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "uniform-all-experts",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          4,
+          32
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          64,
+          512
+        ],
+        [
+          128,
+          1024
+        ],
+        [
+          256,
+          2048
+        ]
+      ]
+    },
+    {
+      "case": "zipf-skew",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          4,
+          32
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          64,
+          512
+        ],
+        [
+          128,
+          1024
+        ],
+        [
+          256,
+          2048
+        ]
+      ]
+    },
+    {
+      "case": "empty-experts",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          4,
+          32
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          64,
+          512
+        ],
+        [
+          128,
+          1024
+        ],
+        [
+          256,
+          2048
+        ]
+      ]
+    },
+    {
+      "case": "same-token-duplicate-expert-rejected",
+      "expected": "reject",
+      "assignments_by_rows": [
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          32,
+          0
+        ],
+        [
+          64,
+          0
+        ],
+        [
+          128,
+          0
+        ],
+        [
+          256,
+          0
+        ]
+      ]
+    },
+    {
+      "case": "route-slot-permutation",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          4,
+          32
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          64,
+          512
+        ],
+        [
+          128,
+          1024
+        ],
+        [
+          256,
+          2048
+        ]
+      ]
+    },
+    {
+      "case": "tail-assignment-count",
+      "expected": "launch",
+      "assignments_by_rows": [
+        [
+          1,
+          3
+        ],
+        [
+          2,
+          11
+        ],
+        [
+          4,
+          27
+        ],
+        [
+          8,
+          59
+        ],
+        [
+          16,
+          123
+        ],
+        [
+          32,
+          251
+        ],
+        [
+          64,
+          507
+        ],
+        [
+          128,
+          1019
+        ],
+        [
+          256,
+          2043
+        ]
+      ]
+    }
+  ],
+  "numerical": [
+    {
+      "case": "all-zero",
+      "activation_rows": 256,
+      "activation_sha256": "b69dae56a14d1a8314ed40664c4033ea0a550eea2673e04df42a66ac6b9faf2c",
+      "packed_weight_sha256": "e105996033f9c5cbfb520507385bdc22be3a9c6cb959acc1ce51492833d74add",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "all-e2m1-codes",
+      "activation_rows": 256,
+      "activation_sha256": "cd5dd6f91743946505a23dbc9aaabb86c2ccd653916c7c342a66733dc41f83d5",
+      "packed_weight_sha256": "4b933636be3cf627b28851d446bde048a3d49f4bb0a663deb76bf2014790d527",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "all-e4m3-finite-scale-classes",
+      "activation_rows": 256,
+      "activation_sha256": "46130676f3a2359263f829d4b458fb3409bbd805251ee5de19fcf49fd868b884",
+      "packed_weight_sha256": "e8858c8187d65551bffec63623abeb965972697320507f07b7059541c732e0ac",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "bf16-extrema",
+      "activation_rows": 256,
+      "activation_sha256": "f5f4bdba1642af290bbd035e58e6d3ee5ae9d3e7b67a07d98dc8414708822884",
+      "packed_weight_sha256": "35f81044625c967a4946c4082abe6ae4c36ec5e6df8a9e4f1d0e3ec1faa91ea7",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "subnormal-block-scale",
+      "activation_rows": 256,
+      "activation_sha256": "e5749d622b6b8624e868d432e9a40f7fff1bcc89057d31151c21bcbf4dfb1ddc",
+      "packed_weight_sha256": "ce50e50b67207bab18575bf8930776adea5a2ef153a4ec90024d6aada3923b34",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "single-outlier-per-block",
+      "activation_rows": 256,
+      "activation_sha256": "7a93f6fae03d048863d3d21fdb0ad44c161e3f218e2f59b66181b69e48ed793c",
+      "packed_weight_sha256": "ed8d4e25e3e3fce6b4f0488e7099abae0d047469d2b17efa094a3fc2f4cd8028",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "alternating-sign",
+      "activation_rows": 256,
+      "activation_sha256": "46130676f3a2359263f829d4b458fb3409bbd805251ee5de19fcf49fd868b884",
+      "packed_weight_sha256": "95f5266fd4b7b7208025686b0356840f3c7eab21690e5f1c435442d259195a3c",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    },
+    {
+      "case": "deterministic-random-v1",
+      "activation_rows": 256,
+      "activation_sha256": "1096ba6a6ed80edbb27dbac0d3bcd88ca1244b8cad7ec8dc7bdf30b613697596",
+      "packed_weight_sha256": "5dc1db309c9cb51fce51b3145fa0920862373eb3be929a2b542874b7e41cdd3e",
+      "value_bytes": 3145728,
+      "scale_bytes": 393216
+    }
+  ],
+  "positive_gpu_cases": 135,
+  "negative_route_cases": 9,
+  "expansion": "routing rows x routing cases at deterministic-random-v1, plus numerical rows x numerical cases at one-hot-expert-0; not a cross product",
+  "gpu_evidence": "none: deterministic CPU fixture expansion only"
+}
