@@ -141,8 +141,10 @@ quality threshold. The report retains maximum absolute/relative error and
 every failing element. No NaN/Inf, illegal fallback, runtime weight repack, or
 persistent dequantization is allowed. The frozen M1 decode and M256 prefill
 representatives each run twenty eager iterations and must be bit-identical.
-Graph-captured repetition remains a separate required gate before timing; an
-eager result cannot satisfy it.
+Graph-captured repetition remains a separate required gate before calling M2
+qualified; an eager result cannot satisfy it. Initial eager baselines may be
+timed after the complete correctness matrix passes, but must remain labeled
+eager and provisional.
 
 The matrix and controls are frozen in
 `benchmarks/sm120-fc1-matrix-v1.json`. Passing M1 and M256 is the minimum
@@ -172,21 +174,26 @@ artifacts.
 
 ## Ordered performance punchlist
 
-1. Pass the direct-layout baseline on M1 and M256; retain its result.
-2. Replace the CUDA-core dot product with pinned CUTLASS SM120 block-scaled
+1. Pass the complete direct-layout correctness matrix, retaining M1 and M256
+   as the first decode/prefill milestones.
+2. Add the frozen timing ledger for quantization, routing, core FC1,
+   epilogue, launch, and inclusive eager time; retain the direct baseline.
+3. Replace the CUDA-core dot product with pinned CUTLASS SM120 block-scaled
    MMA, keeping FP32 accumulation and the same bytes.
-3. Measure fused activation quantization separately, then feed the exact SFA
-   swizzle to MMA without a transform.
-4. Add deterministic GPU route histogram/prefix-sum/compaction and tune the
+4. Feed the exact SFA swizzle to MMA without a transform and attribute
+   activation-quantization time separately.
+5. Add deterministic GPU route histogram/prefix-sum/compaction and tune the
    retained persistent small-M schedule; keep the CPU-compacted control.
-5. Fuse the CUTLASS epilogue into BF16 SwiGLU without a gate/up global
+6. Fuse the CUTLASS epilogue into BF16 SwiGLU without a gate/up global
    intermediate and prove it against the retained accumulator control.
-6. Sweep decode tiles, stages, warp specialization, cluster shape, register
+7. Sweep decode tiles, stages, warp specialization, cluster shape, register
    caps, and persistent CTA count on SM120 only.
-7. Add grouped prefill scheduling and tune M `128..3072` independently from
+8. Add grouped prefill scheduling and tune M `128..3072` independently from
    decode.
-8. Implement FC2 direct-packed consumption, route weighting/scatter, shared
-   expert combination, and the single TP4 reduction boundary.
-9. Run TP4 one-layer replay with exact routes and downstream logits.
-10. Only after M2/M3, add graph-captured repetition and matched BF16/FP8
-    controls, then begin EXL3 codec work.
+9. Before closing M2, run graph-captured repetition, leak/error/repack checks,
+   hardware counters, and matched BF16/FP8 controls.
+10. Implement FC2 direct-packed consumption, route weighting/scatter, shared
+    expert combination, and the single TP4 reduction boundary.
+11. Run TP4 one-layer replay with exact routes and downstream logits.
+12. Provenance-pin the NVFP4 result, then begin EXL3 codec work. EXL3 still
+    precedes every capacity-serving gate.
