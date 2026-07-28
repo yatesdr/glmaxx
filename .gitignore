@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated checkpoints, calibration state, and benchmark output.
+artifacts/
+checkpoints/
+datasets/
+offload/
+results/
+scratch/
+
+# CUDA/JIT build products.
+build/
+dist/
+*.so
+*.cubin
+*.fatbin
+*.ptx
+
+# Local configuration and secrets.
+.env
+.env.*
+!.env.example
