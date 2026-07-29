@@ -125,6 +125,8 @@ cmake --build "${build_dir}" --verbose 2>&1 \
 
 "${build_dir}/glmaxx_cutlass_layout_probe" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-layout-probe.txt"
+"${build_dir}/glmaxx_cutlass_activation_layout_probe" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-activation-layout-probe.txt"
 
 check_idle
 

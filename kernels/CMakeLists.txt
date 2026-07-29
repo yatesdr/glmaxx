@@ -34,3 +34,14 @@ target_compile_options(glmaxx_cutlass_layout_probe PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-arch=sm_120f>)
 set_target_properties(glmaxx_cutlass_layout_probe PROPERTIES
   CUDA_ARCHITECTURES OFF)
+
+add_executable(glmaxx_cutlass_activation_layout_probe
+  tools/cutlass_activation_layout_probe.cu)
+target_include_directories(glmaxx_cutlass_activation_layout_probe PRIVATE
+  "${CUTLASS_DIR}/include" "${CUTLASS_DIR}/tools/util/include")
+target_compile_features(glmaxx_cutlass_activation_layout_probe
+  PRIVATE cxx_std_17 cuda_std_17)
+target_compile_options(glmaxx_cutlass_activation_layout_probe PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-arch=sm_120f>)
+set_target_properties(glmaxx_cutlass_activation_layout_probe PROPERTIES
+  CUDA_ARCHITECTURES OFF)

@@ -98,6 +98,8 @@ cmake --build "${build_dir}" --verbose 2>&1 \
 
 "${build_dir}/glmaxx_cutlass_layout_probe" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-layout-probe.txt"
+"${build_dir}/glmaxx_cutlass_activation_layout_probe" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-activation-layout-probe.txt"
 cuobjdump --list-elf "${build_dir}/libglmaxx_sm120.so" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cuobjdump-elf.txt"
 cuobjdump --dump-resource-usage "${build_dir}/libglmaxx_sm120.so" \
@@ -113,6 +115,7 @@ ldd "${CARGO_TARGET_DIR}/release/glmaxx" \
 shasum -a 256 \
   "${build_dir}/libglmaxx_sm120.so" \
   "${build_dir}/glmaxx_cutlass_layout_probe" \
+  "${build_dir}/glmaxx_cutlass_activation_layout_probe" \
   "${CARGO_TARGET_DIR}/release/glmaxx" \
   | tee "${GLMAXX_EVIDENCE_DIR}/build-artifact-sha256.txt"
 
@@ -124,7 +127,7 @@ fi
 
 printf '%s\n' \
   "PREPARED_NO_DEVICE_LAUNCH" \
-  "The sm_120f library, layout probe, and Rust FFI binary are built." \
+  "The sm_120f library, SFA/SFB layout probes, and Rust FFI binary are built." \
   "No CUDA device kernel was launched by this script." \
   "An accepted manifest/v0.2.2 independent review remains mandatory before scripts/cn4-phase-b.sh." \
   | tee "${GLMAXX_EVIDENCE_DIR}/verdict.txt"
