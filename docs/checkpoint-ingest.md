@@ -2,9 +2,9 @@
 
 Date: 2026-07-29
 
-Status: strict structural reader, protected-tensor and EXL3 payload definitions,
-streaming tensor handles, and resumable bounded-memory native rank writer
-implemented.
+Status: strict structural reader, exact pinned checkpoint manifest,
+role-specific TP slice readers, protected-tensor and EXL3 payload definitions,
+and resumable bounded-memory native rank writer implemented.
 
 ## Scope
 
@@ -32,6 +32,23 @@ The reader:
   marker, rotation, and trellis contract before constructing an
   `Exl3Trellis`.
 
+`glm-format::checkpoint` freezes the pinned revision and its 81-shard
+inventory:
+
+| Term | Exact value |
+|---|---:|
+| index SHA-256 | `346227a4ea44b6063017739ee38a830319dc10305ccf714734095e27b28064c2` |
+| tensors | 935,105 |
+| EXL3 components | 933,888 |
+| protected tensors | 1,217 |
+| tensor payload bytes | 316,304,795,648 |
+
+Validation requires every canonical layer/expert/projection/rank/component,
+every protected role, exact dtype and source shape, all 81 canonical shard
+names, the complete dtype-byte inventory, and the exact index identity.
+Unknown, duplicate, omitted, renamed, or shape-compatible substitute tensors
+fail the proof.
+
 `glm-format::stream` writes the native rank format without retaining rank
 payloads in memory. It:
 
@@ -55,9 +72,11 @@ metadata plane, require zero canonical padding when padded, and preserve the
 source element bytes without numeric conversion.
 
 The safetensors readers expose bounded `Read` implementations for both
-single-file tensors and verified sharded tensors. A converter can therefore
-chain EXL3 `mcg+suh+svh`, stream the trellis directly, and avoid loading a
-checkpoint shard or rank image into RAM.
+single-file tensors and verified sharded tensors. Axis-0 TP slices stream as
+one contiguous range; axis-1 matrix slices stream only the rank-local column
+span of each row. A converter can therefore chain EXL3 `mcg+suh+svh`, stream
+the trellis directly, slice protected tensors, and avoid loading a checkpoint
+shard, source matrix, or rank image into RAM.
 
 The cheap inventory digest is explicitly named `structure_sha256`: it is the
 single-file header digest, sharded-index digest, or a domain-separated digest
@@ -87,15 +106,26 @@ The proof uses the canonical source stem, hashes every source component,
 reconstructs the native FP16 matrix with the pinned CPU oracle, and reports
 the source, metadata, native-plane, and reconstruction hashes as JSON.
 
+Prove the complete pinned source structure:
+
+```text
+cargo run -p glm-cli --release -- \
+  checkpoint-proof /external/model/model.safetensors.index.json
+```
+
+The repository includes `scripts/cn4-download-pinned-exl3.sh` for an external,
+resumable, per-file SHA-256-verified download. It never places weights in Git.
+
 ## Fail-closed boundary
 
-This code proves source discovery, byte-exact EXL3 and protected-tensor
-payload definitions, and a bounded-memory rank-file write primitive. It does
+This code proves source discovery, the complete pinned structural inventory,
+byte-exact EXL3 and protected-tensor payload definitions, role-specific
+bounded TP slicing, and a bounded-memory rank-file write primitive. It does
 not claim that a complete model has been loaded or that codec `0x0200` is
-GPU-loadable. The next conversion gate must add the complete pinned GLM-5.2
-inventory, role-specific TP slicing, four-rank staging-directory publication,
-and an external real-checkpoint smoke. The in-memory `RankFileBuilder`
-remains a fixture oracle rather than a production conversion path.
+GPU-loadable. The next conversion gate must add four-rank staging-directory
+publication and an external real-checkpoint smoke. The in-memory
+`RankFileBuilder` remains a fixture oracle rather than a production
+conversion path.
 
 Raw checkpoints, conversion scratch, and proof output remain external to
 Git.

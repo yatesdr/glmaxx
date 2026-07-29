@@ -16,8 +16,9 @@ use glm_engine::{
     plan_system_memory,
 };
 use glm_format::{
-    Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4, RankFile,
-    RankFileBuilder, SafeTensorFile, ShardedSafetensors, TensorPayload, TensorRecord,
+    Codec, EXL3_MODEL_REVISION, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI,
+    PINNED_EXL3_REPOSITORY, PackedNvfp4, RankFile, RankFileBuilder, SafeTensorFile,
+    ShardedSafetensors, TensorPayload, TensorRecord, validate_pinned_exl3_checkpoint,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -120,6 +121,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("exl3-safetensors-proof requires gate, up, or down")?;
             exl3_safetensors_proof(Path::new(path), layer, expert, rank, projection.as_str())?;
         }
+        Some("checkpoint-proof") => {
+            let path = arguments
+                .get(2)
+                .ok_or("checkpoint-proof requires the pinned safetensors index")?;
+            checkpoint_proof(Path::new(path))?;
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -173,11 +180,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CheckpointProof {
+    schema: &'static str,
+    repository: &'static str,
+    revision: &'static str,
+    source: String,
+    structure_sha256: String,
+    tensor_count: usize,
+    shard_count: usize,
+    payload_bytes: u64,
+    exl3_component_count: usize,
+    protected_tensor_count: usize,
+    verdict: &'static str,
+}
+
+fn checkpoint_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".safetensors.index.json"))
+    {
+        return Err("checkpoint-proof requires the pinned standard index, not a directory".into());
+    }
+    let checkpoint = ShardedSafetensors::open(path)?;
+    let inventory = validate_pinned_exl3_checkpoint(&checkpoint, EXL3_MODEL_REVISION)?;
+    let proof = CheckpointProof {
+        schema: "glmaxx.pinned-checkpoint-proof.v1",
+        repository: PINNED_EXL3_REPOSITORY,
+        revision: EXL3_MODEL_REVISION,
+        source: path.display().to_string(),
+        structure_sha256: hex(&inventory.structure_sha256),
+        tensor_count: inventory.tensor_count,
+        shard_count: inventory.shard_count,
+        payload_bytes: inventory.payload_bytes,
+        exl3_component_count: inventory.exl3_component_count,
+        protected_tensor_count: inventory.protected_tensor_count,
+        verdict: "PINNED_CHECKPOINT_STRUCTURE_PASS",
+    };
+    println!("{}", serde_json::to_string_pretty(&proof)?);
     Ok(())
 }
 

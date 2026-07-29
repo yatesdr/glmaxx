@@ -290,6 +290,28 @@ impl SafeTensorFile {
         })
     }
 
+    pub fn tensor_shard_reader(
+        &self,
+        name: &str,
+        axis: u8,
+        part: u8,
+        parts: u8,
+    ) -> Result<TensorShardReader, SafeTensorError> {
+        let descriptor = self
+            .tensor(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        TensorShardReader::new(
+            self.file.try_clone().map_err(SafeTensorError::Io)?,
+            self.data_offset
+                .checked_add(descriptor.data_offsets[0])
+                .ok_or(SafeTensorError::Overflow)?,
+            descriptor,
+            axis,
+            part,
+            parts,
+        )
+    }
+
     pub fn read_tensor_range(
         &self,
         name: &str,
@@ -431,6 +453,7 @@ pub struct ShardedSafetensors {
     source_path: PathBuf,
     root: PathBuf,
     structure_sha256: [u8; 32],
+    declared_payload_bytes: Option<u64>,
     locations: BTreeMap<String, ShardedLocation>,
     shards: BTreeSet<PathBuf>,
 }
@@ -462,6 +485,10 @@ impl ShardedSafetensors {
             vec![0_u8; usize::try_from(index_bytes).map_err(|_| SafeTensorError::Overflow)?];
         read_exact_at(&index_file, &mut bytes, 0)?;
         let raw: RawIndex = serde_json::from_slice(&bytes).map_err(SafeTensorError::Json)?;
+        let declared_payload_bytes = match raw.metadata.get("total_size") {
+            Some(value) => Some(value.as_u64().ok_or(SafeTensorError::Index)?),
+            None => None,
+        };
         if raw.weight_map.0.is_empty() {
             return Err(SafeTensorError::TensorCount);
         }
@@ -508,10 +535,19 @@ impl ShardedSafetensors {
             }
             shards.insert(relative);
         }
+        let actual_payload_bytes = locations.values().try_fold(0_u64, |total, location| {
+            total
+                .checked_add(location.descriptor.bytes)
+                .ok_or(SafeTensorError::Overflow)
+        })?;
+        if declared_payload_bytes.is_some_and(|declared| declared != actual_payload_bytes) {
+            return Err(SafeTensorError::Index);
+        }
         Ok(Self {
             source_path: index_path,
             root,
             structure_sha256: Sha256::digest(&bytes).into(),
+            declared_payload_bytes,
             locations,
             shards,
         })
@@ -596,6 +632,14 @@ impl ShardedSafetensors {
             root: source_path.clone(),
             source_path,
             structure_sha256: structure.finalize().into(),
+            declared_payload_bytes: Some(locations.values().try_fold(
+                0_u64,
+                |total, location| {
+                    total
+                        .checked_add(location.descriptor.bytes)
+                        .ok_or(SafeTensorError::Overflow)
+                },
+            )?),
             locations,
             shards: shard_paths,
         })
@@ -609,6 +653,11 @@ impl ShardedSafetensors {
     #[must_use]
     pub const fn structure_sha256(&self) -> [u8; 32] {
         self.structure_sha256
+    }
+
+    #[must_use]
+    pub const fn declared_payload_bytes(&self) -> Option<u64> {
+        self.declared_payload_bytes
     }
 
     #[must_use]
@@ -656,6 +705,30 @@ impl ShardedSafetensors {
             bytes,
             position: 0,
         })
+    }
+
+    pub fn tensor_shard_reader(
+        &self,
+        name: &str,
+        axis: u8,
+        part: u8,
+        parts: u8,
+    ) -> Result<TensorShardReader, SafeTensorError> {
+        let shard = self.open_verified_shard(name)?;
+        let descriptor = shard
+            .tensor(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        TensorShardReader::new(
+            shard.file.try_clone().map_err(SafeTensorError::Io)?,
+            shard
+                .data_offset
+                .checked_add(descriptor.data_offsets[0])
+                .ok_or(SafeTensorError::Overflow)?,
+            descriptor,
+            axis,
+            part,
+            parts,
+        )
     }
 
     pub fn hash_tensor(&self, name: &str) -> Result<[u8; 32], SafeTensorError> {
@@ -707,6 +780,157 @@ impl Read for ShardedTensorReader {
             &mut self.position,
             output,
         )
+    }
+}
+
+#[derive(Debug)]
+pub struct TensorShardReader {
+    file: File,
+    absolute_offset: u64,
+    source_rows: u64,
+    source_row_bytes: u64,
+    shard_row_bytes: u64,
+    contiguous_offset: u64,
+    bytes: u64,
+    position: u64,
+    axis: u8,
+    part: u8,
+}
+
+impl TensorShardReader {
+    fn new(
+        file: File,
+        absolute_offset: u64,
+        descriptor: &SafeTensorDescriptor,
+        axis: u8,
+        part: u8,
+        parts: u8,
+    ) -> Result<Self, SafeTensorError> {
+        if parts == 0 || part >= parts || usize::from(axis) >= descriptor.shape.len() {
+            return Err(SafeTensorError::TensorShard);
+        }
+        let axis_extent = descriptor.shape[usize::from(axis)];
+        if !axis_extent.is_multiple_of(u64::from(parts))
+            || !descriptor.dtype.bits().is_multiple_of(8)
+        {
+            return Err(SafeTensorError::TensorShard);
+        }
+        let bytes = descriptor
+            .bytes
+            .checked_div(u64::from(parts))
+            .ok_or(SafeTensorError::Overflow)?;
+        if axis == 0 {
+            return Ok(Self {
+                file,
+                absolute_offset,
+                source_rows: 1,
+                source_row_bytes: descriptor.bytes,
+                shard_row_bytes: bytes,
+                contiguous_offset: bytes
+                    .checked_mul(u64::from(part))
+                    .ok_or(SafeTensorError::Overflow)?,
+                bytes,
+                position: 0,
+                axis,
+                part,
+            });
+        }
+        if axis != 1 || descriptor.shape.len() != 2 {
+            return Err(SafeTensorError::TensorShard);
+        }
+        let element_bytes = descriptor.dtype.bits() / 8;
+        let source_rows = descriptor.shape[0];
+        let source_row_bytes = descriptor.shape[1]
+            .checked_mul(element_bytes)
+            .ok_or(SafeTensorError::Overflow)?;
+        let shard_row_bytes = source_row_bytes
+            .checked_div(u64::from(parts))
+            .ok_or(SafeTensorError::Overflow)?;
+        if source_rows
+            .checked_mul(source_row_bytes)
+            .ok_or(SafeTensorError::Overflow)?
+            != descriptor.bytes
+            || source_rows
+                .checked_mul(shard_row_bytes)
+                .ok_or(SafeTensorError::Overflow)?
+                != bytes
+        {
+            return Err(SafeTensorError::TensorShard);
+        }
+        Ok(Self {
+            file,
+            absolute_offset,
+            source_rows,
+            source_row_bytes,
+            shard_row_bytes,
+            contiguous_offset: 0,
+            bytes,
+            position: 0,
+            axis,
+            part,
+        })
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.bytes
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+}
+
+impl Read for TensorShardReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.axis == 0 {
+            return read_cursor(
+                &self.file,
+                self.absolute_offset
+                    .checked_add(self.contiguous_offset)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?,
+                self.bytes,
+                &mut self.position,
+                output,
+            );
+        }
+        if output.is_empty() || self.position == self.bytes {
+            return Ok(0);
+        }
+        let row = self.position / self.shard_row_bytes;
+        if row >= self.source_rows {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        let within_row = self.position % self.shard_row_bytes;
+        let remaining_row = self
+            .shard_row_bytes
+            .checked_sub(within_row)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        let requested = output.len().min(
+            usize::try_from(remaining_row)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+        );
+        let rank_column_offset = u64::from(self.part)
+            .checked_mul(self.shard_row_bytes)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        let source_position = row
+            .checked_mul(self.source_row_bytes)
+            .and_then(|offset| offset.checked_add(rank_column_offset))
+            .and_then(|offset| offset.checked_add(within_row))
+            .and_then(|offset| self.absolute_offset.checked_add(offset))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        let read = self
+            .file
+            .read_at(&mut output[..requested], source_position)?;
+        if read == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        self.position = self
+            .position
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        Ok(read)
     }
 }
 
@@ -963,7 +1187,7 @@ impl<'de> Deserialize<'de> for RawHeader {
 #[serde(deny_unknown_fields)]
 struct RawIndex {
     #[serde(default, rename = "metadata")]
-    _metadata: BTreeMap<String, serde_json::Value>,
+    metadata: BTreeMap<String, serde_json::Value>,
     weight_map: UniqueStringMap,
 }
 
@@ -1016,6 +1240,7 @@ pub enum SafeTensorError {
     NonContiguousData,
     MissingTensor(String),
     TensorRange(String),
+    TensorShard,
     Component(String),
     ShardPath(String),
     ShardInventory(PathBuf),
@@ -1161,6 +1386,46 @@ mod tests {
     }
 
     #[test]
+    fn row_major_tp_shards_stream_axis_zero_and_one_exactly() {
+        let path = TempPath::new("safetensors");
+        let source: Vec<u8> = (0_u16..32).flat_map(u16::to_le_bytes).collect();
+        write_safe(&path.0, vec![("matrix", "U16", vec![4, 8], source.clone())]);
+        let file = SafeTensorFile::open(&path.0).unwrap();
+
+        let mut axis_zero = Vec::new();
+        let mut reader = file.tensor_shard_reader("matrix", 0, 1, 2).unwrap();
+        assert_eq!(reader.len(), 32);
+        reader.read_to_end(&mut axis_zero).unwrap();
+        assert_eq!(axis_zero, source[32..]);
+
+        let mut axis_one = Vec::new();
+        let mut reader = file.tensor_shard_reader("matrix", 1, 1, 2).unwrap();
+        assert_eq!(reader.len(), 32);
+        let mut tiny = [0_u8; 3];
+        loop {
+            let read = reader.read(&mut tiny).unwrap();
+            if read == 0 {
+                break;
+            }
+            axis_one.extend_from_slice(&tiny[..read]);
+        }
+        let expected: Vec<u8> = (0_u16..4)
+            .flat_map(|row| (4_u16..8).map(move |column| row * 8 + column))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(axis_one, expected);
+
+        assert!(matches!(
+            file.tensor_shard_reader("matrix", 2, 0, 2),
+            Err(SafeTensorError::TensorShard)
+        ));
+        assert!(matches!(
+            file.tensor_shard_reader("matrix", 1, 2, 2),
+            Err(SafeTensorError::TensorShard)
+        ));
+    }
+
+    #[test]
     fn subbyte_f4_uses_ceil_bit_accounting() {
         let path = TempPath::new("safetensors");
         write_safe(&path.0, vec![("f4", "F4", vec![3], vec![0x21, 0x03])]);
@@ -1245,6 +1510,7 @@ mod tests {
         )
         .unwrap();
         let set = ShardedSafetensors::open(&index).unwrap();
+        assert_eq!(set.declared_payload_bytes(), Some(4));
         assert_eq!(set.tensor_names().collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(set.read_tensor("b").unwrap(), [3, 4]);
         let mut streamed = Vec::new();
@@ -1253,6 +1519,12 @@ mod tests {
             .read_to_end(&mut streamed)
             .unwrap();
         assert_eq!(streamed, [1, 2]);
+        let mut sharded_slice = Vec::new();
+        set.tensor_shard_reader("a", 0, 1, 2)
+            .unwrap()
+            .read_to_end(&mut sharded_slice)
+            .unwrap();
+        assert_eq!(sharded_slice, [2]);
         write_safe(&shard_b, vec![("b", "U8", vec![1], vec![4])]);
         assert!(matches!(
             set.read_tensor("b"),
@@ -1417,6 +1689,16 @@ mod tests {
         assert!(matches!(
             ShardedSafetensors::open(&index),
             Err(SafeTensorError::Json(_))
+        ));
+
+        fs::write(
+            &index,
+            br#"{"metadata":{"total_size":99},"weight_map":{"a":"a.safetensors","hidden":"a.safetensors"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&index),
+            Err(SafeTensorError::Index)
         ));
     }
 }

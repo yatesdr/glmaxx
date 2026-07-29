@@ -1,5 +1,6 @@
 //! Deterministic CPU definition of the GLM-5.2 native packed formats.
 
+mod checkpoint;
 mod container;
 mod crc32c;
 mod exl3;
@@ -8,6 +9,13 @@ mod nvfp4;
 mod safetensors;
 mod stream;
 
+pub use checkpoint::{
+    CheckpointError, CheckpointInventoryReport, CheckpointTensorContract, Exl3Component,
+    Exl3ComponentContract, PINNED_EXL3_COMPONENT_COUNT, PINNED_EXL3_INDEX_SHA256,
+    PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY, PINNED_EXL3_SHARD_COUNT,
+    PINNED_EXL3_TENSOR_COUNT, PINNED_PROTECTED_TENSOR_COUNT, ProtectedTensorContract, TP_DEGREE,
+    parse_exl3_component, protected_tensor_contracts, validate_pinned_exl3_checkpoint,
+};
 pub use container::{
     HEADER_BYTES, PlainDtype, PlainTensor, RankFile, RankFileBuilder, RankFileError,
     TensorDescriptor, TensorPayload, TensorRecord,
@@ -25,7 +33,8 @@ pub use nvfp4::{
 };
 pub use safetensors::{
     SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, SafeTensorReader,
-    ShardedSafetensors, ShardedTensorReader, load_exl3_projection, load_exl3_projection_sharded,
+    ShardedSafetensors, ShardedTensorReader, TensorShardReader, load_exl3_projection,
+    load_exl3_projection_sharded,
 };
 pub use stream::{
     StreamRankError, StreamingRankConfig, StreamingRankSummary, StreamingRankWriter,

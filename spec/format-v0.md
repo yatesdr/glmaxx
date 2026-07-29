@@ -578,18 +578,47 @@ The generated model manifest SHALL use stable role IDs from these families:
 | `0x0700–0x07ff` | norms and residual controls |
 | `0x0800–0x08ff` | MTP draft tensors |
 
-Exact IDs are a blocking OPEN item generated from the pinned tensor
-inventory. Runtime code SHALL dispatch by role ID, not arbitrary tensor
-name, after validation.
-
-The first routed-expert manifest freezes:
+The pinned EXL3 checkpoint manifest freezes:
 
 | ID | Role |
 |---:|---|
+| `0x0001` | vocabulary embedding |
+| `0x0002` | vocabulary LM head |
+| `0x0003` | final norm |
+| `0x0101` | Q low-rank A projection |
+| `0x0102` | Q low-rank A norm |
+| `0x0103` | Q head projection |
+| `0x0104` | replicated KV latent-plus-RoPE projection |
+| `0x0105` | KV latent norm |
+| `0x0106` | KV head projection |
+| `0x0107` | attention output projection |
+| `0x0201` | sparse-indexer Q projection |
+| `0x0202` | sparse-indexer K projection |
+| `0x0203` | sparse-indexer head-weight projection |
+| `0x0204` | sparse-indexer K norm weight |
+| `0x0205` | sparse-indexer K norm bias |
 | `0x0301` | protected replicated router weight |
 | `0x0302` | protected replicated router correction bias |
-| `0x0501` | rank-local fused routed gate/up projection |
+| `0x0401` | dense MLP gate projection |
+| `0x0402` | dense MLP up projection |
+| `0x0403` | dense MLP down projection |
+| `0x0501` | paired rank-local routed gate or up projection |
 | `0x0502` | rank-local routed down projection |
+| `0x0601` | shared-expert gate projection |
+| `0x0602` | shared-expert up projection |
+| `0x0603` | shared-expert down projection |
+| `0x0701` | input layer norm |
+| `0x0702` | post-attention layer norm |
+| `0x0801` | MTP embedding norm |
+| `0x0802` | MTP prior-hidden norm |
+| `0x0803` | MTP embedding/hidden projection |
+| `0x0804` | MTP shared-head norm |
+
+Gate and up EXL3 payloads remain separate descriptors because their trellis
+rotations and metadata are independent. They share role `0x0501`; the
+consumer SHALL fuse their execution and SwiGLU boundary without publishing
+an intermediate tensor. Runtime code SHALL dispatch by validated role ID and
+the generated manifest, not an unchecked arbitrary tensor name.
 
 ## 19. Rank sharding
 
@@ -609,6 +638,22 @@ names, roles, and codec policies SHALL be identical; only rank identity,
 rank-local slices, payload hashes, and allowed padding may differ.
 
 The four-file validator SHALL run before any GPU load.
+
+For the pinned TP4 checkpoint, the source-to-rank rules are:
+
+| Source tensors | TP rule |
+|---|---|
+| embedding and LM head | axis 0, `154880 → 38720` rows |
+| Q-B and KV-B projections | axis 0 |
+| attention output projection | axis 1 |
+| dense and shared-expert gate/up | axis 0 |
+| dense and shared-expert down | axis 1 |
+| routed expert gate/up/down | already split into explicit source rank components |
+| all remaining protected tensors, including Q-A, KV-A, indexer, router, norms, and MTP `eh_proj` | replicated |
+
+Axis-1 source slicing SHALL stream rank-local column spans row by row; a
+converter MUST NOT materialize a full protected source tensor merely to
+extract its TP shard.
 
 ## 20. Dynamic MLA KV record
 
