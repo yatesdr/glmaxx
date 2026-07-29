@@ -16,10 +16,11 @@ pub use checkpoint::{
     CheckpointTensorContract, Exl3Component, Exl3ComponentContract, PINNED_EXL3_COMPONENT_COUNT,
     PINNED_EXL3_INDEX_SHA256, PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY,
     PINNED_EXL3_SHARD_COUNT, PINNED_EXL3_TENSOR_COUNT, PINNED_PROTECTED_TENSOR_COUNT,
-    PINNED_RANK_TENSOR_COUNT, PINNED_SOURCE_FILE_COUNT, PINNED_SOURCE_MANIFEST_SHA256,
-    PinnedConversionProgress, PinnedManifestException, PinnedRankManifestTensor, PinnedRankPlan,
-    PinnedSourceBinding, PinnedSourceError, PinnedSourceVerification, ProtectedTensorContract,
-    TP_DEGREE, parse_exl3_component, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
+    PINNED_RANK_SOURCE_PAYLOAD_BYTES, PINNED_RANK_TENSOR_COUNT, PINNED_SOURCE_FILE_COUNT,
+    PINNED_SOURCE_FILE_MAP_SHA256, PINNED_SOURCE_MANIFEST_SHA256, PinnedConversionProgress,
+    PinnedManifestException, PinnedRankManifestTensor, PinnedRankPlan, PinnedSourceBinding,
+    PinnedSourceError, PinnedSourceVerification, ProtectedTensorContract, TP_DEGREE,
+    parse_exl3_component, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
     protected_tensor_contracts, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 pub use container::{

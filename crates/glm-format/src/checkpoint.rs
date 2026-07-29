@@ -25,6 +25,10 @@ pub const PINNED_SOURCE_MANIFEST_SHA256: [u8; 32] = [
     0xbf, 0xb6, 0xdc, 0x39, 0xf2, 0x8d, 0xa0, 0x8c, 0x1c, 0xfc, 0x5b, 0x89, 0x60, 0x34, 0x14, 0x04,
     0x6a, 0xdf, 0x70, 0x03, 0x15, 0x2d, 0x69, 0xe9, 0xee, 0x35, 0x0e, 0x11, 0xf7, 0xa1, 0xfa, 0x63,
 ];
+pub const PINNED_SOURCE_FILE_MAP_SHA256: [u8; 32] = [
+    0xad, 0x1e, 0x4f, 0xb2, 0x86, 0xad, 0xbc, 0x26, 0x1a, 0x28, 0x00, 0xab, 0x17, 0xe4, 0xab, 0xde,
+    0x5b, 0xcd, 0x13, 0xef, 0xb2, 0x2b, 0x15, 0x0d, 0x65, 0xec, 0x42, 0xb4, 0x7e, 0x2a, 0xf5, 0xfe,
+];
 const PINNED_GITATTRIBUTES_MANIFEST_SHA256: [u8; 32] = [
     0x34, 0x44, 0x8b, 0x82, 0xc1, 0x7d, 0x60, 0xfe, 0xc9, 0xb6, 0x5b, 0x1f, 0x09, 0x3c, 0x11, 0x5d,
     0xdb, 0xaa, 0xdc, 0x04, 0xbe, 0xb1, 0xb0, 0x14, 0x0b, 0x6b, 0xfe, 0xd2, 0xe0, 0x12, 0xa9, 0x30,
@@ -48,6 +52,7 @@ pub const PINNED_EXL3_PAYLOAD_BYTES: u64 = 316_304_795_648;
 pub const PINNED_EXL3_COMPONENT_COUNT: usize = 933_888;
 pub const PINNED_PROTECTED_TENSOR_COUNT: usize = 1_217;
 pub const PINNED_RANK_TENSOR_COUNT: usize = 59_585;
+pub const PINNED_RANK_SOURCE_PAYLOAD_BYTES: u64 = 81_590_319_104;
 pub const TP_DEGREE: u8 = 4;
 const CONVERSION_SYNC_BATCH_TENSORS: usize = 64;
 const SOURCE_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
@@ -607,6 +612,15 @@ pub fn verify_pinned_source_files(
             .checked_add(bytes)
             .ok_or(PinnedSourceError::Overflow)?;
         progress(completed + 1, expected.len(), verified_file_bytes, name);
+    }
+    let verified_file_hex: BTreeMap<_, _> = verified_files
+        .iter()
+        .map(|(name, digest)| (name, encode_hex(digest)))
+        .collect();
+    let canonical_file_map =
+        serde_json::to_vec(&verified_file_hex).map_err(|_| PinnedSourceError::ManifestIdentity)?;
+    if Sha256::digest(&canonical_file_map).as_slice() != PINNED_SOURCE_FILE_MAP_SHA256 {
+        return Err(PinnedSourceError::ManifestIdentity);
     }
     Ok(PinnedSourceVerification {
         manifest_sha256: PINNED_SOURCE_MANIFEST_SHA256,
@@ -1856,7 +1870,10 @@ mod tests {
             .collect();
         for plan in &plans {
             assert_eq!(plan.tensor_count(), PINNED_RANK_TENSOR_COUNT);
-            assert_eq!(plan.source_payload_bytes(), 81_590_319_104);
+            assert_eq!(
+                plan.source_payload_bytes(),
+                PINNED_RANK_SOURCE_PAYLOAD_BYTES
+            );
         }
         let names: Vec<_> = plans[0]
             .tensors

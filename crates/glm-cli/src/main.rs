@@ -538,6 +538,15 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
         )
         .into());
     }
+    let compiled_weight_policy_sha256 = pinned_exl3_weight_policy_sha256();
+    if readers[0].weight_policy_sha256 != compiled_weight_policy_sha256 {
+        return Err(format!(
+            "native rank-set weight policy does not match this binary: file={}, binary={}",
+            hex(&readers[0].weight_policy_sha256),
+            hex(&compiled_weight_policy_sha256)
+        )
+        .into());
+    }
     if readers[0].tensor_count() != PINNED_RANK_TENSOR_COUNT {
         return Err(format!(
             "capacity-exl3 rank-set tensor count is {}, expected {PINNED_RANK_TENSOR_COUNT}",

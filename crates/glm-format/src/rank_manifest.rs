@@ -10,13 +10,23 @@ use sha2::{Digest, Sha256};
 use crate::{
     CUTLASS_COMMIT, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, KERNEL_ABI,
     PINNED_EXL3_INDEX_SHA256, PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY,
-    PINNED_SOURCE_FILE_COUNT, PINNED_SOURCE_MANIFEST_SHA256, TensorDescriptor,
-    container::{CODEC_EXL3_SOURCE, CODEC_NVFP4_1D, CODEC_NVFP4_2D, DESCRIPTOR_FLAG_AUX_REQUIRED},
+    PINNED_RANK_SOURCE_PAYLOAD_BYTES, PINNED_RANK_TENSOR_COUNT, PINNED_SOURCE_FILE_COUNT,
+    PINNED_SOURCE_FILE_MAP_SHA256, PINNED_SOURCE_MANIFEST_SHA256, TensorDescriptor,
+    container::{
+        CODEC_BF16_ROW_MAJOR, CODEC_EXL3_SOURCE, CODEC_FP16_ROW_MAJOR, CODEC_FP32_ROW_MAJOR,
+        CODEC_NVFP4_1D, CODEC_NVFP4_2D, DESCRIPTOR_FLAG_AUX_REQUIRED,
+    },
 };
 
 pub const PRODUCTION_RANK_MANIFEST_SCHEMA: &str = "glmaxx.rank-manifest.v0.2.2";
 const CONVERSION_REPOSITORY: &str = "https://github.com/yatesdr/glmaxx.git";
 const REVIEW_ACCEPTANCE_TOKEN: &str = "manifest-abi-v0.2.2-accepted";
+const PINNED_RANK_TENSOR_CONTRACT_SHA256: [&str; 4] = [
+    "460883a09b5c247bba5458078e4036c090a78cb33824399b7a1e94be5330b12f",
+    "a86485e73ebc4ece3066518543c590b3adb75f8749d78d7adbdf048874311386",
+    "47ce5c931ccf44008345ddaaf8d72ca82a56508c92f0b2a47ed1cc4ec25a9a79",
+    "6fc13c23ac6e9c0aeb9365afb5a05ff284478220a2425e285a64434885a046d4",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -55,6 +65,14 @@ pub(crate) fn validate_rank_manifest(
     bytes: &[u8],
     context: RankManifestContext<'_>,
 ) -> Result<Option<ValidatedRankManifest>, RankManifestError> {
+    validate_rank_manifest_inner(bytes, context, true)
+}
+
+fn validate_rank_manifest_inner(
+    bytes: &[u8],
+    context: RankManifestContext<'_>,
+    require_pinned_inventory: bool,
+) -> Result<Option<ValidatedRankManifest>, RankManifestError> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| RankManifestError::Json)?;
     let canonical = serde_json::to_vec(&value).map_err(|_| RankManifestError::Json)?;
@@ -83,6 +101,9 @@ pub(crate) fn validate_rank_manifest(
     if sha256(&tensor_bytes) != tensor_contract_sha256 {
         return Err(RankManifestError::TensorContract);
     }
+    if require_pinned_inventory {
+        validate_pinned_inventory(&manifest, tensor_contract_sha256)?;
+    }
 
     Ok(Some(ValidatedRankManifest {
         rank: manifest.rank,
@@ -97,6 +118,26 @@ pub(crate) fn validate_rank_manifest(
         tensor_source_payload_bytes: manifest.tensor_source_payload_bytes,
         source_verified_file_bytes: manifest.integrity.source_verified_file_bytes,
     }))
+}
+
+fn validate_pinned_inventory(
+    manifest: &RawRankManifest,
+    tensor_contract_sha256: [u8; 32],
+) -> Result<(), RankManifestError> {
+    let expected_contract = PINNED_RANK_TENSOR_CONTRACT_SHA256
+        .get(usize::from(manifest.rank))
+        .ok_or(RankManifestError::Inventory)?;
+    if manifest.tensor_count != PINNED_RANK_TENSOR_COUNT
+        || manifest.tensor_source_payload_bytes != PINNED_RANK_SOURCE_PAYLOAD_BYTES
+        || parse_sha256(expected_contract)? != tensor_contract_sha256
+        || sha256(
+            &serde_json::to_vec(&manifest.integrity.source_file_sha256)
+                .map_err(|_| RankManifestError::Json)?,
+        ) != PINNED_SOURCE_FILE_MAP_SHA256
+    {
+        return Err(RankManifestError::Inventory);
+    }
+    Ok(())
 }
 
 fn validate_top_level(
@@ -307,6 +348,7 @@ fn validate_source_binding(
     match source.kind.as_str() {
         "replicated" => {
             if source.axis != -1
+                || source.axis != tensor.tp_shard_axis
                 || source.start != 0
                 || source.end != 0
                 || source.components.as_slice() != [tensor.name.as_str()]
@@ -378,19 +420,55 @@ fn validate_reconstruction(
     tensor: &RawManifestTensor,
     index: usize,
 ) -> Result<(), RankManifestError> {
-    let expected = match tensor.codec_id {
-        CODEC_EXL3_SOURCE => "exl3_tr3_trellis_v0",
-        CODEC_NVFP4_1D | CODEC_NVFP4_2D => {
-            return Err(RankManifestError::Tensor(index));
+    let (expected_reconstruction, expected_source_dtype, expected_source_kind) =
+        match tensor.codec_id {
+            CODEC_BF16_ROW_MAJOR => (
+                "byte_exact_source_precision",
+                "BF16",
+                PlainSourceKind::Protected,
+            ),
+            CODEC_FP16_ROW_MAJOR => (
+                "byte_exact_source_precision",
+                "F16",
+                PlainSourceKind::Protected,
+            ),
+            CODEC_FP32_ROW_MAJOR => (
+                "byte_exact_source_precision",
+                "F32",
+                PlainSourceKind::Protected,
+            ),
+            CODEC_EXL3_SOURCE => (
+                "exl3_tr3_trellis_v0",
+                "EXL3_TR3_COMPONENTS",
+                PlainSourceKind::Exl3,
+            ),
+            CODEC_NVFP4_1D | CODEC_NVFP4_2D => {
+                return Err(RankManifestError::Tensor(index));
+            }
+            _ => return Err(RankManifestError::Tensor(index)),
+        };
+    let source_kind_matches = match expected_source_kind {
+        PlainSourceKind::Protected => {
+            matches!(
+                tensor.source.kind.as_str(),
+                "replicated" | "contiguous_tp_slice"
+            )
         }
-        _ => "byte_exact_source_precision",
+        PlainSourceKind::Exl3 => tensor.source.kind == "explicit_rank_components",
     };
-    if tensor.reconstruction != expected
-        || (tensor.codec_id != CODEC_EXL3_SOURCE && !valid_source_dtype(&tensor.source_dtype))
+    if tensor.reconstruction != expected_reconstruction
+        || tensor.source_dtype != expected_source_dtype
+        || !source_kind_matches
     {
         return Err(RankManifestError::Tensor(index));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum PlainSourceKind {
+    Protected,
+    Exl3,
 }
 
 fn parse_profile(manifest: &RawRankManifest) -> Result<RankWeightProfile, RankManifestError> {
@@ -410,34 +488,6 @@ fn expected_collective(role_id: u16) -> &'static str {
         0x0107 | 0x0403 | 0x0502 | 0x0603 => "tp_all_reduce",
         _ => "none",
     }
-}
-
-fn valid_source_dtype(value: &str) -> bool {
-    matches!(
-        value,
-        "BOOL"
-            | "F4"
-            | "F6_E2M3"
-            | "F6_E3M2"
-            | "U8"
-            | "I8"
-            | "U16"
-            | "I16"
-            | "U32"
-            | "I32"
-            | "U64"
-            | "I64"
-            | "F16"
-            | "BF16"
-            | "F32"
-            | "F64"
-            | "F8_E4M3"
-            | "F8_E5M2"
-            | "F8_E8M0"
-            | "F8_E4M3FNUZ"
-            | "F8_E5M2FNUZ"
-            | "C64"
-    )
 }
 
 fn safe_source_name(name: &str) -> bool {
@@ -507,6 +557,7 @@ pub enum RankManifestError {
     Digest,
     SourceFiles,
     TensorContract,
+    Inventory,
     Tensor(usize),
     Overflow,
 }
@@ -706,23 +757,32 @@ mod tests {
             let value = serde_json::to_value(&self.manifest).unwrap();
             serde_json::to_vec(&value).unwrap()
         }
+
+        fn validate_core(
+            &self,
+            bytes: &[u8],
+        ) -> Result<Option<ValidatedRankManifest>, RankManifestError> {
+            validate_rank_manifest_inner(bytes, self.context(), false)
+        }
     }
 
     #[test]
-    fn production_manifest_is_strictly_bound_to_header_and_descriptor() {
+    fn typed_manifest_core_is_strictly_bound_to_header_and_descriptor() {
         let mut fixture = make_fixture();
         let bytes = fixture.canonical_bytes();
-        let validated = validate_rank_manifest(&bytes, fixture.context())
-            .unwrap()
-            .unwrap();
+        let validated = fixture.validate_core(&bytes).unwrap().unwrap();
         assert_eq!(validated.rank, 0);
         assert_eq!(validated.profile, RankWeightProfile::CapacityExl3);
         assert_eq!(validated.tensor_source_payload_bytes, 16);
+        assert!(matches!(
+            validate_rank_manifest(&bytes, fixture.context()),
+            Err(RankManifestError::Inventory)
+        ));
 
         fixture.manifest.tensors[0].global_shape[0] = 8;
         let bytes = fixture.canonical_bytes();
         assert!(matches!(
-            validate_rank_manifest(&bytes, fixture.context()),
+            fixture.validate_core(&bytes),
             Err(RankManifestError::Tensor(0))
         ));
 
@@ -730,7 +790,24 @@ mod tests {
         fixture.manifest.tensors[0].role_id = 0x0701;
         let bytes = fixture.canonical_bytes();
         assert!(matches!(
-            validate_rank_manifest(&bytes, fixture.context()),
+            fixture.validate_core(&bytes),
+            Err(RankManifestError::Tensor(0))
+        ));
+
+        let mut fixture = make_fixture();
+        fixture.manifest.tensors[0].source_dtype = "F32".to_owned();
+        let bytes = fixture.canonical_bytes();
+        assert!(matches!(
+            fixture.validate_core(&bytes),
+            Err(RankManifestError::Tensor(0))
+        ));
+
+        let mut fixture = make_fixture();
+        fixture.manifest.tensors[0].tp_shard_axis = 0;
+        fixture.descriptors[0].tp_shard_axis = 0;
+        let bytes = fixture.canonical_bytes();
+        assert!(matches!(
+            fixture.validate_core(&bytes),
             Err(RankManifestError::Tensor(0))
         ));
     }
@@ -743,7 +820,7 @@ mod tests {
         value["toolchain"]["unreviewed"] = serde_json::Value::Bool(true);
         let bytes = serde_json::to_vec(&value).unwrap();
         assert!(matches!(
-            validate_rank_manifest(&bytes, fixture.context()),
+            fixture.validate_core(&bytes),
             Err(RankManifestError::Structure)
         ));
 
@@ -752,7 +829,7 @@ mod tests {
         fixture.manifest.codec.profile = "hybrid-serve-v0".to_owned();
         let bytes = fixture.canonical_bytes();
         assert!(matches!(
-            validate_rank_manifest(&bytes, fixture.context()),
+            fixture.validate_core(&bytes),
             Err(RankManifestError::Profile)
         ));
     }
@@ -776,12 +853,15 @@ mod tests {
 
     #[test]
     fn pinned_capacity_inventory_source_bindings_match_validator() {
-        for rank in [0_u8, 3] {
+        for rank in 0_u8..4 {
             let plan = crate::pinned_exl3_rank_plan(rank).unwrap();
-            let tensors: Vec<RawManifestTensor> = serde_json::from_value(
-                serde_json::to_value(plan.manifest_tensors().unwrap()).unwrap(),
-            )
-            .unwrap();
+            let tensor_value = serde_json::to_value(plan.manifest_tensors().unwrap()).unwrap();
+            let tensor_contract_sha256 = sha256(&serde_json::to_vec(&tensor_value).unwrap());
+            assert_eq!(
+                encode_hex(&tensor_contract_sha256),
+                PINNED_RANK_TENSOR_CONTRACT_SHA256[usize::from(rank)]
+            );
+            let tensors: Vec<RawManifestTensor> = serde_json::from_value(tensor_value).unwrap();
             assert_eq!(tensors.len(), plan.tensor_count());
             let source_payload_bytes = tensors
                 .iter()
@@ -795,6 +875,7 @@ mod tests {
                         .ok_or(RankManifestError::Overflow)
                 })
                 .unwrap();
+            assert_eq!(source_payload_bytes, PINNED_RANK_SOURCE_PAYLOAD_BYTES);
             assert_eq!(source_payload_bytes, plan.source_payload_bytes());
         }
     }
