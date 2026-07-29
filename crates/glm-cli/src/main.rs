@@ -18,9 +18,10 @@ use glm_cuda::{
 };
 use glm_engine::{
     AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB, GraphEntry,
-    GraphKey, GraphProfile, ProfileBudgetArtifact, ProfileClass, RankMemoryInput, STEP_PLAN_ABI,
-    STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK,
-    Tp4WorkerPool, plan_system_memory,
+    GraphKey, GraphProfile, MIN_MTP_TENTATIVE_SLOTS_PER_RANK, MIN_PAGE_SLACK_SLOTS_PER_RANK,
+    ProfileBudgetArtifact, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
+    StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, Tp4WorkerPool,
+    plan_system_memory,
 };
 use glm_format::{
     CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
@@ -3410,9 +3411,11 @@ fn engine_proof() -> Result<EngineProof, Box<dyn std::error::Error>> {
             allocator_padding_bytes: 256 << 20,
             escrow_bytes: GIB,
             target_committed_slots: 262_144,
-            target_slack_slots: 0,
+            target_page_slack_slots: MIN_PAGE_SLACK_SLOTS_PER_RANK,
+            target_tentative_slots: MIN_MTP_TENTATIVE_SLOTS_PER_RANK,
             draft_committed_slots: 262_144,
-            draft_tentative_slots: 448,
+            draft_page_slack_slots: MIN_PAGE_SLACK_SLOTS_PER_RANK,
+            draft_tentative_slots: MIN_MTP_TENTATIVE_SLOTS_PER_RANK,
         })
         .collect();
     let system_memory_plan = plan_system_memory(memory_inputs)?;

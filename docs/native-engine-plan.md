@@ -448,6 +448,15 @@ In practice the converter must target a weight budget derived from the
 smallest same-phase `cuMemGetInfo` result across all four ranks. Nominal bpw
 is informative but never an admission proof.
 
+The committed floor does not include page fragmentation or speculative
+writes. At C64, all request tails may have the same next DCP owner. Each rank
+therefore reserves one full page per active sequence (4,096 slots) for
+worst-case ownership alignment and partial-tail slack and, for an
+MTP6 profile, 448 target plus 448 draft tentative slots. The resulting target
+and draft arenas each contain 266,688 token slots, or 4,167 complete
+64-token pages per rank. Every requested arena is rounded up to a complete
+page before its byte terms enter the fit inequality.
+
 Allocate large deterministic arenas and suballocate them in Rust. Do not
 depend on a framework caching allocator. After model initialization, run a
 fail-closed maximum-scratch probe before reporting the 1M profile healthy.

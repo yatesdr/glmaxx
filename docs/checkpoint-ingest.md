@@ -205,12 +205,16 @@ four-rank write/publication path. It does not claim that a complete model has
 been converted or loaded, or that codec `0x0200` is GPU-loadable.
 
 The checked-in `profiles/profile-budget-v0.json` is deliberately a blocked
-review candidate: its arithmetic proves that the exact source-plane weight
-bytes plus the 1M local DCP share fit against the pre-context observation, but
-the required post-context, graph, workspace, collective, staging, and
+review candidate. It now includes 4,096 page/owner-slack slots and 448
+tentative slots per rank for both target and draft arenas, resolving the
+zero-target-slack defect in the prior reviewed bytes. Its changed hash is not
+accepted by `cn4-phase-b.sh`; the old review token cannot authorize this
+candidate. The arithmetic proves that the exact source-plane weight bytes plus
+the 1M local DCP share and C64 slack fit against the pre-context observation,
+but the required post-context, graph, workspace, collective, staging, and
 fragmentation high-water measurements are not complete. The converter rejects
 that candidate until those measurements are filled in, its status changes to
-`complete`, and an independent hash-pinned review accepts it.
+`complete`, and a new independent hash-pinned review accepts it.
 
 Raw checkpoints, conversion scratch, and proof output remain external to
 Git.

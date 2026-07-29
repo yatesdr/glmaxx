@@ -120,21 +120,37 @@ Each inequality explicitly contains:
 
 Serving profiles require at least 262,144 committed target slots per rank and
 1 GiB escrow. MTP-enabled serving additionally requires 262,144 committed
-draft slots per rank. Slack and tentative slots are accounted separately.
-
-The committed one-million-position per-rank byte terms remain:
+draft slots per rank. At the C64 ceiling, all mutable sequence tails can have
+the same next DCP owner. The planner therefore reserves, independently on
+every rank:
 
 ```text
-target KV:          7,524,581,376
-target indexer:       726,663,168
-draft KV:              96,468,992
-draft indexer:         34,603,008
+page/owner slack: 64 active sequences × 64 = 4,096 slots
+MTP6 target/draft tentative ceiling: 64 × (6 + 1) = 448 slots
+physical target or draft arena: 262,144 + 4,096 + 448
+                              = 266,688 slots
+                              = 4,167 64-token pages
 ```
 
-The deterministic proof adds 448 draft tentative slots to demonstrate that
-transactional verifier capacity cannot hide inside the committed floor. Its
-weight and usable-HBM figures are explicitly synthetic and are not a serving
-admission result.
+The target-only MTP0 tentative floor is 64 slots. An MTP-enabled profile uses
+the 448-slot ceiling for both target and draft so rank-local page allocation
+cannot depend on a step fallback. Token requests are rounded up to complete
+64-token physical pages before byte accounting.
+
+The one-million-position committed terms remain useful arithmetic, but the
+serving arena terms include the explicit slack above:
+
+```text
+target KV:          7,655,012,352
+target indexer:       739,259,136
+draft KV:              98,141,184
+draft indexer:         35,202,816
+```
+
+`SystemMemoryPlan.cache_arena` derives the exact `SequencePageTable`
+configuration from the smallest physical rank arena. The deterministic
+proof's weight and usable-HBM figures remain explicitly synthetic and are
+not a serving admission result.
 
 ## CPU evidence
 

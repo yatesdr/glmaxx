@@ -14,7 +14,9 @@ mod worker;
 
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use memory::{
-    CAPACITY_EXL3_RANK_WEIGHT_BYTES, GIB, MemoryPlanError, MemoryTerms, ProfileBudgetArtifact,
+    CAPACITY_EXL3_RANK_WEIGHT_BYTES, CacheArenaLayout, GIB, MAXIMUM_ACTIVE_SEQUENCES,
+    MAXIMUM_VERIFIER_ROWS, MIN_MTP_TENTATIVE_SLOTS_PER_RANK, MIN_MTP0_TENTATIVE_SLOTS_PER_RANK,
+    MIN_PAGE_SLACK_SLOTS_PER_RANK, MemoryPlanError, MemoryTerms, ProfileBudgetArtifact,
     ProfileBudgetError, ProfileBudgetGlobalCapacity, ProfileBudgetRank, ProfileBudgetSource,
     ProfileBudgetTerms, ProfileClass, RankMemoryInput, RankMemoryPlan, SystemMemoryPlan,
     plan_system_memory,

@@ -2,14 +2,22 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use glm_cache::{
-    DRAFT_INDEXER_GROUPS, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES, TARGET_LAYERS,
+    DRAFT_INDEXER_GROUPS, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES, PAGE_TOKENS,
+    PageTableConfig, TARGET_LAYERS,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::step::{MAX_ACTIVE_SEQUENCES, MAX_VERIFIER_ROWS};
 
 pub const GIB: u64 = 1 << 30;
 pub const MIN_LOCAL_CAPACITY_TOKENS: u64 = 262_144;
 pub const MIN_ESCROW_BYTES: u64 = GIB;
 pub const CAPACITY_EXL3_RANK_WEIGHT_BYTES: u64 = 81_590_319_104;
+pub const MAXIMUM_ACTIVE_SEQUENCES: u64 = MAX_ACTIVE_SEQUENCES as u64;
+pub const MAXIMUM_VERIFIER_ROWS: u64 = MAX_VERIFIER_ROWS as u64;
+pub const MIN_PAGE_SLACK_SLOTS_PER_RANK: u64 = MAXIMUM_ACTIVE_SEQUENCES * PAGE_TOKENS;
+pub const MIN_MTP0_TENTATIVE_SLOTS_PER_RANK: u64 = MAXIMUM_ACTIVE_SEQUENCES;
+pub const MIN_MTP_TENTATIVE_SLOTS_PER_RANK: u64 = MAXIMUM_VERIFIER_ROWS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -43,8 +51,10 @@ pub struct RankMemoryInput {
     pub allocator_padding_bytes: u64,
     pub escrow_bytes: u64,
     pub target_committed_slots: u64,
-    pub target_slack_slots: u64,
+    pub target_page_slack_slots: u64,
+    pub target_tentative_slots: u64,
     pub draft_committed_slots: u64,
+    pub draft_page_slack_slots: u64,
     pub draft_tentative_slots: u64,
 }
 
@@ -98,9 +108,11 @@ pub struct RankMemoryPlan {
     pub mtp_enabled: bool,
     pub measured_usable_hbm_bytes: u64,
     pub target_committed_slots: u64,
-    pub target_slack_slots: u64,
+    pub target_page_slack_slots: u64,
+    pub target_tentative_slots: u64,
     pub target_slots: u64,
     pub draft_committed_slots: u64,
+    pub draft_page_slack_slots: u64,
     pub draft_tentative_slots: u64,
     pub draft_slots: u64,
     pub terms: MemoryTerms,
@@ -113,24 +125,48 @@ impl RankMemoryPlan {
         if input.rank >= 4 {
             return Err(MemoryPlanError::Rank);
         }
-        let target_slots = input
+        let requested_target_slots = input
             .target_committed_slots
-            .checked_add(input.target_slack_slots)
+            .checked_add(input.target_page_slack_slots)
+            .and_then(|slots| slots.checked_add(input.target_tentative_slots))
             .ok_or(MemoryPlanError::Overflow)?;
-        let draft_slots = input
+        let target_slots = round_up_to_page(requested_target_slots)?;
+        let requested_draft_slots = input
             .draft_committed_slots
-            .checked_add(input.draft_tentative_slots)
+            .checked_add(input.draft_page_slack_slots)
+            .and_then(|slots| slots.checked_add(input.draft_tentative_slots))
             .ok_or(MemoryPlanError::Overflow)?;
+        let draft_slots = round_up_to_page(requested_draft_slots)?;
         if input.profile.is_serving()
             && (input.target_committed_slots < MIN_LOCAL_CAPACITY_TOKENS
                 || input.escrow_bytes < MIN_ESCROW_BYTES)
         {
             return Err(MemoryPlanError::ServingFloor);
         }
+        let minimum_target_tentative = if input.mtp_enabled {
+            MIN_MTP_TENTATIVE_SLOTS_PER_RANK
+        } else {
+            MIN_MTP0_TENTATIVE_SLOTS_PER_RANK
+        };
+        if input.profile.is_serving()
+            && (input.target_page_slack_slots < MIN_PAGE_SLACK_SLOTS_PER_RANK
+                || input.target_tentative_slots < minimum_target_tentative)
+        {
+            return Err(MemoryPlanError::TargetSlackFloor);
+        }
         if input.mtp_enabled {
             if input.profile.is_serving() && input.draft_committed_slots < MIN_LOCAL_CAPACITY_TOKENS
             {
                 return Err(MemoryPlanError::DraftFloor);
+            }
+            if input.profile.is_serving()
+                && (input.draft_page_slack_slots < MIN_PAGE_SLACK_SLOTS_PER_RANK
+                    || input.draft_tentative_slots < MIN_MTP_TENTATIVE_SLOTS_PER_RANK)
+            {
+                return Err(MemoryPlanError::DraftSlackFloor);
+            }
+            if draft_slots > target_slots {
+                return Err(MemoryPlanError::DraftCapacity);
             }
         } else if draft_slots != 0 {
             return Err(MemoryPlanError::UnexpectedDraft);
@@ -177,9 +213,11 @@ impl RankMemoryPlan {
             mtp_enabled: input.mtp_enabled,
             measured_usable_hbm_bytes: input.measured_usable_hbm_bytes,
             target_committed_slots: input.target_committed_slots,
-            target_slack_slots: input.target_slack_slots,
+            target_page_slack_slots: input.target_page_slack_slots,
+            target_tentative_slots: input.target_tentative_slots,
             target_slots,
             draft_committed_slots: input.draft_committed_slots,
+            draft_page_slack_slots: input.draft_page_slack_slots,
             draft_tentative_slots: input.draft_tentative_slots,
             draft_slots,
             terms,
@@ -193,9 +231,29 @@ impl RankMemoryPlan {
 pub struct SystemMemoryPlan {
     pub schema: &'static str,
     pub ranks: Vec<RankMemoryPlan>,
+    pub cache_arena: CacheArenaLayout,
     pub aggregate_required_bytes: u64,
     pub minimum_rank_headroom_bytes: u64,
     pub admitted_local_committed_slots: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct CacheArenaLayout {
+    pub page_tokens: u64,
+    pub target_pages_per_rank: u32,
+    pub draft_pages_per_rank: u32,
+    pub target_slots_per_rank: u64,
+    pub draft_slots_per_rank: u64,
+}
+
+impl CacheArenaLayout {
+    #[must_use]
+    pub const fn page_table_config(self) -> PageTableConfig {
+        PageTableConfig {
+            target_pages_per_rank: self.target_pages_per_rank,
+            draft_pages_per_rank: self.draft_pages_per_rank,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -203,8 +261,14 @@ pub struct SystemMemoryPlan {
 pub struct ProfileBudgetGlobalCapacity {
     pub admitted_target_tokens: u64,
     pub dcp_degree: u8,
+    pub local_draft_committed_slots_per_rank: u64,
+    pub local_draft_page_slack_slots_per_rank: u64,
+    pub local_draft_tentative_slots_per_rank: u64,
     pub local_target_committed_slots_per_rank: u64,
+    pub local_target_page_slack_slots_per_rank: u64,
+    pub local_target_tentative_slots_per_rank: u64,
     pub mtp_depth_max: u8,
+    pub page_tokens: u64,
     pub tp_degree: u8,
 }
 
@@ -293,8 +357,19 @@ impl ProfileBudgetArtifact {
             || self.profile != "capacity-exl3"
             || self.global_capacity.admitted_target_tokens != 1_048_576
             || self.global_capacity.dcp_degree != 4
+            || self.global_capacity.local_draft_committed_slots_per_rank
+                != MIN_LOCAL_CAPACITY_TOKENS
+            || self.global_capacity.local_draft_page_slack_slots_per_rank
+                != MIN_PAGE_SLACK_SLOTS_PER_RANK
+            || self.global_capacity.local_draft_tentative_slots_per_rank
+                != MIN_MTP_TENTATIVE_SLOTS_PER_RANK
             || self.global_capacity.local_target_committed_slots_per_rank != 262_144
+            || self.global_capacity.local_target_page_slack_slots_per_rank
+                != MIN_PAGE_SLACK_SLOTS_PER_RANK
+            || self.global_capacity.local_target_tentative_slots_per_rank
+                != MIN_MTP_TENTATIVE_SLOTS_PER_RANK
             || self.global_capacity.mtp_depth_max != 6
+            || self.global_capacity.page_tokens != PAGE_TOKENS
             || self.global_capacity.tp_degree != 4
         {
             return Err(ProfileBudgetError::Identity);
@@ -316,10 +391,10 @@ impl ProfileBudgetArtifact {
             let terms = rank.terms;
             if terms.weight_bytes != CAPACITY_EXL3_RANK_WEIGHT_BYTES
                 || terms.emergency_escrow_bytes < MIN_ESCROW_BYTES
-                || terms.target_kv_committed_and_slack_bytes != 7_524_581_376
-                || terms.target_indexer_key_committed_and_slack_bytes != 726_663_168
-                || terms.draft_kv_committed_and_slack_bytes != 96_633_856
-                || terms.draft_indexer_key_committed_and_slack_bytes != 34_662_144
+                || terms.target_kv_committed_and_slack_bytes != 7_655_012_352
+                || terms.target_indexer_key_committed_and_slack_bytes != 739_259_136
+                || terms.draft_kv_committed_and_slack_bytes != 98_141_184
+                || terms.draft_indexer_key_committed_and_slack_bytes != 35_202_816
                 || terms.required()? != rank.required_bytes
                 || rank
                     .observed_pre_context_free_bytes
@@ -437,9 +512,27 @@ pub fn plan_system_memory(
         .map(|plan| plan.target_committed_slots)
         .min()
         .ok_or(MemoryPlanError::RankCount)?;
+    let target_slots_per_rank = ranks
+        .iter()
+        .map(|plan| plan.target_slots)
+        .min()
+        .ok_or(MemoryPlanError::RankCount)?;
+    let draft_slots_per_rank = ranks
+        .iter()
+        .map(|plan| plan.draft_slots)
+        .min()
+        .ok_or(MemoryPlanError::RankCount)?;
+    let cache_arena = CacheArenaLayout {
+        page_tokens: PAGE_TOKENS,
+        target_pages_per_rank: page_count(target_slots_per_rank)?,
+        draft_pages_per_rank: page_count(draft_slots_per_rank)?,
+        target_slots_per_rank,
+        draft_slots_per_rank,
+    };
     Ok(SystemMemoryPlan {
-        schema: "glmaxx.system-memory-plan.v1",
+        schema: "glmaxx.system-memory-plan.v2",
         ranks,
+        cache_arena,
         aggregate_required_bytes,
         minimum_rank_headroom_bytes,
         admitted_local_committed_slots,
@@ -453,6 +546,23 @@ fn bytes_for(slots: u64, groups: u64, bytes: u64) -> Result<u64, MemoryPlanError
         .ok_or(MemoryPlanError::Overflow)
 }
 
+fn round_up_to_page(slots: u64) -> Result<u64, MemoryPlanError> {
+    if slots == 0 {
+        return Ok(0);
+    }
+    slots
+        .checked_add(PAGE_TOKENS - 1)
+        .map(|value| value / PAGE_TOKENS * PAGE_TOKENS)
+        .ok_or(MemoryPlanError::Overflow)
+}
+
+fn page_count(slots: u64) -> Result<u32, MemoryPlanError> {
+    if !slots.is_multiple_of(PAGE_TOKENS) {
+        return Err(MemoryPlanError::PageAlignment);
+    }
+    u32::try_from(slots / PAGE_TOKENS).map_err(|_| MemoryPlanError::Overflow)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryPlanError {
     Rank,
@@ -460,8 +570,12 @@ pub enum MemoryPlanError {
     RankSet,
     ProfileMismatch,
     ServingFloor,
+    TargetSlackFloor,
     DraftFloor,
+    DraftSlackFloor,
+    DraftCapacity,
     UnexpectedDraft,
+    PageAlignment,
     Overflow,
     DoesNotFit {
         rank: u8,
@@ -526,19 +640,23 @@ mod tests {
             allocator_padding_bytes: 256 << 20,
             escrow_bytes: GIB,
             target_committed_slots: MIN_LOCAL_CAPACITY_TOKENS,
-            target_slack_slots: 0,
+            target_page_slack_slots: MIN_PAGE_SLACK_SLOTS_PER_RANK,
+            target_tentative_slots: MIN_MTP_TENTATIVE_SLOTS_PER_RANK,
             draft_committed_slots: MIN_LOCAL_CAPACITY_TOKENS,
-            draft_tentative_slots: 448,
+            draft_page_slack_slots: MIN_PAGE_SLACK_SLOTS_PER_RANK,
+            draft_tentative_slots: MIN_MTP_TENTATIVE_SLOTS_PER_RANK,
         }
     }
 
     #[test]
     fn one_million_mtp_cache_terms_match_the_frozen_arithmetic() {
         let plan = RankMemoryPlan::build(input(0)).unwrap();
-        assert_eq!(plan.terms.target_kv, 7_524_581_376);
-        assert_eq!(plan.terms.target_indexer_keys, 726_663_168);
-        assert_eq!(plan.terms.draft_kv, 96_633_856);
-        assert_eq!(plan.terms.draft_indexer_keys, 34_662_144);
+        assert_eq!(plan.target_slots, 266_688);
+        assert_eq!(plan.draft_slots, 266_688);
+        assert_eq!(plan.terms.target_kv, 7_655_012_352);
+        assert_eq!(plan.terms.target_indexer_keys, 739_259_136);
+        assert_eq!(plan.terms.draft_kv, 98_141_184);
+        assert_eq!(plan.terms.draft_indexer_keys, 35_202_816);
     }
 
     #[test]
@@ -573,6 +691,27 @@ mod tests {
             RankMemoryPlan::build(no_draft),
             Err(MemoryPlanError::DraftFloor)
         );
+
+        let mut no_target_slack = input(0);
+        no_target_slack.target_page_slack_slots -= 1;
+        assert_eq!(
+            RankMemoryPlan::build(no_target_slack),
+            Err(MemoryPlanError::TargetSlackFloor)
+        );
+
+        let mut no_draft_slack = input(0);
+        no_draft_slack.draft_tentative_slots -= 1;
+        assert_eq!(
+            RankMemoryPlan::build(no_draft_slack),
+            Err(MemoryPlanError::DraftSlackFloor)
+        );
+
+        let mut excess_draft = input(0);
+        excess_draft.draft_tentative_slots += PAGE_TOKENS;
+        assert_eq!(
+            RankMemoryPlan::build(excess_draft),
+            Err(MemoryPlanError::DraftCapacity)
+        );
     }
 
     #[test]
@@ -586,6 +725,7 @@ mod tests {
         let mut mismatch = input(3);
         mismatch.mtp_enabled = false;
         mismatch.draft_committed_slots = 0;
+        mismatch.draft_page_slack_slots = 0;
         mismatch.draft_tentative_slots = 0;
         assert_eq!(
             plan_system_memory(vec![input(0), input(1), input(2), mismatch]),
@@ -596,7 +736,7 @@ mod tests {
     #[test]
     fn overflow_and_unexpected_draft_are_rejected() {
         let mut overflow = input(0);
-        overflow.target_slack_slots = u64::MAX;
+        overflow.target_page_slack_slots = u64::MAX;
         assert_eq!(
             RankMemoryPlan::build(overflow),
             Err(MemoryPlanError::Overflow)
@@ -608,6 +748,64 @@ mod tests {
         assert_eq!(
             RankMemoryPlan::build(draft),
             Err(MemoryPlanError::UnexpectedDraft)
+        );
+    }
+
+    #[test]
+    fn page_rounding_and_arena_layout_cannot_drift() {
+        let mut laboratory = input(0);
+        laboratory.profile = ProfileClass::Nvfp4Laboratory;
+        laboratory.mtp_enabled = false;
+        laboratory.target_committed_slots = 65;
+        laboratory.target_page_slack_slots = 0;
+        laboratory.target_tentative_slots = 0;
+        laboratory.draft_committed_slots = 0;
+        laboratory.draft_page_slack_slots = 0;
+        laboratory.draft_tentative_slots = 0;
+        let rounded = RankMemoryPlan::build(laboratory).unwrap();
+        assert_eq!(rounded.target_slots, 128);
+        assert_eq!(
+            rounded.terms.target_kv,
+            bytes_for(128, TARGET_LAYERS, KV_RECORD_BYTES).unwrap()
+        );
+
+        let plan = plan_system_memory((0..4).map(input).collect()).unwrap();
+        assert_eq!(
+            plan.cache_arena,
+            CacheArenaLayout {
+                page_tokens: 64,
+                target_pages_per_rank: 4_167,
+                draft_pages_per_rank: 4_167,
+                target_slots_per_rank: 266_688,
+                draft_slots_per_rank: 266_688,
+            }
+        );
+        assert_eq!(
+            plan.cache_arena.page_table_config(),
+            PageTableConfig {
+                target_pages_per_rank: 4_167,
+                draft_pages_per_rank: 4_167,
+            }
+        );
+    }
+
+    #[test]
+    fn target_only_serving_reserves_c64_tail_and_decode_space() {
+        let mut mtp0 = input(0);
+        mtp0.mtp_enabled = false;
+        mtp0.target_tentative_slots = MIN_MTP0_TENTATIVE_SLOTS_PER_RANK;
+        mtp0.draft_committed_slots = 0;
+        mtp0.draft_page_slack_slots = 0;
+        mtp0.draft_tentative_slots = 0;
+        let plan = RankMemoryPlan::build(mtp0).unwrap();
+        assert_eq!(plan.draft_slots, 0);
+        assert_eq!(plan.terms.draft_kv, 0);
+        assert_eq!(plan.terms.draft_indexer_keys, 0);
+
+        mtp0.target_tentative_slots -= 1;
+        assert_eq!(
+            RankMemoryPlan::build(mtp0),
+            Err(MemoryPlanError::TargetSlackFloor)
         );
     }
 }

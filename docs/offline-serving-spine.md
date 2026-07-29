@@ -84,7 +84,9 @@ restore fails closed.
 working set. It reserves independent target and optional MTP draft slots on
 each DCP4 owner rank and exposes target-only and MTP-capable sequence limits
 separately. With 4,096 target and draft pages per rank, one 1,048,576-token
-MTP sequence consumes exactly 4,096 pages on every rank.
+MTP sequence consumes exactly 4,096 pages on every rank. The C64 serving
+arena is larger: 4,167 pages per rank leaves explicit room for aligned
+partial tails and MTP6 tentative writes.
 
 Only complete sealed prefix pages can acquire shared references. A prefix key
 is bound to its logical page ordinal and therefore to one deterministic DCP4
