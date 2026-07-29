@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`8612ec3a29421f707f0f231e3496a59bb81504b0`
+`8fb3adf9535683b0de9b54fe2743cb5651b9bdc2`
 
-The complete local gate most recently ran against the complete journal-tail
-corruption correction
-`2da57248f703702f2fddbf189a65f294cabbc649`; its provenance record was then
-committed at `8612ec3a29421f707f0f231e3496a59bb81504b0`. The target
+The complete local gate most recently ran against the torn-journal resume
+implementation and refreshed fixture
+`c768220cb6f5d4f595a0e4800b4b8aaf398ac25a`; its provenance record was then
+committed at `8fb3adf9535683b0de9b54fe2743cb5651b9bdc2`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -30,11 +30,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at journal-tail implementation `2da5724` passed:
+The latest local run at torn-journal implementation `c768220` passed:
 
 - `scripts/local-checks.sh`: 254 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 50 then-present candidate-based review-handoff hash proofs;
+  and all 51 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -56,7 +56,7 @@ Pinned inputs:
 | Artifact | SHA-256 |
 |---|---|
 | `scripts/local-checks.sh` | `839ec27e61aff8249ffa5b586621e6a1fa316221dd50eddf3ee467d096a1d18f` |
-| `fixtures/cache-lifecycle-proof-v1.json` | `8d75a281e127f669f52065c7ca2fa0945a4d090e3624f17f857410122dde0dfc` |
+| `fixtures/cache-lifecycle-proof-v1.json` | `c1151c34a3a9bee4fd97dea11e807603a56c2af4d37deab813cc9b5631177d6a` |
 | `fixtures/cpu-serving-proof-v1.json` | `fb76dd1cdc83501ff35ef192dc2be012b5e5cc52ced9a7f8ff4b0b1313698db1` |
 | `fixtures/engine-contract-proof-v1.json` | `a28686829ae46d62ab449eacae3a1b64bf965c43c22699bb4c9130ecedc9c1a2` |
 | `fixtures/nvfp4-actual-shape-v1.json` | `56bca55ab3489fe6f50cd864f73a21f3b83367d79faa8bc70cb26f325f9b1099` |
@@ -258,6 +258,15 @@ writer and snapshot-reader construction instead of silently losing the page.
 The dedicated handoff passes local provenance validation; independent
 acceptance is absent.
 
+The torn-tail resume correction is pinned in
+`docs/torn-journal-resume-proof-v1.md`. After all complete records and replay
+state validate, writable open truncates and syncs only the incomplete
+fragment before resuming append. Read-only snapshots do not mutate it. The
+regression publishes after repair and restores both old and new pages on a
+second reopen; the lifecycle fixture is refreshed to the repaired journal
+digest. The dedicated handoff passes local provenance validation;
+independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -380,6 +389,7 @@ verdicts:
 | prefix index and owner-rank residency generation coherence | `72e6071` | `docs/fable-prefix-residency-coherence-v1-handoff.md` |
 | no-write durable dedup, MTP-only upgrade, and collision-safe replay | `b097703` | `docs/fable-durable-content-dedup-v1-handoff.md` |
 | complete journal-tail corruption fails closed | `8612ec3` | `docs/fable-journal-tail-corruption-v1-handoff.md` |
+| validated torn-tail repair before resumed append | `8fb3adf` | `docs/fable-torn-journal-resume-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
