@@ -83,6 +83,7 @@ impl FileTierStore {
         let mut journal_bytes = Vec::new();
         journal_file.seek(SeekFrom::Start(0))?;
         journal_file.read_to_end(&mut journal_bytes)?;
+        let valid_journal_bytes = journal_bytes.len() / JOURNAL_RECORD_BYTES * JOURNAL_RECORD_BYTES;
         let (events, next_transaction) = decode_journal(&journal_bytes)?;
         let journal = TierJournal::from_events(events)?;
         let published = journal.recover()?;
@@ -97,6 +98,11 @@ impl FileTierStore {
                     .ok_or(StoreError::Overflow)
             })
             .and_then(|end| align_up(end, NVME_ALIGNMENT))?;
+        if valid_journal_bytes != journal_bytes.len() {
+            journal_file
+                .set_len(u64::try_from(valid_journal_bytes).map_err(|_| StoreError::Overflow)?)?;
+            journal_file.sync_data()?;
+        }
         journal_file.seek(SeekFrom::End(0))?;
         Ok(Self {
             root: root.to_path_buf(),
@@ -893,8 +899,25 @@ mod tests {
         journal.write_all(&[0xaa; 113]).unwrap();
         journal.sync_data().unwrap();
         drop(journal);
+        let length_with_tail = fs::metadata(&journal_path).unwrap().len();
+
+        let mut reader = FileTierReader::open(&root).unwrap();
+        assert!(reader.restore([0x55; 32]).unwrap().is_some());
+        drop(reader);
+        assert_eq!(fs::metadata(&journal_path).unwrap().len(), length_with_tail);
+
         let mut reopened = FileTierStore::open(&root).unwrap();
         assert!(reopened.restore([0x55; 32]).unwrap().is_some());
+        assert_eq!(
+            fs::metadata(&journal_path).unwrap().len(),
+            length_with_tail - 113
+        );
+        reopened.publish(request(0x56, 1, false)).unwrap();
+        drop(reopened);
+
+        let mut second_reopen = FileTierStore::open(&root).unwrap();
+        assert!(second_reopen.restore([0x55; 32]).unwrap().is_some());
+        assert!(second_reopen.restore([0x56; 32]).unwrap().is_some());
         fs::remove_dir_all(root).unwrap();
     }
 
