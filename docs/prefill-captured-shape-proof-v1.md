@@ -29,6 +29,15 @@ The design inputs remain:
 
 This correction does not create or qualify a new graph family.
 
+The audit also found an adjacent profile-ABI limitation. Prefill
+`GraphKey.verifier_row_bucket` is required to be zero, while graph keys must
+be unique. The current profile therefore cannot represent two prefill chunk
+sizes with the same sequence bucket and attention transport; the second
+regression uses distinct sequence buckets to exercise two legal entries.
+This scheduler correction does not change that ABI. A reviewed prompt-row
+bucket extension is required before the intended SM120 prefill graph family
+can contain multiple chunk captures for the same concurrency/transport key.
+
 ## Corrected selection
 
 For each validated prefill `GraphEntry`, the scheduler now constructs the
@@ -113,4 +122,5 @@ The external tokenizer proof was skipped because
 change. No CUDA compiler, GPU, CUDA graph, real collective, checkpoint, or
 model execution was used. This proof does not authorize cn4 or establish
 prefill speed, graph-capture correctness, route optimality, model quality,
-or serving performance.
+or serving performance. It also does not resolve the prefill graph-key
+limitation described above.
