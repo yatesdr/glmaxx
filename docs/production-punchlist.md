@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `9607aa0e3027dc998bc9489c7abe29320c7b7972`
+Baseline audited: `8aaef8e50a69ed6fecdc01c6405dd6a2ff14ebc7`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -62,8 +62,8 @@ State meanings:
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
 | S01 | PASS | CPU scheduler supports bounded continuous batching, weighted tenant fairness, prefix-pending admission, and collective-safe cancellation | Scheduler/serving tests through `9607aa0` | Re-prove with real executor |
-| S02 | REVIEW | Bounded HTTP-to-coordinator adapter, tenant ownership, stop-safe streaming, and slow-client isolation accepted | Candidate `5847a65`; Fable handoff `6d5bfcf` | Adversarial verdict and fixes |
-| S03 | REVIEW | Host request/step observability has correct clocks, counts, MTP ordinals, graph routes, and no metric-recording allocation | Candidate `9607aa0`; observability handoff pending | Adversarial verdict and fixes |
+| S02 | REVIEW | Bounded HTTP-to-coordinator adapter, tenant ownership, stop-safe streaming, slow-client isolation, and structured fatal drain accepted | Candidate `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
+| S03 | REVIEW | Host request/step observability has correct clocks, counts, MTP ordinals, graph routes, no metric-recording allocation, and consistent concurrent lifecycle totals | Metrics candidate `9607aa0`; backend concurrency delta `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
 | S04 | OPEN | Exact probabilistic parameters and deterministic seed/RNG state reach rank execution and responses | API validates them but backend rejects non-greedy | C02/C09 |
 | S05 | OPEN | Nonblocking network transport sustains target concurrency with bounded memory | Retained one-request-per-connection worker transport is functional only | Replace/qualify transport after real executor is available |
 | S06 | OPEN | Admission enforces per-tenant queued-token, resident-KV, and context-band limits | Active request count and prompt bytes are bounded; KV quotas absent | C03 plus scheduler quota contract |
@@ -85,7 +85,7 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, and pinned tokenizer proof pass | `scripts/local-checks.sh` passed at `9607aa0`; 208 Rust tests | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, and pinned tokenizer proof pass | `scripts/local-checks.sh` passed at `8aaef8e`; 211 Rust tests (the final candidate delta is documentation-only) | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
 | D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Initial index accompanies this punchlist; most required artifacts do not exist | Append only provenance-complete records |

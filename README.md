@@ -72,6 +72,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Serving observability contract](docs/serving-observability-v1.md)
+- [Current coordinator/observability adversarial handoff](docs/fable-coordinator-api-backend-v2-handoff.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)
@@ -86,7 +87,7 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 208 Rust tests plus formatting, Clippy with
+The current local gate passes 211 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
 the pinned external-tokenizer proof. The CPU/reference workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,

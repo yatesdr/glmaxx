@@ -3,7 +3,10 @@
 Date: 2026-07-29
 
 Current source baseline:
-`9607aa0e3027dc998bc9489c7abe29320c7b7972`
+`8aaef8e50a69ed6fecdc01c6405dd6a2ff14ebc7`
+
+The complete gate ran against implementation commit `63b13fd`; `8aaef8e`
+changes only the accompanying terminal-delivery wording.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -13,7 +16,7 @@ permission to convert a full checkpoint.
 
 The complete local gate passed at the source baseline:
 
-- `scripts/local-checks.sh`: 208 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 211 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and the external pinned-tokenizer proof;
 - platform: local CPU development host;
@@ -94,8 +97,8 @@ verdicts:
 | active KV page table | `3404e07` | `docs/fable-active-sequence-page-table-v1-handoff.md` |
 | cache arena budget | `c33648a` | `docs/fable-cache-arena-budget-v2-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
-| coordinator/API backend | `5847a65` | `docs/fable-coordinator-api-backend-v1-handoff.md` |
-| serving observability | `9607aa0` | `docs/fable-serving-observability-v1-handoff.md` |
+| coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
+| serving observability | `9607aa0`, with backend lifecycle delta at `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
