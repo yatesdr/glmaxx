@@ -58,8 +58,10 @@ gpu_count="$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l | tr -d 
 sm120_count="$(
   nvidia-smi --query-gpu=compute_cap --format=csv,noheader \
     | tr -d '\r ' \
-    | grep -c '^12\\.0$' || true
+    | grep -c '^12\.0$' || true
 )"
+printf 'visible_devices=%s sm120_devices=%s\n' "${gpu_count}" "${sm120_count}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-counts.txt"
 if [[ "${gpu_count}" != "4" || "${sm120_count}" != "4" ]]; then
   echo "Rank binding requires exactly four visible compute-capability 12.0 devices" >&2
   exit 70
