@@ -428,13 +428,29 @@ struct ShardedLocation {
 
 #[derive(Clone, Debug)]
 pub struct ShardedSafetensors {
-    index_path: PathBuf,
-    index_sha256: [u8; 32],
+    source_path: PathBuf,
+    root: PathBuf,
+    structure_sha256: [u8; 32],
     locations: BTreeMap<String, ShardedLocation>,
     shards: BTreeSet<PathBuf>,
 }
 
 impl ShardedSafetensors {
+    pub fn open_auto(path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
+        let path = path.as_ref();
+        let metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(SafeTensorError::ShardPath(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        if metadata.file_type().is_dir() {
+            Self::open_directory(path)
+        } else {
+            Self::open(path)
+        }
+    }
+
     pub fn open(index_path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
         let index_path = index_path.as_ref().to_owned();
         let index_file = File::open(&index_path).map_err(SafeTensorError::Io)?;
@@ -449,7 +465,10 @@ impl ShardedSafetensors {
         if raw.weight_map.0.is_empty() {
             return Err(SafeTensorError::TensorCount);
         }
-        let root = index_path.parent().ok_or(SafeTensorError::Index)?;
+        let root = index_path
+            .parent()
+            .ok_or(SafeTensorError::Index)?
+            .to_owned();
         let mut by_shard: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
         for (tensor, shard) in raw.weight_map.0 {
             validate_tensor_name(&tensor)?;
@@ -490,21 +509,111 @@ impl ShardedSafetensors {
             shards.insert(relative);
         }
         Ok(Self {
-            index_path,
-            index_sha256: Sha256::digest(&bytes).into(),
+            source_path: index_path,
+            root,
+            structure_sha256: Sha256::digest(&bytes).into(),
             locations,
             shards,
         })
     }
 
+    pub fn open_directory(path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
+        let source_path = path.as_ref().to_owned();
+        let metadata = source_path
+            .symlink_metadata()
+            .map_err(SafeTensorError::Io)?;
+        if !metadata.file_type().is_dir() {
+            return Err(SafeTensorError::ShardDirectory(source_path));
+        }
+        let mut shard_paths = BTreeSet::new();
+        for entry in source_path.read_dir().map_err(SafeTensorError::Io)? {
+            let entry = entry.map_err(SafeTensorError::Io)?;
+            let file_type = entry.file_type().map_err(SafeTensorError::Io)?;
+            if file_type.is_symlink() {
+                return Err(SafeTensorError::ShardPath(
+                    entry.file_name().to_string_lossy().into_owned(),
+                ));
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|name| SafeTensorError::ShardPath(name.to_string_lossy().into_owned()))?;
+            if Path::new(&file_name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("safetensors")
+            {
+                continue;
+            }
+            shard_paths.insert(validate_shard_path(&file_name)?);
+        }
+        if shard_paths.is_empty() {
+            return Err(SafeTensorError::TensorCount);
+        }
+
+        let mut locations = BTreeMap::new();
+        let mut structure = Sha256::new();
+        structure.update(b"glmaxx.safetensors-directory.v1\0");
+        structure.update(
+            u64::try_from(shard_paths.len())
+                .map_err(|_| SafeTensorError::Overflow)?
+                .to_le_bytes(),
+        );
+        for relative in &shard_paths {
+            let shard = SafeTensorFile::open(source_path.join(relative))?;
+            let relative_bytes = relative
+                .to_str()
+                .ok_or_else(|| SafeTensorError::ShardPath(relative.to_string_lossy().into_owned()))?
+                .as_bytes();
+            structure.update(
+                u64::try_from(relative_bytes.len())
+                    .map_err(|_| SafeTensorError::Overflow)?
+                    .to_le_bytes(),
+            );
+            structure.update(relative_bytes);
+            structure.update(shard.header_sha256());
+            structure.update(shard.file_bytes().to_le_bytes());
+            for (name, descriptor) in shard.tensors() {
+                if locations
+                    .insert(
+                        name.clone(),
+                        ShardedLocation {
+                            shard: relative.clone(),
+                            header_sha256: shard.header_sha256(),
+                            descriptor: descriptor.clone(),
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(SafeTensorError::DuplicateTensor(name.clone()));
+                }
+            }
+        }
+        Ok(Self {
+            root: source_path.clone(),
+            source_path,
+            structure_sha256: structure.finalize().into(),
+            locations,
+            shards: shard_paths,
+        })
+    }
+
     #[must_use]
-    pub fn index_path(&self) -> &Path {
-        &self.index_path
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    #[must_use]
+    pub const fn structure_sha256(&self) -> [u8; 32] {
+        self.structure_sha256
     }
 
     #[must_use]
     pub const fn index_sha256(&self) -> [u8; 32] {
-        self.index_sha256
+        self.structure_sha256
     }
 
     #[must_use]
@@ -559,8 +668,7 @@ impl ShardedSafetensors {
             .locations
             .get(name)
             .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
-        let root = self.index_path.parent().ok_or(SafeTensorError::Index)?;
-        let shard = SafeTensorFile::open(root.join(&location.shard))?;
+        let shard = SafeTensorFile::open(self.root.join(&location.shard))?;
         if shard.header_sha256() != location.header_sha256
             || shard.tensor(name) != Some(&location.descriptor)
         {
@@ -912,6 +1020,8 @@ pub enum SafeTensorError {
     ShardPath(String),
     ShardInventory(PathBuf),
     ShardChanged(PathBuf),
+    ShardDirectory(PathBuf),
+    DuplicateTensor(String),
     SourceChanged(PathBuf),
     Overflow,
     Exl3(Exl3Error),
@@ -954,10 +1064,14 @@ mod tests {
 
     impl Drop for TempPath {
         fn drop(&mut self) {
-            if self.0.is_dir() {
-                let _ = fs::remove_dir_all(&self.0);
-            } else {
-                let _ = fs::remove_file(&self.0);
+            match self.0.symlink_metadata() {
+                Ok(metadata) if metadata.file_type().is_dir() => {
+                    let _ = fs::remove_dir_all(&self.0);
+                }
+                Ok(_) => {
+                    let _ = fs::remove_file(&self.0);
+                }
+                Err(_) => {}
             }
         }
     }
@@ -1143,6 +1257,77 @@ mod tests {
         assert!(matches!(
             set.read_tensor("b"),
             Err(SafeTensorError::ShardChanged(_))
+        ));
+    }
+
+    #[test]
+    fn shard_directory_inventory_is_sorted_deterministic_and_streamable() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let shard_z = directory.0.join("model-layer-004.safetensors");
+        let shard_a = directory.0.join("model-layer-003.safetensors");
+        write_safe(&shard_z, vec![("z", "U8", vec![2], vec![3, 4])]);
+        write_safe(&shard_a, vec![("a", "U8", vec![2], vec![1, 2])]);
+        fs::write(directory.0.join("README.txt"), b"ignored").unwrap();
+
+        let first = ShardedSafetensors::open_directory(&directory.0).unwrap();
+        let automatic = ShardedSafetensors::open_auto(&directory.0).unwrap();
+        assert_eq!(first.tensor_names().collect::<Vec<_>>(), ["a", "z"]);
+        assert_eq!(
+            first.shards().iter().collect::<Vec<_>>(),
+            [
+                &PathBuf::from("model-layer-003.safetensors"),
+                &PathBuf::from("model-layer-004.safetensors")
+            ]
+        );
+        assert_eq!(first.structure_sha256(), automatic.structure_sha256());
+        assert_eq!(first.read_tensor("z").unwrap(), [3, 4]);
+        let mut streamed = Vec::new();
+        first
+            .tensor_reader("a")
+            .unwrap()
+            .read_to_end(&mut streamed)
+            .unwrap();
+        assert_eq!(streamed, [1, 2]);
+
+        let reopened = ShardedSafetensors::open_directory(&directory.0).unwrap();
+        assert_eq!(first.structure_sha256(), reopened.structure_sha256());
+        write_safe(&shard_z, vec![("z", "U8", vec![2], vec![4, 3])]);
+        assert_eq!(first.structure_sha256(), reopened.structure_sha256());
+        assert_eq!(first.read_tensor("z").unwrap(), [4, 3]);
+    }
+
+    #[test]
+    fn shard_directory_rejects_duplicate_tensors_and_symlinks() {
+        let duplicates = TempPath::new("dir");
+        fs::create_dir(&duplicates.0).unwrap();
+        write_safe(
+            &duplicates.0.join("model-layer-003.safetensors"),
+            vec![("same", "U8", vec![1], vec![1])],
+        );
+        write_safe(
+            &duplicates.0.join("model-layer-004.safetensors"),
+            vec![("same", "U8", vec![1], vec![2])],
+        );
+        assert!(matches!(
+            ShardedSafetensors::open_directory(&duplicates.0),
+            Err(SafeTensorError::DuplicateTensor(name)) if name == "same"
+        ));
+
+        let symlinked = TempPath::new("dir");
+        fs::create_dir(&symlinked.0).unwrap();
+        let target = symlinked.0.join("target.bin");
+        fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, symlinked.0.join("bad.safetensors")).unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open_directory(&symlinked.0),
+            Err(SafeTensorError::ShardPath(_))
+        ));
+        let alias = TempPath::new("dir-link");
+        std::os::unix::fs::symlink(&symlinked.0, &alias.0).unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open_auto(&alias.0),
+            Err(SafeTensorError::ShardPath(_))
         ));
     }
 

@@ -9,11 +9,13 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Exl3Metadata, Exl3Trellis, Nvfp4Metadata, RankFileError, TensorDescriptor,
+    Exl3Metadata, Exl3Trellis, Nvfp4Metadata, PlainDtype, RankFileError, TensorDescriptor,
     container::{
-        ALIGNMENT, CODEC_EXL3_SOURCE, DESCRIPTOR_BYTES, DESCRIPTOR_FLAG_AUX_REQUIRED, DTYPE_BF16,
+        ALIGNMENT, CODEC_BF16_ROW_MAJOR, CODEC_EXL3_SOURCE, CODEC_FP16_ROW_MAJOR,
+        CODEC_FP32_ROW_MAJOR, DESCRIPTOR_BYTES, DESCRIPTOR_FLAG_AUX_REQUIRED, DTYPE_BF16,
         DTYPE_FP16, DTYPE_I16, DTYPE_PACKED_E2M1X2, PAYLOAD_ALIGNMENT, RankHeaderFields, align_up,
-        derive_header_flags, encode_rank_header, first_16, sha256,
+        derive_header_flags, encode_rank_header, first_16, sha256, validate_plain_geometry,
+        validate_plain_padding,
     },
     nvfp4::validate_scale_plane,
 };
@@ -46,12 +48,58 @@ pub struct StreamingTensorSpec {
     logical_shape: [u32; 4],
     padded_shape: [u32; 4],
     quant_group_elements: u32,
+    ndim: u8,
+    aux_required: bool,
     metadata: Vec<u8>,
     primary_bytes: u64,
     aux_bytes: u64,
 }
 
 impl StreamingTensorSpec {
+    pub fn plain(
+        identity: StreamingTensorIdentity,
+        dtype: PlainDtype,
+        ndim: u8,
+        logical_shape: [u32; 4],
+        padded_shape: [u32; 4],
+    ) -> Result<Self, StreamRankError> {
+        let primary_bytes = padded_shape[..usize::from(ndim.min(4))].iter().try_fold(
+            dtype.element_bytes(),
+            |bytes, &extent| {
+                bytes
+                    .checked_mul(u64::from(extent))
+                    .ok_or(StreamRankError::Overflow)
+            },
+        )?;
+        validate_plain_geometry(dtype, ndim, logical_shape, padded_shape, primary_bytes)
+            .map_err(StreamRankError::RankFile)?;
+        let dtype_id = match dtype {
+            PlainDtype::Bf16 => DTYPE_BF16,
+            PlainDtype::Fp16 => DTYPE_FP16,
+            PlainDtype::Fp32 => 3,
+        };
+        Ok(Self {
+            tensor_id: identity.tensor_id,
+            name: identity.name,
+            role_id: identity.role_id,
+            layer_id: identity.layer_id,
+            expert_id: identity.expert_id,
+            tp_shard_axis: identity.tp_shard_axis,
+            flags: identity.flags,
+            codec_id: dtype as u16,
+            logical_dtype: dtype_id,
+            stored_dtype: dtype_id,
+            logical_shape,
+            padded_shape,
+            quant_group_elements: 0,
+            ndim,
+            aux_required: false,
+            metadata: Vec::new(),
+            primary_bytes,
+            aux_bytes: 0,
+        })
+    }
+
     pub fn nvfp4(
         identity: StreamingTensorIdentity,
         metadata: Nvfp4Metadata,
@@ -71,6 +119,8 @@ impl StreamingTensorSpec {
             logical_shape: [metadata.logical_n, metadata.logical_k, 1, 1],
             padded_shape: [metadata.padded_n, metadata.padded_k, 1, 1],
             quant_group_elements: 16,
+            ndim: 2,
+            aux_required: true,
             primary_bytes: u64::from(metadata.value_plane_bytes),
             aux_bytes: u64::from(metadata.scale_plane_bytes),
             metadata: metadata.encode().to_vec(),
@@ -111,6 +161,8 @@ impl StreamingTensorSpec {
             logical_shape,
             padded_shape: logical_shape,
             quant_group_elements: 0,
+            ndim: 2,
+            aux_required: true,
             metadata: metadata.encode().to_vec(),
             primary_bytes,
             aux_bytes,
@@ -268,8 +320,13 @@ impl StreamLayout {
                 logical_dtype: tensor.logical_dtype,
                 stored_dtype: tensor.stored_dtype,
                 tp_shard_axis: tensor.tp_shard_axis,
-                ndim: 2,
-                flags: tensor.flags | DESCRIPTOR_FLAG_AUX_REQUIRED,
+                ndim: tensor.ndim,
+                flags: tensor.flags
+                    | if tensor.aux_required {
+                        DESCRIPTOR_FLAG_AUX_REQUIRED
+                    } else {
+                        0
+                    },
                 logical_shape: tensor.logical_shape,
                 padded_shape: tensor.padded_shape,
                 payload_offset: u64::try_from(primary_offset)
@@ -602,6 +659,30 @@ impl StreamingRankWriter {
     fn validate_planes(&self, index: usize) -> Result<(), StreamRankError> {
         let descriptor = &self.layout.descriptors[index];
         match descriptor.codec_id {
+            CODEC_BF16_ROW_MAJOR | CODEC_FP16_ROW_MAJOR | CODEC_FP32_ROW_MAJOR => {
+                let dtype = match descriptor.codec_id {
+                    CODEC_BF16_ROW_MAJOR => PlainDtype::Bf16,
+                    CODEC_FP16_ROW_MAJOR => PlainDtype::Fp16,
+                    CODEC_FP32_ROW_MAJOR => PlainDtype::Fp32,
+                    _ => unreachable!(),
+                };
+                if descriptor.logical_shape == descriptor.padded_shape {
+                    return Ok(());
+                }
+                let primary = read_range_vec(
+                    &self.file,
+                    descriptor.payload_offset,
+                    descriptor.payload_bytes,
+                )?;
+                validate_plain_padding(
+                    &primary,
+                    dtype,
+                    descriptor.ndim,
+                    descriptor.logical_shape,
+                    descriptor.padded_shape,
+                )
+                .map_err(StreamRankError::RankFile)
+            }
             0x0100 | 0x0101 => {
                 let aux = read_range_vec(&self.file, descriptor.aux_offset, descriptor.aux_bytes)?;
                 validate_scale_plane(&aux).map_err(StreamRankError::Nvfp4)
@@ -881,8 +962,8 @@ mod tests {
     };
 
     use crate::{
-        Codec, EXL3_MCG_MULTIPLIER, Exl3Projection, PackedNvfp4, RankFile, RankFileBuilder,
-        TensorPayload, TensorRecord,
+        Codec, EXL3_MCG_MULTIPLIER, Exl3Projection, PackedNvfp4, PlainTensor, RankFile,
+        RankFileBuilder, TensorPayload, TensorRecord,
     };
 
     use super::*;
@@ -949,6 +1030,22 @@ mod tests {
                 flags: 0,
                 payload: TensorPayload::Exl3Source(exl3.clone()),
             },
+            TensorRecord {
+                tensor_id: 2,
+                name: "plain".into(),
+                role_id: 3,
+                layer_id: -1,
+                expert_id: -1,
+                tp_shard_axis: -1,
+                flags: 1,
+                payload: TensorPayload::Plain(PlainTensor {
+                    dtype: PlainDtype::Bf16,
+                    ndim: 1,
+                    logical_shape: [3, 1, 1, 1],
+                    padded_shape: [4, 1, 1, 1],
+                    bytes: vec![1, 0, 2, 0, 3, 0, 0, 0],
+                }),
+            },
         ];
         let tensors = vec![
             StreamingTensorSpec::nvfp4(
@@ -977,6 +1074,22 @@ mod tests {
                 exl3.metadata.clone(),
             )
             .unwrap(),
+            StreamingTensorSpec::plain(
+                StreamingTensorIdentity {
+                    tensor_id: 2,
+                    name: "plain".into(),
+                    role_id: 3,
+                    layer_id: -1,
+                    expert_id: -1,
+                    tp_shard_axis: -1,
+                    flags: 1,
+                },
+                PlainDtype::Bf16,
+                1,
+                [3, 1, 1, 1],
+                [4, 1, 1, 1],
+            )
+            .unwrap(),
         ];
         let config = StreamingRankConfig {
             rank,
@@ -1003,6 +1116,8 @@ mod tests {
             nvfp4.scales,
             exl3.primary_plane().unwrap(),
             exl3.aux_plane().unwrap(),
+            vec![1, 0, 2, 0, 3, 0, 0, 0],
+            Vec::new(),
         ];
         (config, builder, planes)
     }
@@ -1024,13 +1139,30 @@ mod tests {
         writer
             .write_tensor(1, &mut &planes[2][..], &mut &planes[3][..])
             .unwrap();
+        writer
+            .write_tensor(2, &mut &planes[4][..], &mut &planes[5][..])
+            .unwrap();
         let summary = writer.prepare().unwrap();
         let conversion_uuid = [9; 16];
         writer.finalize(&summary, conversion_uuid).unwrap();
         drop(writer);
 
         let observed = fs::read(&path.0).unwrap();
-        assert_eq!(observed, builder.build(conversion_uuid).unwrap());
+        let expected = builder.build(conversion_uuid).unwrap();
+        assert_eq!(observed.len(), expected.len());
+        let difference = observed
+            .iter()
+            .zip(&expected)
+            .position(|(observed, expected)| observed != expected);
+        let body_difference = observed[crate::HEADER_BYTES..]
+            .iter()
+            .zip(&expected[crate::HEADER_BYTES..])
+            .position(|(observed, expected)| observed != expected)
+            .map(|offset| offset + crate::HEADER_BYTES);
+        assert!(
+            difference.is_none(),
+            "first streaming/reference difference at {difference:?}; body {body_difference:?}"
+        );
         RankFile::read(observed).unwrap();
     }
 

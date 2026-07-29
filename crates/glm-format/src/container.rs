@@ -10,6 +10,9 @@ pub const HEADER_BYTES: usize = 4096;
 pub(crate) const DESCRIPTOR_BYTES: usize = 256;
 pub(crate) const ALIGNMENT: usize = 4096;
 pub(crate) const PAYLOAD_ALIGNMENT: usize = 256;
+pub(crate) const CODEC_BF16_ROW_MAJOR: u16 = 0x0001;
+pub(crate) const CODEC_FP16_ROW_MAJOR: u16 = 0x0002;
+pub(crate) const CODEC_FP32_ROW_MAJOR: u16 = 0x0003;
 pub(crate) const CODEC_NVFP4_1D: u16 = 0x0100;
 pub(crate) const CODEC_NVFP4_2D: u16 = 0x0101;
 pub(crate) const CODEC_EXL3_SOURCE: u16 = 0x0200;
@@ -22,6 +25,60 @@ pub(crate) const DTYPE_BF16: u16 = 1;
 pub(crate) const DTYPE_FP16: u16 = 2;
 pub(crate) const DTYPE_PACKED_E2M1X2: u16 = 6;
 pub(crate) const DTYPE_I16: u16 = 10;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum PlainDtype {
+    Bf16 = CODEC_BF16_ROW_MAJOR,
+    Fp16 = CODEC_FP16_ROW_MAJOR,
+    Fp32 = CODEC_FP32_ROW_MAJOR,
+}
+
+impl PlainDtype {
+    #[must_use]
+    pub const fn element_bytes(self) -> u64 {
+        match self {
+            Self::Bf16 | Self::Fp16 => 2,
+            Self::Fp32 => 4,
+        }
+    }
+
+    const fn dtype_id(self) -> u16 {
+        match self {
+            Self::Bf16 => DTYPE_BF16,
+            Self::Fp16 => DTYPE_FP16,
+            Self::Fp32 => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlainTensor {
+    pub dtype: PlainDtype,
+    pub ndim: u8,
+    pub logical_shape: [u32; 4],
+    pub padded_shape: [u32; 4],
+    pub bytes: Vec<u8>,
+}
+
+impl PlainTensor {
+    pub fn validate(&self) -> Result<(), RankFileError> {
+        validate_plain_geometry(
+            self.dtype,
+            self.ndim,
+            self.logical_shape,
+            self.padded_shape,
+            self.bytes.len() as u64,
+        )?;
+        validate_plain_padding(
+            &self.bytes,
+            self.dtype,
+            self.ndim,
+            self.logical_shape,
+            self.padded_shape,
+        )
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TensorDescriptor {
@@ -73,9 +130,7 @@ impl TensorDescriptor {
         for (index, &dimension) in self.padded_shape.iter().enumerate() {
             put_u32(&mut out, 44 + index * 4, dimension);
         }
-        let logical_elements = u64::from(self.logical_shape[0])
-            .checked_mul(u64::from(self.logical_shape[1]))
-            .unwrap();
+        let logical_elements = shape_elements(self.logical_shape, self.ndim).unwrap();
         put_u64(&mut out, 64, logical_elements);
         put_u64(&mut out, 72, self.payload_offset);
         put_u64(&mut out, 80, self.payload_bytes);
@@ -111,9 +166,17 @@ impl TensorDescriptor {
         codec_metadata_sha256.copy_from_slice(&bytes[192..224]);
         let logical_shape = std::array::from_fn(|index| get_u32(bytes, 28 + index * 4));
         let padded_shape = std::array::from_fn(|index| get_u32(bytes, 44 + index * 4));
-        let logical_elements = u64::from(logical_shape[0])
-            .checked_mul(u64::from(logical_shape[1]))
-            .ok_or(RankFileError::Overflow)?;
+        let ndim = bytes[23];
+        let logical_elements = shape_elements(logical_shape, ndim)?;
+        if logical_shape[usize::from(ndim)..]
+            .iter()
+            .any(|&extent| extent != 1)
+            || padded_shape[usize::from(ndim)..]
+                .iter()
+                .any(|&extent| extent != 1)
+        {
+            return Err(RankFileError::Descriptor);
+        }
         if get_u64(bytes, 64) != logical_elements {
             return Err(RankFileError::Descriptor);
         }
@@ -128,7 +191,7 @@ impl TensorDescriptor {
             logical_dtype: get_u16(bytes, 18),
             stored_dtype: get_u16(bytes, 20),
             tp_shard_axis: i8::from_le_bytes([bytes[22]]),
-            ndim: bytes[23],
+            ndim,
             flags: bytes[24],
             logical_shape,
             padded_shape,
@@ -149,6 +212,7 @@ impl TensorDescriptor {
 
 #[derive(Clone, Debug)]
 pub enum TensorPayload {
+    Plain(PlainTensor),
     Nvfp4(PackedNvfp4),
     /// Pinned EXL3 source components. This is an inspection/CPU-proof
     /// payload until a reviewed direct SM120 kernel qualifies codec 0x0200.
@@ -326,8 +390,13 @@ impl RankFileBuilder {
                 logical_dtype: encoded.logical_dtype,
                 stored_dtype: encoded.stored_dtype,
                 tp_shard_axis: tensor.tp_shard_axis,
-                ndim: 2,
-                flags: tensor.flags | DESCRIPTOR_FLAG_AUX_REQUIRED,
+                ndim: encoded.ndim,
+                flags: tensor.flags
+                    | if encoded.aux_required {
+                        DESCRIPTOR_FLAG_AUX_REQUIRED
+                    } else {
+                        0
+                    },
                 logical_shape: encoded.logical_shape,
                 padded_shape: encoded.padded_shape,
                 payload_offset: u64::try_from(
@@ -645,6 +714,37 @@ fn validate_tensor_regions(
         return Err(RankFileError::TensorRegion);
     }
     match descriptor.codec_id {
+        CODEC_BF16_ROW_MAJOR | CODEC_FP16_ROW_MAJOR | CODEC_FP32_ROW_MAJOR => {
+            let dtype = match descriptor.codec_id {
+                CODEC_BF16_ROW_MAJOR => PlainDtype::Bf16,
+                CODEC_FP16_ROW_MAJOR => PlainDtype::Fp16,
+                CODEC_FP32_ROW_MAJOR => PlainDtype::Fp32,
+                _ => unreachable!(),
+            };
+            if descriptor.logical_dtype != dtype.dtype_id()
+                || descriptor.stored_dtype != dtype.dtype_id()
+                || descriptor.flags & DESCRIPTOR_FLAG_AUX_REQUIRED != 0
+                || descriptor.quant_group_elements != 0
+                || descriptor.aux_bytes != 0
+                || descriptor.codec_metadata_bytes != 0
+            {
+                return Err(RankFileError::Descriptor);
+            }
+            validate_plain_geometry(
+                dtype,
+                descriptor.ndim,
+                descriptor.logical_shape,
+                descriptor.padded_shape,
+                descriptor.payload_bytes,
+            )?;
+            validate_plain_padding(
+                &bytes[value],
+                dtype,
+                descriptor.ndim,
+                descriptor.logical_shape,
+                descriptor.padded_shape,
+            )?;
+        }
         CODEC_NVFP4_1D | CODEC_NVFP4_2D => {
             validate_scale_plane(&bytes[aux.clone()]).map_err(RankFileError::Nvfp4)?;
             let decoded = Nvfp4Metadata::decode(&bytes[metadata]).map_err(RankFileError::Nvfp4)?;
@@ -708,15 +808,19 @@ fn validate_tensor_regions(
 pub(crate) fn derive_header_flags(descriptors: &[TensorDescriptor]) -> Result<u32, RankFileError> {
     let mut saw_nvfp4 = false;
     let mut saw_exl3 = false;
+    let mut saw_plain = false;
     for descriptor in descriptors {
         match descriptor.codec_id {
+            CODEC_BF16_ROW_MAJOR | CODEC_FP16_ROW_MAJOR | CODEC_FP32_ROW_MAJOR => {
+                saw_plain = true;
+            }
             CODEC_NVFP4_1D | CODEC_NVFP4_2D => saw_nvfp4 = true,
             CODEC_EXL3_SOURCE => saw_exl3 = true,
             codec => return Err(RankFileError::UnsupportedCodec(codec)),
         }
     }
     let mut flags = 0;
-    if saw_nvfp4 && !saw_exl3 {
+    if (saw_plain || saw_nvfp4) && !saw_exl3 {
         flags |= HEADER_FLAG_DIRECT_KERNEL;
     }
     if saw_nvfp4 {
@@ -729,6 +833,102 @@ pub(crate) fn derive_header_flags(descriptors: &[TensorDescriptor]) -> Result<u3
         flags |= HEADER_FLAG_HYBRID;
     }
     Ok(flags)
+}
+
+pub(crate) fn validate_plain_geometry(
+    dtype: PlainDtype,
+    ndim: u8,
+    logical_shape: [u32; 4],
+    padded_shape: [u32; 4],
+    payload_bytes: u64,
+) -> Result<(), RankFileError> {
+    if !(1..=4).contains(&ndim)
+        || logical_shape
+            .iter()
+            .zip(padded_shape)
+            .take(usize::from(ndim))
+            .any(|(&logical, padded)| logical == 0 || logical > padded)
+        || logical_shape[usize::from(ndim)..]
+            .iter()
+            .any(|&extent| extent != 1)
+        || padded_shape[usize::from(ndim)..]
+            .iter()
+            .any(|&extent| extent != 1)
+    {
+        return Err(RankFileError::Descriptor);
+    }
+    let padded_elements = shape_elements(padded_shape, ndim)?;
+    if padded_elements
+        .checked_mul(dtype.element_bytes())
+        .ok_or(RankFileError::Overflow)?
+        != payload_bytes
+    {
+        return Err(RankFileError::Descriptor);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_plain_padding(
+    payload: &[u8],
+    dtype: PlainDtype,
+    ndim: u8,
+    logical_shape: [u32; 4],
+    padded_shape: [u32; 4],
+) -> Result<(), RankFileError> {
+    validate_plain_geometry(
+        dtype,
+        ndim,
+        logical_shape,
+        padded_shape,
+        payload.len() as u64,
+    )?;
+    if logical_shape == padded_shape {
+        return Ok(());
+    }
+    let element_bytes =
+        usize::try_from(dtype.element_bytes()).map_err(|_| RankFileError::Overflow)?;
+    let padded_elements = usize::try_from(shape_elements(padded_shape, ndim)?)
+        .map_err(|_| RankFileError::Overflow)?;
+    for linear in 0..padded_elements {
+        let mut remainder = linear;
+        let mut padding = false;
+        for axis in (0..usize::from(ndim)).rev() {
+            let extent =
+                usize::try_from(padded_shape[axis]).map_err(|_| RankFileError::Overflow)?;
+            let coordinate = remainder % extent;
+            remainder /= extent;
+            padding |= coordinate
+                >= usize::try_from(logical_shape[axis]).map_err(|_| RankFileError::Overflow)?;
+        }
+        if padding {
+            let start = linear
+                .checked_mul(element_bytes)
+                .ok_or(RankFileError::Overflow)?;
+            if payload[start..start + element_bytes]
+                .iter()
+                .any(|&byte| byte != 0)
+            {
+                return Err(RankFileError::NonCanonicalLayout);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn shape_elements(shape: [u32; 4], ndim: u8) -> Result<u64, RankFileError> {
+    if !(1..=4).contains(&ndim) {
+        return Err(RankFileError::Descriptor);
+    }
+    shape[..usize::from(ndim)]
+        .iter()
+        .try_fold(1_u64, |product, &extent| {
+            if extent == 0 {
+                return Err(RankFileError::Descriptor);
+            }
+            product
+                .checked_mul(u64::from(extent))
+                .ok_or(RankFileError::Overflow)
+        })
 }
 
 fn validate_canonical_tensor_layout(
@@ -878,6 +1078,8 @@ struct EncodedTensor {
     logical_shape: [u32; 4],
     padded_shape: [u32; 4],
     quant_group_elements: u32,
+    ndim: u8,
+    aux_required: bool,
     metadata: Vec<u8>,
     primary: Vec<u8>,
     aux: Vec<u8>,
@@ -886,6 +1088,22 @@ struct EncodedTensor {
 impl EncodedTensor {
     fn from_record(record: &TensorRecord, rank: u32) -> Result<Self, RankFileError> {
         match &record.payload {
+            TensorPayload::Plain(plain) => {
+                plain.validate()?;
+                Ok(Self {
+                    codec_id: plain.dtype as u16,
+                    logical_dtype: plain.dtype.dtype_id(),
+                    stored_dtype: plain.dtype.dtype_id(),
+                    logical_shape: plain.logical_shape,
+                    padded_shape: plain.padded_shape,
+                    quant_group_elements: 0,
+                    ndim: plain.ndim,
+                    aux_required: false,
+                    metadata: Vec::new(),
+                    primary: plain.bytes.clone(),
+                    aux: Vec::new(),
+                })
+            }
             TensorPayload::Nvfp4(packed) => {
                 packed.validate().map_err(RankFileError::Nvfp4)?;
                 Ok(Self {
@@ -895,6 +1113,8 @@ impl EncodedTensor {
                     logical_shape: [packed.metadata.logical_n, packed.metadata.logical_k, 1, 1],
                     padded_shape: [packed.metadata.padded_n, packed.metadata.padded_k, 1, 1],
                     quant_group_elements: 16,
+                    ndim: 2,
+                    aux_required: true,
                     metadata: packed.metadata.encode().to_vec(),
                     primary: packed.values.clone(),
                     aux: packed.scales.clone(),
@@ -920,6 +1140,8 @@ impl EncodedTensor {
                     logical_shape,
                     padded_shape: logical_shape,
                     quant_group_elements: 0,
+                    ndim: 2,
+                    aux_required: true,
                     metadata: source.metadata.encode().to_vec(),
                     primary: source.primary_plane().map_err(RankFileError::Exl3)?,
                     aux: source.aux_plane().map_err(RankFileError::Exl3)?,
@@ -1106,6 +1328,28 @@ mod tests {
         builder
     }
 
+    fn plain_builder(rank: u32) -> RankFileBuilder {
+        let mut builder = builder(rank);
+        builder.manifest = format!("{{\"rank\":{rank},\"schema\":\"plain-test-v1\"}}").into_bytes();
+        builder.tensors = vec![TensorRecord {
+            tensor_id: 0,
+            name: "model.layers.3.mlp.gate.e_score_correction_bias".into(),
+            role_id: 0x0302,
+            layer_id: 3,
+            expert_id: -1,
+            tp_shard_axis: -1,
+            flags: 1,
+            payload: TensorPayload::Plain(PlainTensor {
+                dtype: PlainDtype::Bf16,
+                ndim: 2,
+                logical_shape: [2, 3, 1, 1],
+                padded_shape: [2, 4, 1, 1],
+                bytes: vec![1, 0, 2, 0, 3, 0, 0, 0, 4, 0, 5, 0, 6, 0, 0, 0],
+            }),
+        }];
+        builder
+    }
+
     fn resign_header(bytes: &mut [u8]) {
         let descriptor_start = usize::try_from(get_u64(bytes, 56)).unwrap();
         let descriptor_len = usize::try_from(get_u64(bytes, 64)).unwrap();
@@ -1202,6 +1446,37 @@ mod tests {
             Err(RankFileError::CodecMismatch)
         ));
         assert_eq!(parsed.decode_exl3_source(1).unwrap(), exl3_fixture(0));
+    }
+
+    #[test]
+    fn plain_protected_tensor_round_trips_and_padding_is_hard() {
+        let builders = [
+            plain_builder(0),
+            plain_builder(1),
+            plain_builder(2),
+            plain_builder(3),
+        ];
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        let bytes = builders[0].build(conversion).unwrap();
+        assert_eq!(get_u32(&bytes, 20), HEADER_FLAG_DIRECT_KERNEL);
+        let parsed = RankFile::read(bytes).unwrap();
+        let descriptor = &parsed.descriptors[0];
+        assert_eq!(descriptor.codec_id, CODEC_BF16_ROW_MAJOR);
+        assert_eq!(descriptor.ndim, 2);
+        assert_eq!(descriptor.payload_bytes, 16);
+        assert_eq!(descriptor.aux_bytes, 0);
+        assert_eq!(descriptor.codec_metadata_bytes, 0);
+        assert_eq!(parsed.tensor_primary(0).unwrap().len(), 16);
+
+        let mut invalid = plain_builder(0);
+        let TensorPayload::Plain(plain) = &mut invalid.tensors[0].payload else {
+            unreachable!()
+        };
+        plain.bytes[6] = 1;
+        assert!(matches!(
+            invalid.build([0; 16]),
+            Err(RankFileError::NonCanonicalLayout)
+        ));
     }
 
     #[test]

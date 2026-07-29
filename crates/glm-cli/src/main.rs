@@ -208,50 +208,56 @@ struct SafetensorsInventory {
 }
 
 fn safetensors_inventory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let is_directory = path.is_dir();
     let is_index = path
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with(".safetensors.index.json"));
     let mut dtype_counts = BTreeMap::new();
     let mut dtype_bytes = BTreeMap::new();
-    let (kind, identity, tensor_count, shard_count, tensor_payload_bytes) = if is_index {
-        let files = ShardedSafetensors::open(path)?;
-        let mut total = 0_u64;
-        for name in files.tensor_names() {
-            let descriptor = files
-                .tensor(name)
-                .ok_or("validated sharded tensor disappeared")?;
-            *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
-            *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
-            total = total
-                .checked_add(descriptor.bytes)
-                .ok_or("safetensors byte total overflow")?;
-        }
-        (
-            "sharded-index",
-            files.index_sha256(),
-            files.tensor_names().len(),
-            files.shards().len(),
-            total,
-        )
-    } else {
-        let file = SafeTensorFile::open(path)?;
-        let mut total = 0_u64;
-        for descriptor in file.tensors().values() {
-            *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
-            *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
-            total = total
-                .checked_add(descriptor.bytes)
-                .ok_or("safetensors byte total overflow")?;
-        }
-        (
-            "single-file",
-            file.header_sha256(),
-            file.tensors().len(),
-            1,
-            total,
-        )
-    };
+    let (kind, identity, tensor_count, shard_count, tensor_payload_bytes) =
+        if is_directory || is_index {
+            let files = ShardedSafetensors::open_auto(path)?;
+            let mut total = 0_u64;
+            for name in files.tensor_names() {
+                let descriptor = files
+                    .tensor(name)
+                    .ok_or("validated sharded tensor disappeared")?;
+                *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
+                *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
+                total = total
+                    .checked_add(descriptor.bytes)
+                    .ok_or("safetensors byte total overflow")?;
+            }
+            (
+                if is_directory {
+                    "shard-directory"
+                } else {
+                    "sharded-index"
+                },
+                files.structure_sha256(),
+                files.tensor_names().len(),
+                files.shards().len(),
+                total,
+            )
+        } else {
+            let file = SafeTensorFile::open(path)?;
+            let mut total = 0_u64;
+            for descriptor in file.tensors().values() {
+                *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
+                *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
+                total = total
+                    .checked_add(descriptor.bytes)
+                    .ok_or("safetensors byte total overflow")?;
+            }
+            (
+                "single-file",
+                file.header_sha256(),
+                file.tensors().len(),
+                1,
+                total,
+            )
+        };
     let report = SafetensorsInventory {
         schema: "glmaxx.safetensors-inventory.v1",
         kind,
@@ -323,62 +329,68 @@ fn exl3_safetensors_proof(
         format!("{stem}.svh"),
         format!("{stem}.trellis"),
     ];
+    let is_directory = path.is_dir();
     let is_index = path
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with(".safetensors.index.json"));
 
-    let (source_kind, structure_hash, tensor, components, source_bytes) = if is_index {
-        let source = ShardedSafetensors::open(path)?;
-        let mut components = Vec::with_capacity(names.len());
-        let mut source_bytes = Vec::new();
-        for name in &names {
-            let descriptor = source
-                .tensor(name)
-                .ok_or_else(|| format!("missing validated component {name}"))?;
-            let bytes = source.read_tensor(name)?;
-            components.push(Exl3SafetensorsComponent {
-                name: name.clone(),
-                dtype: descriptor.dtype.name(),
-                shape: descriptor.shape.clone(),
-                bytes: descriptor.bytes,
-                sha256: hex(&sha256(&bytes)),
-            });
-            source_bytes.extend_from_slice(&bytes);
-        }
-        (
-            "sharded-index",
-            source.index_sha256(),
-            glm_format::load_exl3_projection_sharded(&source, &stem, metadata)?,
-            components,
-            source_bytes,
-        )
-    } else {
-        let source = SafeTensorFile::open(path)?;
-        let mut components = Vec::with_capacity(names.len());
-        let mut source_bytes = Vec::new();
-        for name in &names {
-            let descriptor = source
-                .tensor(name)
-                .ok_or_else(|| format!("missing validated component {name}"))?;
-            let bytes = source.read_tensor(name)?;
-            components.push(Exl3SafetensorsComponent {
-                name: name.clone(),
-                dtype: descriptor.dtype.name(),
-                shape: descriptor.shape.clone(),
-                bytes: descriptor.bytes,
-                sha256: hex(&sha256(&bytes)),
-            });
-            source_bytes.extend_from_slice(&bytes);
-        }
-        (
-            "single-file",
-            source.header_sha256(),
-            glm_format::load_exl3_projection(&source, &stem, metadata)?,
-            components,
-            source_bytes,
-        )
-    };
+    let (source_kind, structure_hash, tensor, components, source_bytes) =
+        if is_directory || is_index {
+            let source = ShardedSafetensors::open_auto(path)?;
+            let mut components = Vec::with_capacity(names.len());
+            let mut source_bytes = Vec::new();
+            for name in &names {
+                let descriptor = source
+                    .tensor(name)
+                    .ok_or_else(|| format!("missing validated component {name}"))?;
+                let bytes = source.read_tensor(name)?;
+                components.push(Exl3SafetensorsComponent {
+                    name: name.clone(),
+                    dtype: descriptor.dtype.name(),
+                    shape: descriptor.shape.clone(),
+                    bytes: descriptor.bytes,
+                    sha256: hex(&sha256(&bytes)),
+                });
+                source_bytes.extend_from_slice(&bytes);
+            }
+            (
+                if is_directory {
+                    "shard-directory"
+                } else {
+                    "sharded-index"
+                },
+                source.structure_sha256(),
+                glm_format::load_exl3_projection_sharded(&source, &stem, metadata)?,
+                components,
+                source_bytes,
+            )
+        } else {
+            let source = SafeTensorFile::open(path)?;
+            let mut components = Vec::with_capacity(names.len());
+            let mut source_bytes = Vec::new();
+            for name in &names {
+                let descriptor = source
+                    .tensor(name)
+                    .ok_or_else(|| format!("missing validated component {name}"))?;
+                let bytes = source.read_tensor(name)?;
+                components.push(Exl3SafetensorsComponent {
+                    name: name.clone(),
+                    dtype: descriptor.dtype.name(),
+                    shape: descriptor.shape.clone(),
+                    bytes: descriptor.bytes,
+                    sha256: hex(&sha256(&bytes)),
+                });
+                source_bytes.extend_from_slice(&bytes);
+            }
+            (
+                "single-file",
+                source.header_sha256(),
+                glm_format::load_exl3_projection(&source, &stem, metadata)?,
+                components,
+                source_bytes,
+            )
+        };
 
     let primary = tensor.primary_plane()?;
     let aux = tensor.aux_plane()?;

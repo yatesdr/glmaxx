@@ -9,8 +9,8 @@ mod safetensors;
 mod stream;
 
 pub use container::{
-    HEADER_BYTES, RankFile, RankFileBuilder, RankFileError, TensorDescriptor, TensorPayload,
-    TensorRecord,
+    HEADER_BYTES, PlainDtype, PlainTensor, RankFile, RankFileBuilder, RankFileError,
+    TensorDescriptor, TensorPayload, TensorRecord,
 };
 pub use crc32c::crc32c;
 pub use exl3::{

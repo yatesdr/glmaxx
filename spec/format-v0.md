@@ -309,6 +309,15 @@ the padded shape. Padding values SHALL be zero.
 The payload SHALL already represent the rank-local TP shard. The loader
 SHALL NOT slice a plain tensor.
 
+Plain descriptors have no auxiliary or codec-metadata bytes. Their
+`aux_offset` is the next 256-byte-aligned position after the primary payload,
+`aux_bytes` is zero, `codec_metadata_offset` is the current canonical
+metadata cursor, and `codec_metadata_bytes` is zero. Both absent-plane
+SHA-256 fields contain `SHA256(empty)`, and descriptor flag 7 is clear. The
+zero-length aligned aux position remains the canonical payload cursor for the
+next tensor, so any intervening bytes are hashed zero padding rather than an
+unaccounted gap.
+
 ## 11. NVFP4 numerical definition
 
 For logical value `x`:
