@@ -1,6 +1,6 @@
 //! Bounded, CPU-testable serving coordinator for the fixed TP4 execution
-//! contract. Device workers can replace `CpuWorkerPool` without changing
-//! scheduler, event, or collective-order semantics.
+//! contract. Persistent device rank executors plug into `Tp4WorkerPool`
+//! without changing scheduler, event, or collective-order semantics.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -8,7 +8,7 @@ use std::{
 };
 
 use glm_cache::PrefixPageKey;
-use glm_engine::{CpuWorkerPool, GraphProfile, WorkerError};
+use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
 use glm_scheduler::{
     BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog, SamplingCollective,
     Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
@@ -67,7 +67,7 @@ pub enum RequestEvent {
 pub struct ServingCoordinator {
     scheduler: Scheduler,
     compiler: StepPlanCompiler,
-    workers: CpuWorkerPool,
+    workers: Tp4WorkerPool,
     sampling: SamplingCollective,
     sequence_table_generation: u64,
     event_capacity: usize,
@@ -84,7 +84,7 @@ impl ServingCoordinator {
         profile: GraphProfile,
         tenants: Vec<TenantConfig>,
         routes: RouteCatalog,
-        workers: CpuWorkerPool,
+        workers: Tp4WorkerPool,
     ) -> Result<Self, ServingError> {
         if config.event_capacity < MAXIMUM_STEP_EVENTS {
             return Err(ServingError::Config);
@@ -517,7 +517,7 @@ mod tests {
                 },
             ],
             routes(),
-            CpuWorkerPool::spawn(2, fault).unwrap(),
+            Tp4WorkerPool::spawn_cpu(2, fault).unwrap(),
         )
         .unwrap()
     }

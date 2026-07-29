@@ -31,5 +31,6 @@ pub use weight::{
     ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
 };
 pub use worker::{
-    CpuWorkerPool, MockWorkerFault, RankStepAck, StepHandle, StepOutcome, WorkerError,
+    MockWorkerFault, RankExecutionError, RankExecutor, RankStepAck, StepHandle, StepOutcome,
+    Tp4WorkerPool, WorkerError,
 };

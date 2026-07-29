@@ -104,7 +104,7 @@ pinned EXL3/Trellis decoder, immutable per-tensor hybrid policy, four-rank
 startup consensus, continuous-batching scheduler simulation, distributed
 sampling, crash-consistent file-backed NVMe pages, bounded asynchronous
 restore, HBM/DRAM/NVMe residency, restore-backed prefix admission, a
-rank-invariant StepPlan compiler, bounded TP4 CPU workers, request streaming,
+rank-invariant StepPlan compiler, bounded persistent TP4 rank workers, request streaming,
 routed FC2, and full sparse-layer reduction descriptors. The EXL3 decoder
 reproduced one real pinned checkpoint projection exactly against an
 independent NumPy oracle; model bytes remain outside Git.

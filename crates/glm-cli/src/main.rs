@@ -16,10 +16,10 @@ use glm_cuda::{
     fc2_workspace_bytes, workspace_bytes,
 };
 use glm_engine::{
-    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CpuWorkerPool, GIB,
-    GraphEntry, GraphKey, GraphProfile, ProfileBudgetArtifact, ProfileClass, RankMemoryInput,
-    STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan,
-    TP_RANK_MASK, plan_system_memory,
+    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB, GraphEntry,
+    GraphKey, GraphProfile, ProfileBudgetArtifact, ProfileClass, RankMemoryInput, STEP_PLAN_ABI,
+    STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK,
+    Tp4WorkerPool, plan_system_memory,
 };
 use glm_format::{
     CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
@@ -1131,7 +1131,7 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
             },
         ],
         routes,
-        CpuWorkerPool::spawn(2, None)?,
+        Tp4WorkerPool::spawn_cpu(2, None)?,
     )?;
     serving.attach_prefix_cache(prefix)?;
     serving.admit_tokens(

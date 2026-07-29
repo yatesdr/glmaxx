@@ -6,9 +6,11 @@ Status: executable CPU/control-plane proof; no SM120 performance claim
 
 The repository now has an executable serving path from multi-user admission
 through a four-rank worker boundary. It is deliberately backend-neutral: the
-CPU workers prove collective order, queue bounds, and lifecycle semantics;
-authorized SM120 workers replace that execution point without changing the
-scheduler or cache contracts.
+CPU rank executors prove collective order, queue bounds, and lifecycle
+semantics. `Tp4WorkerPool` owns four persistent, mutable, thread-affine
+`RankExecutor` instances, so authorized SM120 executors can own one CUDA
+context, stream/graph set, weight view, and collective handle per rank without
+changing the scheduler or cache contracts.
 
 ## Implemented path
 
@@ -19,7 +21,9 @@ scheduler or cache contracts.
    and distributed sampling routes are explicit and graph-qualified.
 3. One bounded dispatcher sends the identical plan to four rank workers.
    Plan, schedule, and output consensus are checked before the scheduler may
-   commit the step.
+   commit the step. Plan and collective-schedule validation occurs before the
+   backend entry point. Each executor remains on its named rank thread across
+   steps and may mutate only its own rank-local state.
 4. Verify steps commit a checked value from one through `depth + 1`, without
    crossing a request's generation limit.
 5. Request events cover admission, prefill progress, tokens, finish,
@@ -79,7 +83,8 @@ next authorized cn4 work is:
 3. record actual-shape FC1 inclusive timings and counters;
 4. replace the retained CUDA-core control with block-scaled MMA;
 5. qualify the EXL3 source consumer;
-6. connect the qualified device worker to this exact `StepPlan` boundary;
+6. implement `RankExecutor` with qualified CUDA rank state and connect it to
+   this exact `StepPlan` boundary;
 7. advance to TP4 one-layer replay only after the microbenchmark gate passes.
 
 Until those gates pass, the executable reports its backend as
