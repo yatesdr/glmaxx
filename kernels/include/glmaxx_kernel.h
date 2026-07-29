@@ -220,6 +220,11 @@ uint64_t glmaxx_exl3_projection_workspace_bytes(uint32_t rows,
                                                 uint32_t logical_n);
 const char* glmaxx_kernel_abi(void);
 const char* glmaxx_exl3_kernel_abi(void);
+int32_t glmaxx_device_count(int32_t* count);
+int32_t glmaxx_device_bind(int32_t device_index,
+                           int32_t* compute_capability,
+                           int32_t* multiprocessor_count,
+                           uint64_t* total_memory_bytes);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);
 int32_t glmaxx_stream_create(uint64_t* stream);

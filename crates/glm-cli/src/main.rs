@@ -204,6 +204,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_exl3_smoke(projection, rows)?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-rank-bind-smoke") => gpu_rank_bind_smoke()?,
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-matrix") => {
             let path = arguments
                 .get(2)
@@ -247,7 +249,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -1394,6 +1396,63 @@ fn matrix_proof() -> Result<MatrixProof, Box<dyn std::error::Error>> {
         expansion: "routing rows x routing cases at deterministic-random-v1, plus numerical rows x numerical cases at one-hot-expert-0; not a cross product",
         gpu_evidence: "none: deterministic CPU fixture expansion only",
     })
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_rank_bind_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    let workers: Vec<_> = (0_u8..4)
+        .map(|rank| {
+            std::thread::Builder::new()
+                .name(format!("glmaxx-bind-rank-{rank}"))
+                .spawn(move || {
+                    let context = glm_cuda::NativeRankContext::bind(rank)?;
+                    let identity = context.identity();
+                    if context.stream()? == 0 {
+                        return Err(glm_cuda::KernelError::Null);
+                    }
+                    context.synchronize()?;
+                    Ok::<_, glm_cuda::KernelError>(identity)
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    let mut identities = Vec::with_capacity(4);
+    for worker in workers {
+        identities.push(worker.join().map_err(|_| "rank bind worker panicked")??);
+    }
+    identities.sort_by_key(|identity| identity.device_index);
+    if identities.len() != 4
+        || identities.iter().enumerate().any(|(rank, identity)| {
+            identity.visible_devices != 4
+                || usize::try_from(identity.device_index).ok() != Some(rank)
+                || identity.compute_capability != 120
+                || identity.multiprocessor_count == 0
+                || identity.total_memory_bytes == 0
+        })
+    {
+        return Err("native TP4 device binding did not produce the exact SM120 rank set".into());
+    }
+    let devices: Vec<_> = identities
+        .iter()
+        .map(|identity| {
+            serde_json::json!({
+                "rank": identity.device_index,
+                "device_index": identity.device_index,
+                "compute_capability": identity.compute_capability,
+                "multiprocessor_count": identity.multiprocessor_count,
+                "total_memory_bytes": identity.total_memory_bytes,
+            })
+        })
+        .collect();
+    let report = serde_json::json!({
+        "schema": "glmaxx.sm120-tp4-rank-bind.v1",
+        "visible_devices": 4,
+        "devices": devices,
+        "streams": "one nonblocking stream created, synchronized, and destroyed on each persistent-rank test thread",
+        "kernel_launched": false,
+        "verdict": "SM120_TP4_RANK_BIND_PASS",
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 #[cfg(feature = "cuda-ffi")]

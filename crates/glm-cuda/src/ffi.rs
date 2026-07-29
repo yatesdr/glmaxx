@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_char, c_void};
+use std::thread::ThreadId;
 use std::time::Instant;
 
 use glm_format::{Codec, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4};
@@ -107,6 +108,13 @@ unsafe extern "C" {
     fn glmaxx_exl3_projection_workspace_bytes(rows: u32, logical_k: u32, logical_n: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_exl3_kernel_abi() -> *const c_char;
+    fn glmaxx_device_count(count: *mut i32) -> i32;
+    fn glmaxx_device_bind(
+        device_index: i32,
+        compute_capability: *mut i32,
+        multiprocessor_count: *mut i32,
+        total_memory_bytes: *mut u64,
+    ) -> i32;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
     fn glmaxx_stream_create(stream: *mut u64) -> i32;
@@ -119,6 +127,92 @@ unsafe extern "C" {
 }
 
 pub struct NativeKernelDriver;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeDeviceIdentity {
+    pub visible_devices: u32,
+    pub device_index: u32,
+    pub compute_capability: u32,
+    pub multiprocessor_count: u32,
+    pub total_memory_bytes: u64,
+}
+
+/// One rank's thread-owned CUDA device and nonblocking execution stream.
+///
+/// Construct this object on the persistent rank thread. Every method verifies
+/// that it is still called by that same thread.
+pub struct NativeRankContext {
+    identity: NativeDeviceIdentity,
+    stream: NativeStream,
+    owner: ThreadId,
+}
+
+impl NativeRankContext {
+    pub fn bind(rank: u8) -> Result<Self, KernelError> {
+        let mut visible_devices = 0_i32;
+        // SAFETY: `visible_devices` is a valid out-parameter.
+        check(unsafe { glmaxx_device_count(std::ptr::from_mut(&mut visible_devices)) })?;
+        if visible_devices != 4 || rank >= 4 {
+            return Err(KernelError::Topology);
+        }
+        let mut compute_capability = 0_i32;
+        let mut multiprocessor_count = 0_i32;
+        let mut total_memory_bytes = 0_u64;
+        // SAFETY: all outputs are valid and the rank is within the verified
+        // four-device visible set.
+        check(unsafe {
+            glmaxx_device_bind(
+                i32::from(rank),
+                std::ptr::from_mut(&mut compute_capability),
+                std::ptr::from_mut(&mut multiprocessor_count),
+                std::ptr::from_mut(&mut total_memory_bytes),
+            )
+        })?;
+        if compute_capability != 120 || multiprocessor_count <= 0 || total_memory_bytes == 0 {
+            return Err(KernelError::Topology);
+        }
+        let stream = NativeStream::create()?;
+        Ok(Self {
+            identity: NativeDeviceIdentity {
+                visible_devices: u32::try_from(visible_devices)
+                    .map_err(|_| KernelError::Topology)?,
+                device_index: u32::from(rank),
+                compute_capability: u32::try_from(compute_capability)
+                    .map_err(|_| KernelError::Topology)?,
+                multiprocessor_count: u32::try_from(multiprocessor_count)
+                    .map_err(|_| KernelError::Topology)?,
+                total_memory_bytes,
+            },
+            stream,
+            owner: std::thread::current().id(),
+        })
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> NativeDeviceIdentity {
+        self.identity
+    }
+
+    pub fn stream(&self) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        Ok(self.stream.0)
+    }
+
+    pub fn synchronize(&self) -> Result<(), KernelError> {
+        self.require_owner()?;
+        // SAFETY: this context owns the stream and the owner-thread check
+        // prevents cross-thread rank-state access.
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })
+    }
+
+    fn require_owner(&self) -> Result<(), KernelError> {
+        if std::thread::current().id() == self.owner {
+            Ok(())
+        } else {
+            Err(KernelError::Topology)
+        }
+    }
+}
 
 impl CudaDriver for NativeKernelDriver {
     fn allocate(&self, bytes: u64, alignment: u64) -> Result<u64, KernelError> {

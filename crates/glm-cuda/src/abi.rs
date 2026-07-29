@@ -692,6 +692,7 @@ pub enum KernelError {
     Driver(i32),
     Async(i32),
     DeviceValidation(u32),
+    Topology,
 }
 
 impl fmt::Display for KernelError {

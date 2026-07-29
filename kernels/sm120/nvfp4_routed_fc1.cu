@@ -369,6 +369,39 @@ extern "C" const char* glmaxx_kernel_abi(void) {
   return "glmaxx.sm120.nvfp4.routed_moe.v2";
 }
 
+extern "C" int32_t glmaxx_device_count(int32_t* count) {
+  if (count == nullptr) {
+    return -1;
+  }
+  int native_count = 0;
+  const cudaError_t status = cudaGetDeviceCount(&native_count);
+  if (status == cudaSuccess) {
+    *count = native_count;
+  }
+  return static_cast<int32_t>(status);
+}
+
+extern "C" int32_t glmaxx_device_bind(
+    int32_t device_index, int32_t* compute_capability,
+    int32_t* multiprocessor_count, uint64_t* total_memory_bytes) {
+  if (device_index < 0 || compute_capability == nullptr ||
+      multiprocessor_count == nullptr || total_memory_bytes == nullptr) {
+    return -1;
+  }
+  cudaError_t status = cudaSetDevice(device_index);
+  cudaDeviceProp properties{};
+  if (status == cudaSuccess) {
+    status = cudaGetDeviceProperties(&properties, device_index);
+  }
+  if (status == cudaSuccess) {
+    *compute_capability = properties.major * 10 + properties.minor;
+    *multiprocessor_count = properties.multiProcessorCount;
+    *total_memory_bytes =
+        static_cast<uint64_t>(properties.totalGlobalMem);
+  }
+  return static_cast<int32_t>(status);
+}
+
 extern "C" int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer) {
   if (bytes == 0 || pointer == nullptr) {
     return -1;
