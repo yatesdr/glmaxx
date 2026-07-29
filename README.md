@@ -83,6 +83,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Nonblocking transport adversarial handoff](docs/fable-nonblocking-http-transport-v1-handoff.md)
 - [Direct DRAM/NVMe tier I/O candidate](docs/direct-tier-io-v1.md)
 - [Direct tier I/O adversarial handoff](docs/fable-direct-tier-io-v1-handoff.md)
+- [Quality and MTP numerical acceptance candidate](docs/quality-acceptance-v1.md)
 - [Fail-closed review provenance verifier](docs/review-provenance-verifier-v1.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)

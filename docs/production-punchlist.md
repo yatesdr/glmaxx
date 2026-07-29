@@ -40,11 +40,11 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| Q01 | OPEN | Target-only MTP0 logits match pinned reference through prefill/decode with full-vocabulary per-position retention | Numerical operator fixtures are not model logits | Small-checkpoint target runner and retained FP64 KLD vector |
+| Q01 | REVIEW | Target-only MTP0 logits match pinned reference through prefill/decode with full-vocabulary per-position retention | `docs/quality-acceptance-v1.md` freezes raw-logit identity, MPFR KLD, stable/tie classification, smoke and multi-window thresholds; evaluator and model evidence are absent | Adversarial review, evaluator CPU proof, then small-checkpoint target runner |
 | Q02 | OPEN | Hybrid weight membership is selected from measured per-position quality and actual speed/capacity evidence | Immutable policy machinery exists; checked profile remains `conversion_allowed=false` | Calibrate EXL3/NVFP4/protected candidates after kernel evidence |
-| Q03 | OPEN | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | No retained evaluation bundle | Pin datasets/evaluator and run after Q01 |
+| Q03 | REVIEW | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | Quality candidate freezes minimum item counts, paired noninferiority, behavior failures, retrieval bands, and multiple-comparison correction; dataset/evaluator manifests remain absent | Adversarial review, then pin datasets/evaluator and run after Q01 |
 | Q04 | OPEN | Frozen and randomized retrieval pass through the documented context limit | KV CPU arithmetic is not model retrieval | Execute model context-band matrix through 1,048,576 positions |
-| Q05 | OPEN | MTP1–6 output is equivalent to matched MTP0 under reviewed contract, with per-position acceptance/probability evidence | MTP metadata/tests do not prove model quality | Complete C10, then matched stochastic/greedy evidence |
+| Q05 | REVIEW | MTP1–6 output is equivalent to matched MTP0 under reviewed contract, with per-position acceptance/probability evidence | Quality candidate freezes per-depth stable/tie, full-vocabulary KLD, top-two error, task, and performance-enablement gates; no real draft execution exists | Adversarial review, C10, then matched greedy and stochastic evidence |
 
 ## P0 — capacity, cache, and recovery
 
