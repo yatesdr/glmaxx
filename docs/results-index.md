@@ -3,19 +3,20 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`6535248bb217b20d56ec0d6670c8fb6f33791205`
+`bfbe7f46cbd9db52aa766950aec1432c7677778d`
 
-The complete local gate most recently ran against the terminal-cleanup
-transaction implementation
-`a7087e716e3d9e1e201ff443939001c8ef428680`; its provenance record was then
-committed at `6535248bb217b20d56ec0d6670c8fb6f33791205`. The target
+The complete local gate most recently ran against the pending-admission
+rollback implementation
+`7bae533137e737d466b2c059fddd58425253e8a7`; its provenance record was then
+committed at `bfbe7f46cbd9db52aa766950aec1432c7677778d`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
 reconstruction, exact restore-result identity, all-or-nothing HBM
 admission, captured-shape prefill progress, and all-or-nothing scheduler
 step completion, prefix release, selected-step failure finalization, and
-multi-request terminal cleanup.
+multi-request terminal cleanup, plus retryable pending restore/admission
+rollback.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -23,12 +24,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at terminal-cleanup implementation `a7087e7`
+The latest local run at pending-admission rollback implementation `7bae533`
 passed:
 
-- `scripts/local-checks.sh`: 241 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 243 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 40 then-present candidate-based review-handoff hash proofs;
+  and all 41 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -164,6 +165,16 @@ partially released or published, and the exact C64/MTP6 boundary fits 512
 fixed event slots. The dedicated handoff passes local provenance;
 independent acceptance is absent.
 
+The pending restore/admission rollback correction is pinned in
+`docs/pending-admission-rollback-proof-v1.md`. Cancellation and poll failure
+now preflight cumulative pin counts and exact request/ordinal-bound restores
+before rollback mutation. A blocked poll rollback reinserts the exact pending
+record, and serving retains its prompt tokens and byte reservation while the
+cache still owns pending work. Multi-page corruption, serving-level repair,
+and deterministic per-rank queue saturation regressions distinguish the old
+lost-handle and partial-abort behavior. The dedicated handoff passes local
+provenance validation; independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -276,6 +287,7 @@ verdicts:
 | all-or-nothing prefix release | `14b97a2` | `docs/fable-prefix-release-atomicity-v1-handoff.md` |
 | selected-step failure finalization | `2ff0ac1` | `docs/fable-selected-step-failure-finalization-v1-handoff.md` |
 | multi-request terminal cleanup transaction | `6535248` | `docs/fable-terminal-cleanup-transaction-v1-handoff.md` |
+| retryable pending restore/admission rollback | `bfbe7f4` | `docs/fable-pending-admission-rollback-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
