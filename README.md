@@ -74,6 +74,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Target-layer execution adversarial handoff](docs/fable-target-layer-execution-v1-handoff.md)
 - [Recurrent MTP0–6 execution candidate](docs/mtp-layer-execution-v1.md)
 - [Recurrent MTP adversarial handoff](docs/fable-mtp-layer-execution-v1-handoff.md)
+- [Rust-owned SM120 rank executor candidate](docs/sm120-rank-executor-v1.md)
+- [SM120 rank executor adversarial handoff](docs/fable-sm120-rank-executor-v1-handoff.md)
 - [Final cn4 release record](docs/cn4-release-20260729.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
@@ -112,7 +114,7 @@ kernel, and engine work stays here.
 
 The current local gate passes 225 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
-It also verifies all 26 candidate-based Fable handoffs against their exact
+It also verifies all 27 candidate-based Fable handoffs against their exact
 committed inputs and can classify an explicit review artifact by exact
 acceptance-token presence. The external-tokenizer fixture remains pinned from
 the prior proof; the latest run skipped that external check because
@@ -120,7 +122,8 @@ the prior proof; the latest run skipped that external check because
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
 bounded file-backed four-rank verification, typed production-manifest
 validation, source-pinned complete target and recurrent-MTP execution
-designs, hybrid policy machinery, TP4
+designs, a Rust-owned persistent SM120 rank-executor design, hybrid policy
+machinery, TP4
 startup and step consensus, bounded continuous batching, distributed-sampling
 oracles, transactional prefix storage, HBM/DRAM/NVMe residency simulation,
 active page tables, persistent worker interfaces, request streaming, and

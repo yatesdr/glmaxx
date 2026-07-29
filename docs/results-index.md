@@ -15,12 +15,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The implementation remains `4bf7bb5`; the latest local run at recurrent-MTP
-candidate `fd80e16` plus its MTP handoff/status delta passed:
+The implementation remains `4bf7bb5`; the latest local run at rank-executor
+candidate `b64cb6d` plus its handoff/status delta passed:
 
 - `scripts/local-checks.sh`: 225 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 26 candidate-based review-handoff hash proofs;
+  and all 27 candidate-based review-handoff hash proofs;
 - the external pinned-tokenizer proof was skipped because
   `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
   unchanged from the earlier complete proof;
@@ -137,6 +137,7 @@ verdicts:
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | recurrent MTP0–6 execution design | `fd80e16` | `docs/fable-mtp-layer-execution-v1-handoff.md` |
+| Rust-owned SM120 rank executor design | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
