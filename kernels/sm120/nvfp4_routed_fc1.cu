@@ -289,15 +289,16 @@ cudaError_t sm120_properties(cudaDeviceProp* properties) {
   return status;
 }
 
-cudaError_t enqueue_fc1(const glmaxx_fc1_descriptor& descriptor,
-                        const cudaDeviceProp& properties,
-                        cudaStream_t stream) {
+cudaError_t enqueue_quantize(const glmaxx_fc1_descriptor& descriptor,
+                             cudaStream_t stream) {
   quantize_compacted_rows<<<descriptor.assignments, 256, 0, stream>>>(
       descriptor);
-  cudaError_t status = cudaPeekAtLastError();
-  if (status != cudaSuccess) {
-    return status;
-  }
+  return cudaPeekAtLastError();
+}
+
+cudaError_t enqueue_core_swiglu(const glmaxx_fc1_descriptor& descriptor,
+                                const cudaDeviceProp& properties,
+                                cudaStream_t stream) {
   if (descriptor.path == GLMAXX_FC1_DECODE_PERSISTENT) {
     const uint64_t total_blocks =
         uint64_t{descriptor.assignments} * kLocalIntermediate;
@@ -312,6 +313,16 @@ cudaError_t enqueue_fc1(const glmaxx_fc1_descriptor& descriptor,
                          0, stream>>>(descriptor);
   }
   return cudaPeekAtLastError();
+}
+
+cudaError_t enqueue_fc1(const glmaxx_fc1_descriptor& descriptor,
+                        const cudaDeviceProp& properties,
+                        cudaStream_t stream) {
+  cudaError_t status = enqueue_quantize(descriptor, stream);
+  if (status == cudaSuccess) {
+    status = enqueue_core_swiglu(descriptor, properties, stream);
+  }
+  return status;
 }
 
 }  // namespace
@@ -496,6 +507,51 @@ extern "C" int32_t glmaxx_nvfp4_routed_fc1_graph_instantiate(
   return 0;
 }
 
+extern "C" int32_t glmaxx_nvfp4_quantize_launch(
+    const glmaxx_fc1_descriptor* descriptor, void* cuda_stream) {
+  if (descriptor == nullptr || cuda_stream == nullptr) {
+    return -1;
+  }
+  if (!valid_host_descriptor(*descriptor) ||
+      descriptor->workspace_bytes <
+          glmaxx_nvfp4_routed_fc1_workspace_bytes(descriptor->assignments)) {
+    return -2;
+  }
+  cudaDeviceProp properties{};
+  const cudaError_t property_status = sm120_properties(&properties);
+  if (property_status == cudaErrorInvalidDevice) {
+    return -120;
+  }
+  if (property_status != cudaSuccess) {
+    return static_cast<int32_t>(property_status);
+  }
+  return static_cast<int32_t>(enqueue_quantize(
+      *descriptor, reinterpret_cast<cudaStream_t>(cuda_stream)));
+}
+
+extern "C" int32_t glmaxx_nvfp4_core_swiglu_launch(
+    const glmaxx_fc1_descriptor* descriptor, void* cuda_stream) {
+  if (descriptor == nullptr || cuda_stream == nullptr) {
+    return -1;
+  }
+  if (!valid_host_descriptor(*descriptor) ||
+      descriptor->workspace_bytes <
+          glmaxx_nvfp4_routed_fc1_workspace_bytes(descriptor->assignments)) {
+    return -2;
+  }
+  cudaDeviceProp properties{};
+  const cudaError_t property_status = sm120_properties(&properties);
+  if (property_status == cudaErrorInvalidDevice) {
+    return -120;
+  }
+  if (property_status != cudaSuccess) {
+    return static_cast<int32_t>(property_status);
+  }
+  return static_cast<int32_t>(
+      enqueue_core_swiglu(*descriptor, properties,
+                          reinterpret_cast<cudaStream_t>(cuda_stream)));
+}
+
 extern "C" int32_t glmaxx_graph_exec_launch(uint64_t graph_exec,
                                              uint64_t stream) {
   if (graph_exec == 0 || stream == 0) {
@@ -512,4 +568,53 @@ extern "C" int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec) {
   }
   return static_cast<int32_t>(
       cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(graph_exec)));
+}
+
+extern "C" int32_t glmaxx_event_create(uint64_t* event) {
+  if (event == nullptr) {
+    return -1;
+  }
+  *event = 0;
+  cudaEvent_t native_event = nullptr;
+  const cudaError_t status =
+      cudaEventCreateWithFlags(&native_event, cudaEventDefault);
+  if (status == cudaSuccess) {
+    *event = reinterpret_cast<uint64_t>(native_event);
+  }
+  return static_cast<int32_t>(status);
+}
+
+extern "C" int32_t glmaxx_event_record(uint64_t event, uint64_t stream) {
+  if (event == 0 || stream == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      cudaEventRecord(reinterpret_cast<cudaEvent_t>(event),
+                      reinterpret_cast<cudaStream_t>(stream)));
+}
+
+extern "C" int32_t glmaxx_event_synchronize(uint64_t event) {
+  if (event == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(event)));
+}
+
+extern "C" int32_t glmaxx_event_elapsed_ms(uint64_t start, uint64_t end,
+                                            float* milliseconds) {
+  if (start == 0 || end == 0 || milliseconds == nullptr) {
+    return -1;
+  }
+  return static_cast<int32_t>(cudaEventElapsedTime(
+      milliseconds, reinterpret_cast<cudaEvent_t>(start),
+      reinterpret_cast<cudaEvent_t>(end)));
+}
+
+extern "C" int32_t glmaxx_event_destroy(uint64_t event) {
+  if (event == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      cudaEventDestroy(reinterpret_cast<cudaEvent_t>(event)));
 }

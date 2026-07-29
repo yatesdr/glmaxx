@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_char, c_void};
+use std::time::Instant;
 
 use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 
@@ -18,8 +19,18 @@ unsafe extern "C" {
         stream: *mut c_void,
         graph_exec: *mut u64,
     ) -> i32;
+    fn glmaxx_nvfp4_quantize_launch(descriptor: *const Fc1Descriptor, stream: *mut c_void) -> i32;
+    fn glmaxx_nvfp4_core_swiglu_launch(
+        descriptor: *const Fc1Descriptor,
+        stream: *mut c_void,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
+    fn glmaxx_event_create(event: *mut u64) -> i32;
+    fn glmaxx_event_record(event: u64, stream: u64) -> i32;
+    fn glmaxx_event_synchronize(event: u64) -> i32;
+    fn glmaxx_event_elapsed_ms(start: u64, end: u64, milliseconds: *mut f32) -> i32;
+    fn glmaxx_event_destroy(event: u64) -> i32;
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
@@ -186,6 +197,47 @@ impl Drop for NativeGraph {
     }
 }
 
+struct NativeEvent(u64);
+
+impl NativeEvent {
+    fn create() -> Result<Self, KernelError> {
+        let mut event = 0_u64;
+        // SAFETY: `event` is a valid out-parameter.
+        check(unsafe { glmaxx_event_create(std::ptr::from_mut(&mut event)) })?;
+        if event == 0 {
+            return Err(KernelError::Driver(-1));
+        }
+        Ok(Self(event))
+    }
+
+    fn record(&self, stream: u64) -> Result<(), KernelError> {
+        // SAFETY: the event and stream are caller-owned and live.
+        check(unsafe { glmaxx_event_record(self.0, stream) })
+    }
+
+    fn synchronize(&self) -> Result<(), KernelError> {
+        // SAFETY: the event is caller-owned and live.
+        check(unsafe { glmaxx_event_synchronize(self.0) })
+    }
+
+    fn elapsed_ms(&self, end: &Self) -> Result<f32, KernelError> {
+        let mut milliseconds = 0.0_f32;
+        // SAFETY: both events are complete and `milliseconds` is a valid
+        // out-parameter.
+        check(unsafe {
+            glmaxx_event_elapsed_ms(self.0, end.0, std::ptr::from_mut(&mut milliseconds))
+        })?;
+        Ok(milliseconds)
+    }
+}
+
+impl Drop for NativeEvent {
+    fn drop(&mut self) {
+        // SAFETY: this object owns the event and drops once.
+        let _ = unsafe { glmaxx_event_destroy(self.0) };
+    }
+}
+
 struct NativeFc1Case {
     _input: NativeBuffer,
     _route_expert: NativeBuffer,
@@ -229,6 +281,17 @@ pub struct GraphReplay {
     pub output_bf16: Vec<u16>,
     pub repeat_count: u32,
     pub bitwise_deterministic: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fc1Timing {
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+    pub activation_quantization_us: f32,
+    pub core_swiglu_us: f32,
+    pub inclusive_operator_us: f32,
+    pub graph_inclusive_us: f32,
+    pub host_enqueue_us: f64,
 }
 
 pub struct NativeFc1Fixture {
@@ -391,6 +454,102 @@ impl NativeFc1Fixture {
             output_bf16: first_output.ok_or(KernelError::Shape)?,
             repeat_count,
             bitwise_deterministic,
+        })
+    }
+
+    pub fn benchmark(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        warmup_iterations: u32,
+        measured_iterations: u32,
+    ) -> Result<Fc1Timing, KernelError> {
+        if warmup_iterations == 0
+            || warmup_iterations > 100
+            || measured_iterations == 0
+            || measured_iterations > 10_000
+        {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+
+        for _ in 0..warmup_iterations {
+            launch_native_fc1(&execution.descriptor, self.stream.0)?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+
+        let activation_quantization_us =
+            time_cuda_launches(self.stream.0, measured_iterations, || {
+                // SAFETY: the descriptor and all referenced allocations are
+                // live for the complete benchmark.
+                check(unsafe {
+                    glmaxx_nvfp4_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                })
+            })?;
+        let core_swiglu_us = time_cuda_launches(self.stream.0, measured_iterations, || {
+            // SAFETY: quantization above populated the activation buffers and
+            // the descriptor remains live.
+            check(unsafe {
+                glmaxx_nvfp4_core_swiglu_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })
+        })?;
+        let inclusive_operator_us = time_cuda_launches(self.stream.0, measured_iterations, || {
+            launch_native_fc1(&execution.descriptor, self.stream.0)
+        })?;
+
+        let mut graph_exec = 0_u64;
+        // SAFETY: the fixed descriptor and buffers remain live for all graph
+        // timing iterations.
+        check(unsafe {
+            glmaxx_nvfp4_routed_fc1_graph_instantiate(
+                std::ptr::from_ref(&execution.descriptor),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut graph_exec),
+            )
+        })?;
+        if graph_exec == 0 {
+            return Err(KernelError::Driver(-1));
+        }
+        let graph = NativeGraph(graph_exec);
+        let graph_inclusive_us = time_cuda_launches(self.stream.0, measured_iterations, || {
+            // SAFETY: graph and stream are caller-owned and live.
+            check(unsafe { glmaxx_graph_exec_launch(graph.0, self.stream.0) })
+        })?;
+
+        let enqueue_start = Instant::now();
+        for _ in 0..measured_iterations {
+            launch_native_fc1(&execution.descriptor, self.stream.0)?;
+        }
+        let host_enqueue_us =
+            enqueue_start.elapsed().as_secs_f64() * 1_000_000.0 / f64::from(measured_iterations);
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+
+        Ok(Fc1Timing {
+            warmup_iterations,
+            measured_iterations,
+            activation_quantization_us,
+            core_swiglu_us,
+            inclusive_operator_us,
+            graph_inclusive_us,
+            host_enqueue_us,
         })
     }
 
@@ -619,6 +778,39 @@ fn dwords_as_bytes(words: &[u32]) -> &[u8] {
 fn floats_as_bytes(values: &[f32]) -> &[u8] {
     // SAFETY: f32 has no invalid bit patterns and the byte length is exact.
     unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
+}
+
+fn launch_native_fc1(descriptor: &Fc1Descriptor, stream: u64) -> Result<(), KernelError> {
+    let mut async_error = 0_i32;
+    // SAFETY: the caller keeps the descriptor allocations and stream live.
+    check(unsafe {
+        glmaxx_nvfp4_routed_fc1_launch(
+            std::ptr::from_ref(descriptor),
+            stream as *mut c_void,
+            std::ptr::from_mut(&mut async_error),
+        )
+    })?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
+
+fn time_cuda_launches(
+    stream: u64,
+    iterations: u32,
+    mut launch: impl FnMut() -> Result<(), KernelError>,
+) -> Result<f32, KernelError> {
+    let start = NativeEvent::create()?;
+    let end = NativeEvent::create()?;
+    start.record(stream)?;
+    for _ in 0..iterations {
+        launch()?;
+    }
+    end.record(stream)?;
+    end.synchronize()?;
+    Ok(start.elapsed_ms(&end)? * 1_000.0 / iterations as f32)
 }
 
 fn check(status: i32) -> Result<(), KernelError> {

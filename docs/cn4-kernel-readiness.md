@@ -113,6 +113,29 @@ The expected environment is Rust 1.92, CMake at least 3.28, Ninja, CUDA
 `e05f953a5b3d38adc240df2ff928e0421c2abba3`. A mismatch stops the session; do
 not edit pins after seeing results.
 
+## Provisional direct-control timing
+
+Only after the complete phase-B eager and graph gates pass on the same source
+commit, `scripts/cn4-phase-c-baseline.sh` may time the retained CUDA-core
+control. It revalidates both summary files, the review artifact, source
+commit, native library, runner, and GPU idleness before launch.
+
+```bash
+export GLMAXX_PHASE_B_EVIDENCE=/evidence/<successful-phase-b>
+export GLMAXX_EVIDENCE_DIR=/evidence/direct-baseline-<UTC timestamp>
+export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
+export GLMAXX_REVIEW_ARTIFACT=/workspace/fable-manifest-abi-v022.md
+export GLMAXX_CN4_AUTHORIZATION=phase-c-authorized
+./scripts/cn4-phase-c-baseline.sh
+```
+
+The runner records activation quantization, fused direct-core/SwiGLU,
+inclusive eager, inclusive CUDA-graph, and host enqueue time separately over
+20 warmups and 200 measured iterations for all nine frozen M buckets. Routing
+remains the named CPU fixture control outside the timed CUDA boundary. Every
+result is labeled `PROVISIONAL_CONTROL_ONLY`; it is a baseline for the later
+CUTLASS MMA candidate, not a performance win.
+
 ## Expected evidence
 
 The external evidence directory must contain:

@@ -123,9 +123,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("gpu-graph requires an external evidence directory")?;
             gpu_graph(Path::new(path))?;
         }
+        #[cfg(feature = "cuda-ffi")]
+        Some("gpu-bench") => {
+            let path = arguments
+                .get(2)
+                .ok_or("gpu-bench requires an external evidence directory")?;
+            gpu_bench(Path::new(path))?;
+        }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-bench evidence-dir>"
                     .into(),
             );
         }
@@ -607,6 +614,42 @@ struct GpuGraphCaseReport {
 
 #[cfg(feature = "cuda-ffi")]
 #[derive(Serialize)]
+struct GpuBenchmarkSummary {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    backend: &'static str,
+    cases: usize,
+    warmup_iterations: u32,
+    measured_iterations: u32,
+    evidence_directory: String,
+    verdict: &'static str,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuBenchmarkCase {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    backend: &'static str,
+    rows: usize,
+    assignments: usize,
+    routing: &'static str,
+    packed_weight_sha256: String,
+    output_sha256: String,
+    warmup_iterations: u32,
+    measured_iterations: u32,
+    activation_quantization_us: f32,
+    core_swiglu_us: f32,
+    inclusive_operator_us: f32,
+    graph_inclusive_us: f32,
+    host_enqueue_us: f64,
+    route_compaction: &'static str,
+    runtime_weight_repack_bytes: u64,
+    persistent_dequant_bytes: u64,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
 struct GpuCaseReport {
     schema: &'static str,
     suite: &'static str,
@@ -899,6 +942,100 @@ fn gpu_graph(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
     if failed_elements != 0 || bitwise_deterministic_cases != GRAPH_ROWS.len() {
         return Err("SM120 CUDA graph correctness gate failed".into());
     }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_directory.is_dir() {
+        return Err("gpu-bench evidence directory must already exist".into());
+    }
+    if evidence_directory.read_dir()?.next().is_some() {
+        return Err("gpu-bench evidence directory must be empty".into());
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if evidence_directory.canonicalize()?.starts_with(repository) {
+        return Err("raw GPU evidence must be outside the Git repository".into());
+    }
+
+    const WARMUP: u32 = 20;
+    const ITERATIONS: u32 = 200;
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let max_rows = *PREFILL_ROWS.last().ok_or("no prefill row bucket")?;
+    let row_buckets: Vec<usize> = DECODE_ROWS.into_iter().chain(PREFILL_ROWS).collect();
+    let fixture = generate_numerical_fixture(NumericalCase::DeterministicRandom, max_rows, n, k)?;
+    let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+    let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
+
+    for &rows in &row_buckets {
+        let activation = &fixture.activations[..rows * k];
+        let activation_bf16 = to_bf16_bits(activation);
+        let routes = generate_routes(RoutingCase::OneHotExpert0, rows)?;
+        let compacted = compact_routes(&routes, rows)?;
+        let route_experts: Vec<u16> = compacted.iter().map(|route| route.expert).collect();
+        let route_tokens: Vec<u32> = compacted.iter().map(|route| route.token).collect();
+        let route_slots: Vec<u8> = compacted.iter().map(|route| route.slot).collect();
+        let timing = device.benchmark(
+            &activation_bf16,
+            u32::try_from(rows)?,
+            &route_experts,
+            &route_tokens,
+            &route_slots,
+            WARMUP,
+            ITERATIONS,
+        )?;
+        let output = device.run(
+            &activation_bf16,
+            u32::try_from(rows)?,
+            &route_experts,
+            &route_tokens,
+            &route_slots,
+        )?;
+        let report = GpuBenchmarkCase {
+            schema: "glmaxx.sm120-fc1-benchmark-case.v1",
+            kernel_abi: KERNEL_ABI,
+            backend: "direct-nvfp4-cuda-core-baseline",
+            rows,
+            assignments: compacted.len(),
+            routing: RoutingCase::OneHotExpert0.id(),
+            packed_weight_sha256: packed_hash(&packed),
+            output_sha256: u16_hash(&output),
+            warmup_iterations: timing.warmup_iterations,
+            measured_iterations: timing.measured_iterations,
+            activation_quantization_us: timing.activation_quantization_us,
+            core_swiglu_us: timing.core_swiglu_us,
+            inclusive_operator_us: timing.inclusive_operator_us,
+            graph_inclusive_us: timing.graph_inclusive_us,
+            host_enqueue_us: timing.host_enqueue_us,
+            route_compaction: "CPU fixture control outside timed CUDA boundary",
+            runtime_weight_repack_bytes: 0,
+            persistent_dequant_bytes: 0,
+        };
+        fs::write(
+            evidence_directory.join(format!("direct-m{rows:03}.json")),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+    }
+
+    let summary = GpuBenchmarkSummary {
+        schema: "glmaxx.sm120-fc1-benchmark-summary.v1",
+        kernel_abi: KERNEL_ABI,
+        backend: "direct-nvfp4-cuda-core-baseline",
+        cases: row_buckets.len(),
+        warmup_iterations: WARMUP,
+        measured_iterations: ITERATIONS,
+        evidence_directory: evidence_directory.display().to_string(),
+        verdict: "PROVISIONAL_CONTROL_ONLY",
+    };
+    let summary_bytes = serde_json::to_vec_pretty(&summary)?;
+    fs::write(evidence_directory.join("summary.json"), &summary_bytes)?;
+    println!("{}", String::from_utf8(summary_bytes)?);
     Ok(())
 }
 
