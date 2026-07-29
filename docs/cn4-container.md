@@ -31,3 +31,18 @@ root are mounted at runtime. Raw test output and build products remain under
 GPU device access remains separately gated. Building this image, fetching
 Rust dependencies, running CPU tests, compiling `sm_120f`, and running the
 host-only CUTLASS layout probe do not authorize a CUDA device launch.
+
+The preparation-only evidence gate is:
+
+```bash
+export CUTLASS_DIR=/cutlass
+export GLMAXX_EVIDENCE_DIR=/evidence/prepare-<UTC timestamp>
+export GLMAXX_CONTAINER_DIGEST=sha256:<local image identity>
+./scripts/cn4-phase-b-prepare.sh
+```
+
+Run it in the pinned container with the repository mounted read-only at
+`/workspace`, CUTLASS read-only at `/cutlass`, and an external evidence root
+at `/evidence`. The script may record `nvidia-smi` inventory when devices are
+visible, but it never launches a CUDA kernel. It deliberately stops at the
+independent-review boundary enforced by `cn4-phase-b.sh`.
