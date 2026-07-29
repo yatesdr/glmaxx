@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`0f0dd21204827f5893143ba93b7c71e9cc99d3c9`
+`876e4ca59be4c7a8243288c57cf79ef3cbebc5d4`
 
-The complete local gate most recently ran against the backend event
-cancellation propagation implementation
-`fa8e3b345c1a8ffe0abff2006c40950bd21037cb`; its provenance record was then
-committed at `0f0dd21204827f5893143ba93b7c71e9cc99d3c9`. The target
+The complete local gate most recently ran against the active-sequence
+removal atomicity implementation
+`435f514f8d2a74005a0358de09f7ddb7b4c12fc2`; its provenance record was then
+committed at `876e4ca59be4c7a8243288c57cf79ef3cbebc5d4`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -17,7 +17,7 @@ admission, captured-shape prefill progress, and all-or-nothing scheduler
 step completion, prefix release, selected-step failure finalization, and
 multi-request terminal cleanup, plus retryable pending restore/admission
 rollback and fail-stop ownership propagation through backend admission and
-event cancellation.
+event cancellation, plus retryable active-sequence removal.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -25,12 +25,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at backend event-cancellation implementation `fa8e3b3`
+The latest local run at active-sequence removal implementation `435f514`
 passed:
 
-- `scripts/local-checks.sh`: 245 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 246 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 43 then-present candidate-based review-handoff hash proofs;
+  and all 44 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -195,6 +195,14 @@ instead of ignored continuation. Its deterministic generation-overflow
 regression distinguishes the prior lost-request path. The dedicated handoff
 passes local provenance validation; independent acceptance is absent.
 
+The active-sequence removal correction is pinned in
+`docs/sequence-removal-atomicity-proof-v1.md`. The clone-on-error CPU page
+table now restores the sequence, physical references, prefix mappings, and
+target/draft free sets together when a late page release fails. Its
+two-owner-page corruption/repair regression distinguishes the old
+remove-before-release path and proves exact retry. The dedicated handoff
+passes local provenance validation; independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -310,6 +318,7 @@ verdicts:
 | retryable pending restore/admission rollback | `bfbe7f4` | `docs/fable-pending-admission-rollback-v1-handoff.md` |
 | backend retained-admission fatal drain | `3ab3110` | `docs/fable-backend-admission-rollback-fatal-v1-handoff.md` |
 | backend event-cancellation fatal propagation | `0f0dd21` | `docs/fable-backend-event-cancellation-fatal-v1-handoff.md` |
+| atomic retryable active-sequence removal | `876e4ca` | `docs/fable-sequence-removal-atomicity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
