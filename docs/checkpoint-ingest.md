@@ -224,8 +224,9 @@ The proposed next boundary—fixed device layouts, owned pinned staging rings,
 quarantined arenas, prepared receipts, and process-atomic four-rank
 adoption—is specified in `docs/checkpoint-load-transaction-v1.md`. It remains
 a design candidate pending the adversarial review in
-`docs/fable-checkpoint-load-transaction-v1-handoff.md`; no CUDA sink is
-authorized by that candidate.
+`docs/fable-checkpoint-load-transaction-v1-r2-handoff.md`; the r1 handoff was
+superseded after its common tensor-catalog identity was found to be
+rank-specific. No CUDA sink is authorized by the corrected candidate.
 
 ## Fail-closed boundary
 

@@ -2,8 +2,9 @@
 
 Date: 2026-07-29
 
-Status: adversarial design review; CPU/mock and CUDA implementation tokens
-withheld by Sol
+Status: superseded before review by
+`docs/fable-checkpoint-load-transaction-v1-r2-handoff.md`; do not issue this
+handoff's token
 
 GPU authorization conveyed by this handoff: none
 
