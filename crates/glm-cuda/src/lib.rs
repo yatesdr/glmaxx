@@ -5,7 +5,7 @@ mod ownership;
 
 pub use abi::{
     ABI_VERSION, Fc1Descriptor, Fc2Descriptor, GroupedSfaPlan, HIDDEN, KernelError, KernelPath,
-    LOCAL_GATE_UP, LOCAL_INTERMEDIATE, LaunchGeometry, SFA_BYTES_PER_PADDED_ROW,
+    LOCAL_GATE_UP, LOCAL_INTERMEDIATE, LaunchGeometry, SFA_BYTES_PER_PADDED_ROW, TOP_K,
     fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes,
     validate_descriptor, validate_fc2_descriptor, workspace_bytes,
 };
