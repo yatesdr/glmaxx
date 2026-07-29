@@ -22,7 +22,7 @@
   "partial_speculative_commit_observed": true,
   "corruption_failed_closed": true,
   "corrupted_page_remained_nvme": true,
-  "journal_sha256": "4e408ba928de61dcd9f8b5a21aeeb5f7f7282ffeb81839b088529e0f7bfe15d7",
+  "journal_sha256": "daf77c508fd2288de635249bb5ea9b42ae3e75d3bc36fea8e34b51a3e46ee98a",
   "pages_sha256_after_corruption": "90dc21ff22cb31b0e37a66508a52e4b8bca36cd2563355bafaad73782d149e6b",
   "verdict": "CPU_CACHE_LIFECYCLE_PASS"
 }
