@@ -11,7 +11,8 @@ changes only the accompanying terminal-delivery wording. `d0a09d7`,
 online-publication, distributed-sampling, tenant-resource-quota, and
 nonblocking-transport and direct-tier-I/O design candidates. `59e11e5`
 adds the review-provenance verifier and is the newest fully checked
-implementation.
+implementation. `70222ab` adds only the unimplemented quality-acceptance
+candidate.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -23,7 +24,7 @@ The complete local gate passed at the source baseline:
 
 - `scripts/local-checks.sh`: 216 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  all 19 candidate-based review-handoff hash proofs, and the external
+  all 20 candidate-based review-handoff hash proofs, and the external
   pinned-tokenizer proof;
 - platform: local CPU development host;
 - CUDA compiler or GPU context: not used;
@@ -114,6 +115,7 @@ verdicts:
 | tenant/global serving resource quotas | `7e810c4` | `docs/fable-tenant-resource-quotas-v1-handoff.md` |
 | nonblocking Linux HTTP transport | `3608a03` | `docs/fable-nonblocking-http-transport-v1-handoff.md` |
 | direct DRAM/NVMe tier I/O | `69895e0` | `docs/fable-direct-tier-io-v1-handoff.md` |
+| quality, KLD, task, retrieval, and MTP numerical acceptance | `70222ab` | `docs/fable-quality-acceptance-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token

@@ -40,11 +40,11 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| Q01 | REVIEW | Target-only MTP0 logits match pinned reference through prefill/decode with full-vocabulary per-position retention | `docs/quality-acceptance-v1.md` freezes raw-logit identity, MPFR KLD, stable/tie classification, smoke and multi-window thresholds; evaluator and model evidence are absent | Adversarial review, evaluator CPU proof, then small-checkpoint target runner |
+| Q01 | REVIEW | Target-only MTP0 logits match pinned reference through prefill/decode with full-vocabulary per-position retention | `docs/quality-acceptance-v1.md` freezes raw-logit identity, MPFR KLD, stable/tie classification, smoke and multi-window thresholds; handoff pins candidate `70222ab`; evaluator and model evidence are absent | Fable review of `docs/fable-quality-acceptance-v1-handoff.md`, evaluator CPU proof, then small-checkpoint target runner |
 | Q02 | OPEN | Hybrid weight membership is selected from measured per-position quality and actual speed/capacity evidence | Immutable policy machinery exists; checked profile remains `conversion_allowed=false` | Calibrate EXL3/NVFP4/protected candidates after kernel evidence |
-| Q03 | REVIEW | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | Quality candidate freezes minimum item counts, paired noninferiority, behavior failures, retrieval bands, and multiple-comparison correction; dataset/evaluator manifests remain absent | Adversarial review, then pin datasets/evaluator and run after Q01 |
+| Q03 | REVIEW | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | Quality candidate `70222ab` freezes minimum item counts, paired noninferiority, behavior failures, retrieval bands, and multiple-comparison correction; dataset/evaluator manifests remain absent | Fable quality review, then pin datasets/evaluator and run after Q01 |
 | Q04 | OPEN | Frozen and randomized retrieval pass through the documented context limit | KV CPU arithmetic is not model retrieval | Execute model context-band matrix through 1,048,576 positions |
-| Q05 | REVIEW | MTP1–6 output is equivalent to matched MTP0 under reviewed contract, with per-position acceptance/probability evidence | Quality candidate freezes per-depth stable/tie, full-vocabulary KLD, top-two error, task, and performance-enablement gates; no real draft execution exists | Adversarial review, C10, then matched greedy and stochastic evidence |
+| Q05 | REVIEW | MTP1–6 output is equivalent to matched MTP0 under reviewed contract, with per-position acceptance/probability evidence | Quality candidate `70222ab` freezes per-depth stable/tie, full-vocabulary KLD, top-two error, task, and performance-enablement gates; no real draft execution exists | Fable quality review, C10, then matched greedy and stochastic evidence |
 
 ## P0 — capacity, cache, and recovery
 
@@ -85,10 +85,10 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | `scripts/local-checks.sh` passed at `59e11e5`; 216 Rust tests and 19 candidate-based handoffs verified | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | 216 Rust tests and 20 candidate-based handoffs verified; latest implementation is `59e11e5` | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
-| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier at `59e11e5` proves candidate hashes for all 19 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
+| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier at `59e11e5` proves candidate hashes for all 20 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
 | D05 | OPEN | Full-checkpoint conversion is allowed only after policy fit and quality gates pass | Profile correctly blocks conversion today | Q01/Q02 and measured HBM budget |
 
 ## External state
