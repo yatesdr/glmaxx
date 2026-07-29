@@ -70,8 +70,8 @@ fake constructor used by unit tests are not production health evidence.
 - submission and cancellation hold the bounded request-registry gate through
   their nonblocking command enqueue and recheck fatal/shutdown state under
   that gate;
-- a fatal step marks the backend unhealthy before terminal draining, sends one
-  terminal error to every active receiver, drains every already-accepted
+- a fatal step marks the backend unhealthy before terminal draining, attempts
+  one terminal error for every active receiver, drains every already-accepted
   queued submission with a terminal error, and only then clears ownership;
 - orderly runtime shutdown applies the same active-plus-queued drain.
 
@@ -106,8 +106,9 @@ The in-crate tests cover:
 - isolation of a full completion channel while a concurrent peer reaches its
   normal terminal response;
 - an injected rank-execution failure with one active and three queued
-  submissions, proving four structured terminal errors, fatal health, zero
-  successful-step observations, and no leaked owners; and
+  submissions with connected, non-backpressured receivers, proving four
+  structured terminal errors, fatal health, zero successful-step
+  observations, and no leaked owners; and
 - HTTP refusal when a backend reports healthy state with a non-TP4 topology.
 
 The three backend concurrency/fault schedules pass ten consecutive targeted
