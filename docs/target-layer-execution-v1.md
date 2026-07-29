@@ -374,13 +374,16 @@ The merge produces this graph-resident winner list for each real row:
 ```text
 WinnerList.v1
 [0,4)       u32 real winner count, 0..2048
-[4,8)       zero
+[4,5)       order: 1=SCORE_DESC_POSITION_TIE, 2=ALL_POSITIONS_ASC
+[5,8)       zero
 [8,16392)   2048 u64 logical-position slots
 ```
 
-Unused positions are zero and ignored. Real positions are in descending
-score then ascending-position order and must be unique. The winner list is
-stored in the graph slot assigned to the index group.
+Unused positions are zero and ignored. Normal selected positions use order 1:
+descending score then ascending-position ties. The reviewed all-positions
+shortcut uses order 2: ascending logical position. Real positions must be
+unique. No other order byte is legal. The winner list is stored in the graph
+slot assigned to the index group.
 
 `PREFILL_CKV` instead gathers the exact 132-byte owner records in canonical
 sequence then logical-position order. Because the full-indexer query and
@@ -419,8 +422,9 @@ existing winner union.
 If every real row has at most 2,048 causally visible positions, the
 coordinator may select a separately qualified CKV route that omits indexer
 record transport because every position wins; full layers still produce and
-tentatively store their new indexer keys. The omission is encoded in every
-rank's schedule and never selected rank-locally.
+tentatively store their new indexer keys. It emits an
+`ALL_POSITIONS_ASC` winner list. The omission is encoded in every rank's
+schedule and never selected rank-locally.
 
 The union tables and payloads are hash-covered and byte-preserving. A route
 may not requantize either record, duplicate one physical record generation,
