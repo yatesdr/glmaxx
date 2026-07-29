@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: CPU-tested protocol and bounded transport; no model-serving or
-performance claim
+Status: CPU-tested protocol, bounded transport, and coordinator adapter; no
+checkpoint-serving or performance claim
 
 `glm-serving::ApiHttpServer` is the narrow HTTP/1.1 boundary for the fixed
 GLM-5.2 engine. It is intentionally not a general OpenAI API implementation.
@@ -56,12 +56,17 @@ the final throughput route. Before production benchmarking it must be
 replaced or qualified against a nonblocking transport while retaining this
 parser, validation, authentication, deadline, and backpressure behavior.
 
-## Remaining integration boundary
+## Coordinator integration
 
 `glm-tokenizer` now supplies the pinned template renderer, exact tokenizer
 loader, padding-ID mask boundary, and incremental stop-safe detokenizer. The
-production backend must connect those components to `ServingCoordinator`,
-apply the padding mask before distributed sampling, emit exact usage and
-finish reasons, propagate disconnect cancellation at a collective-safe step
-boundary, and supply the required observability registry. No current CLI
-command starts this server.
+CPU candidate `CoordinatorApiBackend` now connects those components to
+`ServingCoordinator`, emits exact greedy usage and finish reasons, isolates
+slow receivers, propagates tenant-bound cancellation at collective-safe step
+boundaries, and exposes bounded lifecycle metrics. It fails closed on
+probabilistic requests until the pending `StepInput` sampling/RNG ABI is
+reviewed and implemented.
+
+Rank execution must still apply the padding mask before every distributed
+sampling route. No current CLI command starts this server, and no current
+health result represents a checkpoint-capable SM120 runtime.

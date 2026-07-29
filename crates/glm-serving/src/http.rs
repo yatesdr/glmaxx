@@ -20,6 +20,7 @@ pub use glm_tokenizer::{ChatMessage, ChatRole, OrderedValue, ReasoningEffort};
 use glm_tokenizer::{ChatTemplateError, ChatTemplateOptions, render_chat};
 
 pub const GLMAXX_MODEL_ID: &str = "glm-5.2";
+pub const GLMAXX_MODEL_REVISION: &str = "b4734de4facf877f85769a911abafc5283eab3d9";
 const MAXIMUM_MESSAGES: usize = 4_096;
 const MAXIMUM_STOP_SEQUENCES: usize = 16;
 const MAXIMUM_STOP_BYTES: usize = 256;
@@ -51,11 +52,21 @@ impl ApiHealth {
         Self {
             state: ApiHealthState::Healthy,
             model: GLMAXX_MODEL_ID,
-            model_revision: "b4734de4facf877f85769a911abafc5283eab3d9",
+            model_revision: GLMAXX_MODEL_REVISION,
             backend,
             tp: 4,
             sm: 120,
         }
+    }
+
+    #[must_use]
+    pub fn is_production_healthy(&self) -> bool {
+        self.state == ApiHealthState::Healthy
+            && self.model == GLMAXX_MODEL_ID
+            && self.model_revision == GLMAXX_MODEL_REVISION
+            && !self.backend.is_empty()
+            && self.tp == 4
+            && self.sm == 120
     }
 }
 
@@ -429,7 +440,8 @@ impl ApiHttpServer {
         backend: Arc<dyn ApiBackend>,
     ) -> Result<Self, ApiServerError> {
         config.validate()?;
-        if backend.health().state != ApiHealthState::Healthy {
+        let health = backend.health();
+        if !health.is_production_healthy() {
             return Err(ApiServerError::BackendNotHealthy);
         }
         let listener = TcpListener::bind(config.bind)?;
@@ -549,7 +561,7 @@ fn handle_connection(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => {
             let health = backend.health();
-            let status = if health.state == ApiHealthState::Healthy {
+            let status = if health.is_production_healthy() {
                 200
             } else {
                 503
@@ -557,7 +569,7 @@ fn handle_connection(
             write_json(stream, status, &health).map_err(internal_io)
         }
         ("GET", "/metrics") => {
-            if backend.health().state != ApiHealthState::Healthy {
+            if !backend.health().is_production_healthy() {
                 return Err(backend_unavailable());
             }
             write_response(
@@ -569,7 +581,7 @@ fn handle_connection(
             .map_err(internal_io)
         }
         ("POST", "/v1/chat/completions") => {
-            if backend.health().state != ApiHealthState::Healthy {
+            if !backend.health().is_production_healthy() {
                 return Err(backend_unavailable());
             }
             let tenant = authenticate(&request.headers, &config.api_keys)?;
@@ -1083,7 +1095,7 @@ mod tests {
     use super::*;
 
     struct MockBackend {
-        health: Mutex<ApiHealthState>,
+        health: Mutex<ApiHealth>,
         next_id: AtomicU64,
         submitted: Mutex<Vec<(u32, ValidatedChatRequest)>>,
         cancelled: Mutex<Vec<(u32, u64)>>,
@@ -1092,7 +1104,7 @@ mod tests {
     impl MockBackend {
         fn healthy() -> Arc<Self> {
             Arc::new(Self {
-                health: Mutex::new(ApiHealthState::Healthy),
+                health: Mutex::new(ApiHealth::production_healthy("test")),
                 next_id: AtomicU64::new(1),
                 submitted: Mutex::new(Vec::new()),
                 cancelled: Mutex::new(Vec::new()),
@@ -1102,15 +1114,7 @@ mod tests {
 
     impl ApiBackend for MockBackend {
         fn health(&self) -> ApiHealth {
-            let state = *self.health.lock().unwrap();
-            ApiHealth {
-                state,
-                model: GLMAXX_MODEL_ID,
-                model_revision: "b4734de4facf877f85769a911abafc5283eab3d9",
-                backend: "test",
-                tp: 4,
-                sm: 120,
-            }
+            self.health.lock().unwrap().clone()
         }
 
         fn metrics(&self) -> String {
@@ -1252,7 +1256,12 @@ mod tests {
     #[test]
     fn server_refuses_to_bind_before_full_engine_health() {
         let backend = MockBackend::healthy();
-        *backend.health.lock().unwrap() = ApiHealthState::Fatal;
+        backend.health.lock().unwrap().state = ApiHealthState::Fatal;
+        let result = ApiHttpServer::bind(config(), backend);
+        assert!(matches!(result, Err(ApiServerError::BackendNotHealthy)));
+
+        let backend = MockBackend::healthy();
+        backend.health.lock().unwrap().tp = 2;
         let result = ApiHttpServer::bind(config(), backend);
         assert!(matches!(result, Err(ApiServerError::BackendNotHealthy)));
     }

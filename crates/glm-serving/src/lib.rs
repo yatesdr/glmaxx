@@ -19,16 +19,18 @@ use glm_tokenizer::EOS_TOKEN_IDS;
 
 const MAXIMUM_STEP_EVENTS: usize = 512;
 
+mod backend;
 mod cache;
 mod http;
 
+pub use backend::{CoordinatorApiBackend, CoordinatorBackendConfig, CoordinatorBackendError};
 pub use cache::{
     PrefixRestoreCoordinator, PrefixRestoreError, PrefixRestoreStatus, RestoredPrefix,
 };
 pub use http::{
     ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle, ApiErrorBody, ApiHealth,
     ApiHealthState, ApiHttpServer, ApiServerConfig, ApiUsage, ChatCompletionRequest, ChatMessage,
-    SamplingParameters, StopSequences, ValidatedChatRequest,
+    GLMAXX_MODEL_REVISION, SamplingParameters, StopSequences, ValidatedChatRequest,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
