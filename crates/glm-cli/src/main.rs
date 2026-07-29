@@ -312,6 +312,7 @@ struct CheckpointSourceProof {
     verified_file_count: usize,
     verified_file_bytes: u64,
     file_sha256: BTreeMap<String, String>,
+    publisher_manifest_exception_count: usize,
     publisher_manifest_exceptions: BTreeMap<String, PublisherManifestExceptionProof>,
     verdict: &'static str,
 }
@@ -344,7 +345,7 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
         .iter()
         .map(|(name, digest)| (name.clone(), hex(digest)))
         .collect();
-    let publisher_manifest_exceptions = source
+    let publisher_manifest_exceptions: BTreeMap<_, _> = source
         .manifest_exceptions()
         .iter()
         .map(|(name, exception)| {
@@ -358,6 +359,7 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
             )
         })
         .collect();
+    let publisher_manifest_exception_count = publisher_manifest_exceptions.len();
     let proof = CheckpointSourceProof {
         schema: "glmaxx.pinned-checkpoint-source-proof.v3",
         repository: PINNED_EXL3_REPOSITORY,
@@ -374,6 +376,7 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
         verified_file_count: source.file_count(),
         verified_file_bytes: source.verified_file_bytes(),
         file_sha256,
+        publisher_manifest_exception_count,
         publisher_manifest_exceptions,
         verdict: "PINNED_CHECKPOINT_SOURCE_PASS",
     };

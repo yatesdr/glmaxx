@@ -33,6 +33,14 @@ const PINNED_GITATTRIBUTES_REVISION_SHA256: [u8; 32] = [
     0x5b, 0xb3, 0x6c, 0x32, 0x04, 0x17, 0xdb, 0x43, 0xaf, 0x1d, 0xc6, 0xaf, 0x8b, 0xd0, 0xfc, 0xc1,
     0x54, 0xbb, 0x72, 0x76, 0xed, 0xda, 0xf9, 0x6b, 0x12, 0xc3, 0x95, 0xbd, 0xaf, 0xed, 0x63, 0x4d,
 ];
+const PINNED_README_MANIFEST_SHA256: [u8; 32] = [
+    0xed, 0x5a, 0xca, 0x8c, 0xe3, 0xdc, 0x5f, 0x8d, 0xe6, 0x26, 0xc8, 0x7e, 0x48, 0x84, 0x44, 0x34,
+    0x3e, 0x43, 0xb1, 0xdc, 0xbd, 0xeb, 0x0e, 0x64, 0x3d, 0xc7, 0x2f, 0xea, 0x63, 0xab, 0x06, 0xe8,
+];
+const PINNED_README_REVISION_SHA256: [u8; 32] = [
+    0xe6, 0x0e, 0x02, 0x30, 0x82, 0xee, 0x17, 0x5a, 0x11, 0xf5, 0x1e, 0x79, 0xe8, 0xdd, 0x88, 0xf5,
+    0xe4, 0xed, 0x99, 0x75, 0xfc, 0x90, 0x4e, 0x64, 0xcd, 0xea, 0xbb, 0xbc, 0xf8, 0xab, 0xe2, 0x25,
+];
 pub const PINNED_SOURCE_FILE_COUNT: usize = 92;
 pub const PINNED_EXL3_TENSOR_COUNT: usize = 935_105;
 pub const PINNED_EXL3_SHARD_COUNT: usize = 81;
@@ -614,9 +622,24 @@ fn is_pinned_publisher_manifest_exception(
     manifest_sha256: &[u8; 32],
     revision_sha256: &[u8; 32],
 ) -> bool {
-    name == ".gitattributes"
-        && manifest_sha256 == &PINNED_GITATTRIBUTES_MANIFEST_SHA256
-        && revision_sha256 == &PINNED_GITATTRIBUTES_REVISION_SHA256
+    [
+        (
+            ".gitattributes",
+            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
+            &PINNED_GITATTRIBUTES_REVISION_SHA256,
+        ),
+        (
+            "README.md",
+            &PINNED_README_MANIFEST_SHA256,
+            &PINNED_README_REVISION_SHA256,
+        ),
+    ]
+    .into_iter()
+    .any(|(exception_name, exception_manifest, exception_revision)| {
+        name == exception_name
+            && manifest_sha256 == exception_manifest
+            && revision_sha256 == exception_revision
+    })
 }
 
 fn parse_source_manifest(bytes: &[u8]) -> Result<BTreeMap<String, [u8; 32]>, PinnedSourceError> {
@@ -1695,22 +1718,39 @@ mod tests {
 
     #[test]
     fn publisher_manifest_exception_is_exact_and_nonextensible() {
-        assert!(is_pinned_publisher_manifest_exception(
-            ".gitattributes",
-            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
-            &PINNED_GITATTRIBUTES_REVISION_SHA256
-        ));
-        let mut wrong_revision = PINNED_GITATTRIBUTES_REVISION_SHA256;
-        wrong_revision[0] ^= 1;
-        assert!(!is_pinned_publisher_manifest_exception(
-            ".gitattributes",
-            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
-            &wrong_revision
-        ));
+        let exceptions = [
+            (
+                ".gitattributes",
+                PINNED_GITATTRIBUTES_MANIFEST_SHA256,
+                PINNED_GITATTRIBUTES_REVISION_SHA256,
+            ),
+            (
+                "README.md",
+                PINNED_README_MANIFEST_SHA256,
+                PINNED_README_REVISION_SHA256,
+            ),
+        ];
+        for (name, manifest, revision) in exceptions {
+            assert!(is_pinned_publisher_manifest_exception(
+                name, &manifest, &revision
+            ));
+            let mut wrong_revision = revision;
+            wrong_revision[0] ^= 1;
+            assert!(!is_pinned_publisher_manifest_exception(
+                name,
+                &manifest,
+                &wrong_revision
+            ));
+        }
         assert!(!is_pinned_publisher_manifest_exception(
             "config.json",
-            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
-            &PINNED_GITATTRIBUTES_REVISION_SHA256
+            &PINNED_README_MANIFEST_SHA256,
+            &PINNED_README_REVISION_SHA256
+        ));
+        assert!(!is_pinned_publisher_manifest_exception(
+            ".gitattributes",
+            &PINNED_README_MANIFEST_SHA256,
+            &PINNED_README_REVISION_SHA256
         ));
     }
 
