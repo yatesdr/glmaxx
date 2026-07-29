@@ -1,0 +1,154 @@
+# Serving page transaction v1
+
+Date: 2026-07-29
+
+Status: design candidate; implementation blocked on the active-page-table and
+`StepInput.v1` adversarial reviews
+
+GPU claim: none
+
+## Purpose
+
+The scheduler currently proves batching and rank consensus, while
+`SequencePageTable` separately proves bounded physical cache metadata. This
+contract joins them without allowing a CUDA rank to allocate memory, infer a
+page owner, or commit KV independently.
+
+Production `ServingCoordinator` owns exactly one active page table constructed
+from `SystemMemoryPlan.v2.cache_arena`. Every target, target-indexer, draft-KV,
+and draft-indexer address used by a serving step is derived from its reviewed
+rank-local physical page IDs.
+
+## Admission transaction
+
+Token admission occurs in this order:
+
+1. retain the bounded prompt token bytes;
+2. restore the longest capability-compatible sealed prefix;
+3. validate every restored page key, ordinal, DCP owner, generation, payload
+   hash, and draft-sidecar capability;
+4. preflight all active target/draft page slots;
+5. attach the complete prefix to `SequencePageTable`;
+6. admit the identical prompt progress into `Scheduler`;
+7. advance the sequence-table generation; and
+8. publish the admitted event.
+
+Steps 4–6 are one control-plane transaction. Failure releases all active page
+references, residency pins, and prompt-byte reservations and leaves neither a
+scheduler row nor an admission event. A target-only restored page is never
+attached to an MTP-capable sequence.
+
+The prevalidated admission API cannot claim cached tokens without exact page
+keys and validated draft capabilities once the active table is mandatory.
+
+## Step reservation
+
+No serving step may enter the four rank workers before all rows reserve their
+maximum writable positions.
+
+| Step | Per-row reservation | Successful commit |
+|---|---:|---:|
+| prefill | exact scheduled prompt-token count | exact scheduled count |
+| MTP0 decode | 1 target position | 1 output token |
+| MTPK verify | `K + 1` target and draft-capable positions | rank-consensus output count `1..K+1` |
+
+Near the model limit, the scheduler clamps K before reservation. No
+reservation may exceed 1,048,576 committed positions.
+
+One batch reservation is atomic across every selected sequence and all four
+DCP owners. It produces:
+
+- the prior committed position for each row;
+- the exact reserved logical position range;
+- every target and optional draft physical page ID touched by that range;
+- valid-token counts before execution;
+- the new sequence-table generation; and
+- a canonical reservation digest.
+
+The reservation and generation become part of the canonical `StepInput`.
+Each rank receives only its owner-local page spans but acknowledges the same
+global input hash and generation before launch. A missing, excess, stale, or
+wrong-owner span is fatal before any collective.
+
+## Commit and rollback
+
+After four-rank output consensus:
+
+- prefill commits its exact reserved count;
+- MTP0 commits its one target result;
+- MTPK commits the consensus output count and makes every rejected suffix
+  unreachable before reuse;
+- accepted target, draft-KV, and draft-indexer positions advance together;
+  and
+- the sequence-table generation advances again before another step compiles.
+
+Commit preserves the same physical IDs that the kernel wrote. It must not
+free and deterministically reacquire pages as its production mechanism.
+
+Any worker, collective, output-shape, vocabulary, EOS-placement, or consensus
+failure rolls every batch row back to its exact prior physical pages and
+valid-token counts. A failed worker generation is already terminal, but the
+CPU metadata still rolls back so cleanup and evidence are deterministic.
+
+Cancellation requested during execution is applied only after the current
+step commits or rolls back. Terminal cleanup removes the active sequence
+before releasing the corresponding residency pins. Shared sealed pages remain
+reachable by other sequences; private tails return both target and draft
+slots.
+
+## Fixed-capacity hot-path API
+
+The production API must not clone the full page table or loop once per prompt
+token. It uses:
+
+- one preflight pass over at most 64 rows;
+- page-granular arithmetic for prefill;
+- a fixed-capacity undo log bounded by the batch row and touched-page limits;
+- one allocation/free set per owner rank;
+- no heap allocation after graph/arena initialization; and
+- no device allocation in a serving step.
+
+The existing clone-on-error CPU oracle remains useful for proof but is not the
+serving hot-path implementation.
+
+## Generation and failure rules
+
+The global generation advances after every visible page-table mutation:
+
+- admission;
+- batch reservation;
+- commit or rollback;
+- cancellation cleanup; and
+- terminal removal.
+
+Overflow is fatal. Ranks never choose a fallback from local capacity. If one
+row or owner cannot reserve the canonical batch, the entire batch remains
+unlaunched and returns to scheduling or admission according to one
+coordinator decision.
+
+The following are fatal invariants:
+
+- scheduler progress differs from committed page-table positions;
+- a prefix key is attached at a different ordinal;
+- target and draft generation or valid-token counts diverge;
+- a rank consumes a page it does not own;
+- a commit references an unreserved token;
+- a rollback changes a shared sealed prefix; or
+- a rank acknowledges a different reservation digest.
+
+## Required CPU proof
+
+Before a CUDA executor consumes this boundary, tests cover:
+
+- cold, fully cached, and partially cached prefill;
+- target-only and all-draft-capable prefixes;
+- C1 and C64 batches at MTP0 through MTP6;
+- every tail occupancy 0–63, including a cross-page verify;
+- one late-row and one late-owner capacity failure with no partial mutation;
+- worker failure and malformed output rollback;
+- cancellation after reservation;
+- accepted draft EOS with no target correction;
+- session fork copy-on-write isolation;
+- exact 1,048,576-token admission with the 4,167-page serving arena; and
+- generation/digest disagreement across ranks.
+
