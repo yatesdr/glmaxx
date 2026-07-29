@@ -18,9 +18,12 @@ permission to convert a full checkpoint.
 The implementation remains `4bf7bb5`; the latest local run at rank-executor
 candidate `b64cb6d` plus its handoff/status delta passed:
 
-- `scripts/local-checks.sh`: 225 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 226 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and all 27 candidate-based review-handoff hash proofs;
+- review verifier v2 rejects handoff self-review and requires the exact
+  candidate commit, every pinned SHA-256, and the declared result path before
+  classifying a supplied token artifact as accepted;
 - the external pinned-tokenizer proof was skipped because
   `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
   unchanged from the earlier complete proof;

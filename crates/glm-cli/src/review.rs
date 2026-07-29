@@ -15,6 +15,7 @@ const CANDIDATE_LABELS: [&str; 3] = [
 ];
 const REQUESTED_TOKEN_LABEL: &str =
     "Requested acceptance token, only if every blocker and major is resolved:";
+const REQUIRED_RESULT_LABEL: &str = "Required result path:";
 const HISTORICAL_HANDOFFS: [&str; 2] = [
     "docs/fable-phase-a-engine-handoff.md",
     "docs/fable-review-handoff.md",
@@ -41,6 +42,8 @@ pub struct ReviewArtifactProof {
     pub sha256: String,
     pub token_state: ReviewTokenState,
     pub exact_token_lines: usize,
+    pub candidate_commit_attested: bool,
+    pub attested_input_hashes: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -50,6 +53,7 @@ pub struct ReviewProof {
     pub handoff_path: String,
     pub handoff_sha256: String,
     pub candidate_commit: String,
+    pub required_result_path: Option<String>,
     pub requested_acceptance_token: Option<String>,
     pub handoff_bare_acceptance_lines: Vec<String>,
     pub inputs: Vec<ReviewInputProof>,
@@ -75,6 +79,7 @@ struct ParsedInput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedHandoff {
     candidate_commit: String,
+    required_result_path: Option<String>,
     requested_acceptance_token: Option<String>,
     bare_acceptance_lines: Vec<String>,
     inputs: Vec<ParsedInput>,
@@ -116,17 +121,19 @@ pub fn verify_review_handoff(
     }
 
     let review = review
-        .map(|path| {
-            verify_review_artifact(&root, path, parsed.requested_acceptance_token.as_deref())
-        })
+        .map(|path| verify_review_artifact(&root, path, &parsed))
         .transpose()?;
+    if let Some(artifact) = review.as_ref() {
+        ensure_distinct_review_path(&handoff_relative, &artifact.path)?;
+    }
 
     Ok(ReviewProof {
-        schema: "glmaxx.review-provenance-proof.v1",
+        schema: "glmaxx.review-provenance-proof.v2",
         repository_head: head,
         handoff_path: handoff_relative,
         handoff_sha256: sha256_hex(&handoff_bytes),
         candidate_commit: parsed.candidate_commit,
+        required_result_path: parsed.required_result_path,
         requested_acceptance_token: parsed.requested_acceptance_token,
         handoff_bare_acceptance_lines: parsed.bare_acceptance_lines,
         inputs: input_proofs,
@@ -178,7 +185,7 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
         ));
     }
     Ok(ReviewSuiteProof {
-        schema: "glmaxx.review-provenance-suite.v1",
+        schema: "glmaxx.review-provenance-suite.v2",
         repository_head: head,
         verified_handoffs,
         skipped_historical_handoffs,
@@ -189,19 +196,75 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
 fn verify_review_artifact(
     root: &Path,
     path: &Path,
-    requested_token: Option<&str>,
+    handoff: &ParsedHandoff,
 ) -> Result<ReviewArtifactProof, ReviewProofError> {
     let path = repository_file(root, path)?;
     let relative = relative_string(root, &path)?;
     let bytes = fs::read(&path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| ReviewProofError::Utf8(relative.clone()))?;
-    let (token_state, exact_token_lines) = classify_review_token(&relative, text, requested_token)?;
+    build_review_artifact_proof(relative, &bytes, text, handoff)
+}
+
+fn build_review_artifact_proof(
+    relative: String,
+    bytes: &[u8],
+    text: &str,
+    handoff: &ParsedHandoff,
+) -> Result<ReviewArtifactProof, ReviewProofError> {
+    let (token_state, exact_token_lines) = classify_review_token(
+        &relative,
+        text,
+        handoff.requested_acceptance_token.as_deref(),
+    )?;
+    let candidate_commit_attested = contains_exact_hex_word(text, &handoff.candidate_commit);
+    let attested_input_hashes = handoff
+        .inputs
+        .iter()
+        .filter(|input| contains_exact_hex_word(text, &input.expected_sha256))
+        .count();
+    if token_state == ReviewTokenState::Accepted {
+        if let Some(expected) = handoff.required_result_path.as_deref()
+            && relative != expected
+        {
+            return Err(ReviewProofError::ReviewPathMismatch {
+                expected: expected.to_owned(),
+                actual: relative,
+            });
+        }
+        if !candidate_commit_attested {
+            return Err(ReviewProofError::MissingReviewAttestation {
+                path: relative,
+                item: format!("candidate commit {}", handoff.candidate_commit),
+            });
+        }
+        if attested_input_hashes != handoff.inputs.len() {
+            let missing = handoff
+                .inputs
+                .iter()
+                .find(|input| !contains_exact_hex_word(text, &input.expected_sha256))
+                .expect("count mismatch requires a missing input");
+            return Err(ReviewProofError::MissingReviewAttestation {
+                path: relative,
+                item: format!("{}={}", missing.path, missing.expected_sha256),
+            });
+        }
+    }
     Ok(ReviewArtifactProof {
         path: relative,
-        sha256: sha256_hex(&bytes),
+        sha256: sha256_hex(bytes),
         token_state,
         exact_token_lines,
+        candidate_commit_attested,
+        attested_input_hashes,
     })
+}
+
+fn ensure_distinct_review_path(handoff: &str, review: &str) -> Result<(), ReviewProofError> {
+    if handoff == review {
+        Err(ReviewProofError::ReviewIsHandoff(handoff.to_owned()))
+    } else {
+        Ok(())
+    }
 }
 
 fn classify_review_token(
@@ -370,8 +433,34 @@ fn parse_handoff(text: &str) -> Result<ParsedHandoff, ReviewProofError> {
         }
     };
 
+    let result_indices: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with(REQUIRED_RESULT_LABEL))
+        .map(|(index, _)| index)
+        .collect();
+    if result_indices.len() > 1 {
+        return Err(ReviewProofError::Format(
+            "multiple required result path labels".to_owned(),
+        ));
+    }
+    let required_result_path = result_indices
+        .first()
+        .map(|&index| {
+            first_code_value(lines[index])
+                .or_else(|| next_code_value(&lines, index + 1))
+                .ok_or_else(|| {
+                    ReviewProofError::Format("required result path is missing".to_owned())
+                })
+        })
+        .transpose()?;
+    if let Some(path) = required_result_path.as_deref() {
+        validate_relative_path(path)?;
+    }
+
     Ok(ParsedHandoff {
         candidate_commit,
+        required_result_path,
         requested_acceptance_token,
         bare_acceptance_lines,
         inputs,
@@ -429,6 +518,11 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn contains_exact_hex_word(text: &str, expected: &str) -> bool {
+    text.split(|character: char| !character.is_ascii_hexdigit())
+        .any(|word| word == expected)
 }
 
 fn validate_relative_path(path: &str) -> Result<(), ReviewProofError> {
@@ -557,6 +651,15 @@ pub enum ReviewProofError {
         token: String,
         count: usize,
     },
+    ReviewPathMismatch {
+        expected: String,
+        actual: String,
+    },
+    MissingReviewAttestation {
+        path: String,
+        item: String,
+    },
+    ReviewIsHandoff(String),
 }
 
 impl fmt::Display for ReviewProofError {
@@ -584,6 +687,16 @@ impl fmt::Display for ReviewProofError {
                 formatter,
                 "acceptance token appears {count} times in {path}: {token}"
             ),
+            Self::ReviewPathMismatch { expected, actual } => write!(
+                formatter,
+                "review artifact path mismatch: expected {expected}, observed {actual}"
+            ),
+            Self::MissingReviewAttestation { path, item } => {
+                write!(formatter, "accepted review {path} does not attest {item}")
+            }
+            Self::ReviewIsHandoff(path) => {
+                write!(formatter, "review artifact is the handoff itself: {path}")
+            }
         }
     }
 }
@@ -608,6 +721,8 @@ mod tests {
              `0123456789abcdef0123456789abcdef01234567`\n\n\
              Requested acceptance token, only if every blocker and major is resolved:\n\
              `example-v1-accepted`\n\n\
+             Required result path:\n\
+             `example-review.md` at the repository root.\n\n\
              | Input at candidate commit | SHA-256 |\n\
              |---|---|\n\
              | `src/lib.rs` | `{HASH}` |\n"
@@ -624,6 +739,21 @@ mod tests {
         assert_eq!(
             parsed.requested_acceptance_token.as_deref(),
             Some("example-v1-accepted")
+        );
+        assert_eq!(
+            parsed.required_result_path.as_deref(),
+            Some("example-review.md")
+        );
+        let same_line = modern_handoff().replace(
+            "Required result path:\n`example-review.md` at the repository root.",
+            "Required result path: `example-review.md` at the repository root.",
+        );
+        assert_eq!(
+            parse_handoff(&same_line)
+                .unwrap()
+                .required_result_path
+                .as_deref(),
+            Some("example-review.md")
         );
         assert!(parsed.bare_acceptance_lines.is_empty());
         assert_eq!(
@@ -717,5 +847,53 @@ mod tests {
             ),
             Err(ReviewProofError::DuplicateToken { count: 2, .. })
         ));
+    }
+
+    #[test]
+    fn accepted_review_requires_candidate_and_every_input_hash() {
+        let handoff = parse_handoff(&modern_handoff()).unwrap();
+        let missing_candidate = format!("{HASH}\nexample-v1-accepted\n");
+        let error =
+            verify_review_artifact_text_for_test("example-review.md", &missing_candidate, &handoff)
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            ReviewProofError::MissingReviewAttestation { .. }
+        ));
+
+        let missing_hash = format!("{}\nexample-v1-accepted\n", handoff.candidate_commit);
+        let error =
+            verify_review_artifact_text_for_test("example-review.md", &missing_hash, &handoff)
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            ReviewProofError::MissingReviewAttestation { .. }
+        ));
+
+        let accepted = format!(
+            "{}\n{}\nexample-v1-accepted\n",
+            handoff.candidate_commit, HASH
+        );
+        let proof =
+            verify_review_artifact_text_for_test("example-review.md", &accepted, &handoff).unwrap();
+        assert_eq!(proof.token_state, ReviewTokenState::Accepted);
+        assert!(proof.candidate_commit_attested);
+        assert_eq!(proof.attested_input_hashes, 1);
+        assert!(matches!(
+            verify_review_artifact_text_for_test("wrong-review.md", &accepted, &handoff),
+            Err(ReviewProofError::ReviewPathMismatch { .. })
+        ));
+        assert!(matches!(
+            ensure_distinct_review_path("handoff.md", "handoff.md"),
+            Err(ReviewProofError::ReviewIsHandoff(_))
+        ));
+    }
+
+    fn verify_review_artifact_text_for_test(
+        relative: &str,
+        text: &str,
+        handoff: &ParsedHandoff,
+    ) -> Result<ReviewArtifactProof, ReviewProofError> {
+        build_review_artifact_proof(relative.to_owned(), text.as_bytes(), text, handoff)
     }
 }
