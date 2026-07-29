@@ -45,3 +45,19 @@ target_compile_options(glmaxx_cutlass_activation_layout_probe PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-arch=sm_120f>)
 set_target_properties(glmaxx_cutlass_activation_layout_probe PROPERTIES
   CUDA_ARCHITECTURES OFF)
+
+# Compile the pinned CUTLASS SM120 dense NVFP4 example as an unlaunched
+# tensor-core control. The glmaxx production successor will consume the same
+# operand/layout types but needs a GLM-specific paired gate/up epilogue.
+add_executable(glmaxx_cutlass_nvfp4_dense_control
+  "${CUTLASS_DIR}/examples/79_blackwell_geforce_gemm/79a_blackwell_geforce_nvfp4_bf16_gemm.cu")
+target_include_directories(glmaxx_cutlass_nvfp4_dense_control PRIVATE
+  "${CUTLASS_DIR}/include"
+  "${CUTLASS_DIR}/tools/util/include"
+  "${CUTLASS_DIR}/examples/79_blackwell_geforce_gemm")
+target_compile_features(glmaxx_cutlass_nvfp4_dense_control
+  PRIVATE cxx_std_17 cuda_std_17)
+target_compile_options(glmaxx_cutlass_nvfp4_dense_control PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--expt-extended-lambda;-arch=sm_120f>)
+set_target_properties(glmaxx_cutlass_nvfp4_dense_control PROPERTIES
+  CUDA_ARCHITECTURES OFF)

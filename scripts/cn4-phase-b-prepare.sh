@@ -104,6 +104,13 @@ cuobjdump --list-elf "${build_dir}/libglmaxx_sm120.so" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cuobjdump-elf.txt"
 cuobjdump --dump-resource-usage "${build_dir}/libglmaxx_sm120.so" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cuobjdump-resources.txt"
+cuobjdump --list-elf "${build_dir}/glmaxx_cutlass_nvfp4_dense_control" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-dense-control-elf.txt"
+cuobjdump --dump-resource-usage \
+  "${build_dir}/glmaxx_cutlass_nvfp4_dense_control" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-dense-control-resources.txt"
+cuobjdump --dump-sass "${build_dir}/glmaxx_cutlass_nvfp4_dense_control" \
+  > "${GLMAXX_EVIDENCE_DIR}/cutlass-dense-control-sass.txt"
 
 export GLMAXX_KERNEL_LIB_DIR="${build_dir}"
 cargo build --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
@@ -116,6 +123,7 @@ shasum -a 256 \
   "${build_dir}/libglmaxx_sm120.so" \
   "${build_dir}/glmaxx_cutlass_layout_probe" \
   "${build_dir}/glmaxx_cutlass_activation_layout_probe" \
+  "${build_dir}/glmaxx_cutlass_nvfp4_dense_control" \
   "${CARGO_TARGET_DIR}/release/glmaxx" \
   | tee "${GLMAXX_EVIDENCE_DIR}/build-artifact-sha256.txt"
 
@@ -127,7 +135,7 @@ fi
 
 printf '%s\n' \
   "PREPARED_NO_DEVICE_LAUNCH" \
-  "The sm_120f library, SFA/SFB layout probes, and Rust FFI binary are built." \
+  "The sm_120f library, SFA/SFB probes, unlaunched CUTLASS dense control, and Rust FFI binary are built." \
   "No CUDA device kernel was launched by this script." \
   "An accepted manifest/v0.2.2 independent review remains mandatory before scripts/cn4-phase-b.sh." \
   | tee "${GLMAXX_EVIDENCE_DIR}/verdict.txt"
