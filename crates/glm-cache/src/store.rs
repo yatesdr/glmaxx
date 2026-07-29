@@ -11,8 +11,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord};
 
-const JOURNAL_MAGIC: [u8; 8] = *b"GLTJRNL1";
-const JOURNAL_VERSION: u16 = 1;
+// v2 makes the incompatible TierPiece::DraftSidecar=3 meaning explicit.
+// v1 used piece 3 for the separately hashed draft-KV plane.
+const JOURNAL_MAGIC: [u8; 8] = *b"GLTJRNL2";
+const JOURNAL_VERSION: u16 = 2;
 const JOURNAL_RECORD_BYTES: usize = 512;
 const JOURNAL_CRC_OFFSET: usize = 508;
 const PIECE_TABLE_OFFSET: usize = 96;
@@ -646,5 +648,44 @@ mod tests {
         let mut reopened = FileTierStore::open(&root).unwrap();
         assert!(reopened.restore([0x55; 32]).unwrap().is_some());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v1_journal_fails_closed_after_unified_draft_sidecar_change() {
+        let event = JournalEvent::Begin {
+            transaction: 1,
+            record: TierRecord {
+                namespace: [0x11; 32],
+                page_key: [0x22; 32],
+                generation: 1,
+                tier: Tier::Nvme,
+                mtp: true,
+                pieces: request(0x22, 1, true)
+                    .pieces
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, piece)| TierPieceRecord {
+                        piece: piece.piece,
+                        byte_length: piece.piece.expected_bytes(),
+                        storage_offset: ordinal as u64 * 2 * 1024 * 1024,
+                        sha256: [ordinal as u8 + 1; 32],
+                    })
+                    .collect(),
+            },
+        };
+        let current = encode_journal_event(&event).unwrap();
+        assert_eq!(&current[..8], b"GLTJRNL2");
+        assert_eq!(get_u16(&current, 8), 2);
+
+        let mut stale = current;
+        stale[..8].copy_from_slice(b"GLTJRNL1");
+        put_u16(&mut stale, 8, 1);
+        stale[JOURNAL_CRC_OFFSET..].fill(0);
+        let crc = crc32c(&stale);
+        put_u32(&mut stale, JOURNAL_CRC_OFFSET, crc);
+        assert!(matches!(
+            decode_journal_event(&stale),
+            Err(StoreError::JournalEncoding)
+        ));
     }
 }

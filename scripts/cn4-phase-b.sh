@@ -62,8 +62,8 @@ case "${review_artifact}" in
     ;;
 esac
 review_relative="${review_artifact#"${repo_dir}/"}"
-if [[ "${review_relative}" != "fable-manifest-abi-v022.md" ]]; then
-  echo "Review artifact must be the dedicated root fable-manifest-abi-v022.md result, not a handoff or disposition" >&2
+if [[ "${review_relative}" != "fable-manifest-abi-v022-r2.md" ]]; then
+  echo "Review artifact must be the dedicated root fable-manifest-abi-v022-r2.md result, not a handoff or disposition" >&2
   exit 65
 fi
 if ! git ls-files --error-unmatch "${review_relative}" >/dev/null 2>&1; then
@@ -74,6 +74,43 @@ if ! grep -Fxq "manifest-abi-v0.2.2-accepted" "${review_artifact}"; then
   echo "Review artifact does not contain the exact acceptance token" >&2
   exit 65
 fi
+
+require_hash() {
+  local expected_sha="$1"
+  local input_file="$2"
+  local attestation_name="$3"
+  local actual_sha
+  actual_sha="$(shasum -a 256 "${input_file}" | awk '{print $1}')"
+  if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+    echo "Reviewed input changed: ${input_file}" >&2
+    exit 70
+  fi
+  if ! grep -Fxq "${attestation_name}-sha256=${expected_sha}" \
+      "${review_artifact}"; then
+    echo "Review artifact did not attest ${input_file}" >&2
+    exit 70
+  fi
+}
+
+# Bind Phase B to the four exact contract identities required by the
+# independent handoff. The token alone is insufficient.
+require_hash \
+  "efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a" \
+  "spec/engine-v0.md" \
+  "engine-v0"
+require_hash \
+  "619a3923c18f43edb23ca9de44b51b84c6d2f6432915908db5fa3a2e0e7cf45a" \
+  "spec/format-v0.md" \
+  "format-v0"
+require_hash \
+  "8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6" \
+  "manifests/glm52-operation-v1.json" \
+  "operation-manifest"
+require_hash \
+  "028516adc04d454317e1b76a3147be4807c3ed3ce371e1d43aead3396270400d" \
+  "profiles/profile-budget-v0.json" \
+  "profile-budget-v0"
+
 review_sha_before="$(shasum -a 256 "${review_artifact}" | awk '{print $1}')"
 
 mkdir -p "${GLMAXX_EVIDENCE_DIR}"

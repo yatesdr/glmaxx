@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly expected_authorization="exl3-phase-b-authorized"
 readonly expected_review_token="exl3-source-projection-v1-accepted"
-readonly expected_review_relative="fable-exl3-source-projection-v1.md"
+readonly expected_review_relative="fable-exl3-source-projection-v1-r2.md"
 readonly expected_cutlass="e05f953a5b3d38adc240df2ff928e0421c2abba3"
 
 if [[ "${GLMAXX_CN4_AUTHORIZATION:-}" != "${expected_authorization}" ]]; then
@@ -101,15 +101,15 @@ require_hash \
   "docs/exl3-trellis-cpu-contract.md" \
   "exl3-cpu-contract"
 require_hash \
-  "6a889c1987cbf9b0e69b8c99716acd753ad0626496a32d26a8b59135a17f22d7" \
+  "20e4f6007969d42d78aba586e0a2b2496fc19483cd94563ed366bcd3e1b2b389" \
   "docs/exl3-sm120-source-projection.md" \
   "exl3-sm120-design"
 require_hash \
-  "8b771eb88eac20dae28917faf3cf640b58c3b12baa6193b9720a89d8bc1538b1" \
+  "c290960591295a1dd440818f97a7317fb42a061f9bc71c87a31b5bbb4cfd3647" \
   "crates/glm-format/src/exl3.rs" \
   "exl3-rust-oracle"
 require_hash \
-  "a50542774a585abeeb451c5248397da3b069296856ca8ae64423786ec5675857" \
+  "241730ceaf629d01101629cb3f107e8d13fe92019444f4b635f9aa1d8cbc819d" \
   "kernels/sm120/exl3_projection_control.cu" \
   "exl3-cuda-control"
 
