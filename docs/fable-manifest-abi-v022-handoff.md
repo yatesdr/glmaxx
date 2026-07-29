@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Candidate base commit:
-`ee3f1f3507ba67b886796126b1cc1e91c5d099e4`
+`8eca10a5b69581ce7da4316f9737de0de9c609e8`
 
 Review scope: the single independent-review gate that remains before the
 authorized cn4 M2 CUDA execution. This is intentionally narrower than the
@@ -20,7 +20,7 @@ table, stop and report a stale candidate instead of reviewing inferred bytes.
 | Input | SHA-256 |
 |---|---|
 | `spec/engine-v0.md` | `efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a` |
-| `spec/format-v0.md` | `9f78f09b1d82f61a0110303b9921d59d614339bcacbec66c7735655a9c5ed01d` |
+| `spec/format-v0.md` | `ab6066d5a9ebab8fbc42966f4193f867b7c2c7cec10ec8a1e8be17fcf0f470f6` |
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | `docs/nvfp4-physical-abi.md` | `8936c8a60a1d6a7a2038fcd7f3f4a352b80477c359a6f3f2f89ea3903d2a9e99` |
 | `docs/phase-a-proof.md` | `d38eea85efd96b07bbdb27c039a2d7848d348b499615ca21c59e0c29904a41` |
@@ -39,9 +39,10 @@ against the pinned GLM-5.2 graph. If the reviewer uses the read-only
 `../glm52-opt` evidence tree, record its HEAD and do not modify it.
 
 The format hash changed after the earlier handoff because codec `0x0200`
-source-plane placement was made explicit. That change does not alter either
-decision below and does not qualify EXL3 GPU load support; review the exact
-new bytes rather than reusing the prior spec hash.
+source-plane placement was made explicit and the canonical zero-length
+auxiliary/metadata placement for direct protected tensors was clarified.
+Neither change alters either decision below or qualifies EXL3 GPU load
+support; review the exact new bytes rather than reusing the prior spec hash.
 
 ## Decision 1: generated operation manifest
 

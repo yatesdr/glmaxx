@@ -3,10 +3,11 @@
 Date: 2026-07-29
 
 Base commit:
-`de0434c414ce0c1c3ea552bb3bda46a89ba30c3f`
+`8eca10a5b69581ce7da4316f9737de0de9c609e8`
 
-Review scope: the eight CPU/offline workstreams requested after the Phase-A
-engine contract. No cn4 access or GPU execution occurred.
+Review scope: the CPU/offline workstreams requested after the Phase-A engine
+contract. cn4 was used for a no-device compile and test reproduction; no GPU
+kernel execution occurred.
 
 ## Candidate hashes
 
@@ -15,14 +16,15 @@ Hash these files again at review start and finish:
 | File | SHA-256 |
 |---|---|
 | `spec/engine-v0.md` | `efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a` |
-| `spec/format-v0.md` | `9f78f09b1d82f61a0110303b9921d59d614339bcacbec66c7735655a9c5ed01d` |
+| `spec/format-v0.md` | `ab6066d5a9ebab8fbc42966f4193f867b7c2c7cec10ec8a1e8be17fcf0f470f6` |
 | `docs/native-engine-plan.md` | `9662c82bea15c7b336ac3efa41a12a1e627a511a5f8da603ba466d5bcb6ae036` |
 | `docs/exl3-trellis-cpu-contract.md` | `7c5bfa0795aa6b78646b00b029f8d4edc7c15491d69ea19e423f770701b5cdc3` |
 | `docs/offline-serving-foundation.md` | `576932d119332774df2a8a65d85a4f185e804504acca949561689f03b02f28ae` |
-| `docs/checkpoint-ingest.md` | `9dbe3ff82df903d7c4812202eba1d8b136b1e7d49605d329daafe113a36060ee` |
+| `docs/checkpoint-ingest.md` | `cad2020ffe5e87c423cacd7aee5f3e3d251366126adad7cc13b7c8968ece1b79` |
 | `crates/glm-format/src/exl3.rs` | `6ba46fa98979711f5ecaaccf9be150045de768648e2a31fb5fbf49d56d95bbe4` |
-| `crates/glm-format/src/container.rs` | `3896cea86554218ec9c19d8090c2cef4956c0ad50bfc4806327c10443980ea7f` |
-| `crates/glm-format/src/safetensors.rs` | `5173a2c21f125d61fa79c0ee398cdeaee6e8e2f0d6ad88eac02a58e27560040f` |
+| `crates/glm-format/src/container.rs` | `c10d36c8a130647a22fc36a59d31337628f40f6e48bfacd916823d3a3f66772a` |
+| `crates/glm-format/src/safetensors.rs` | `a0a026cd76dcd5597e34d44362fac96b44bd7715ea638c60b0db91503a7b6d75` |
+| `crates/glm-format/src/stream.rs` | `3e496ebe852f453597bd022a74381d4a1a979a9711fbf216559e71f6fe02f4d2` |
 | `crates/glm-engine/src/weight.rs` | `d658cefefc17757a28258bafd0e13f5309e8adcbf2b30c4d2bdc97be9899ca19` |
 | `crates/glm-engine/src/startup.rs` | `9634f120a2e01f21aaa5778954053d9a06f1e8d2af6c5abe1f9c6e4cbbd31e87` |
 | `crates/glm-scheduler/src/lib.rs` | `b6ec68d37d87ba64dead63444972b6334218d6a7fbeceb4e7f685162bf2b43e8` |
@@ -62,6 +64,16 @@ Hash these files again at review start and finish:
     sharded checkpoint structure, exposes bounded positional reads and
     content hashing, and imports the canonical four EXL3 components at actual
     GLM-5.2 shapes without a framework or intermediate representation.
+11. The native container now carries protected BF16, FP16, and FP32 tensors
+    with exact multidimensional shapes, canonical zero padding, and absent
+    auxiliary planes.
+12. The production writer streams every plane through an 8 MiB buffer,
+    durably checkpoints completed descriptors, validates hashes on resume,
+    rejects changed or malformed partial outputs, and emits byte-identical
+    files to the in-memory oracle.
+13. Safetensors discovery also supports strict flat per-layer shard
+    directories, rejects duplicate tensor names and symlinks, and computes a
+    deterministic structure digest.
 
 ## Reproduction
 
@@ -71,16 +83,16 @@ The complete local gate passes:
 ./scripts/local-checks.sh
 ```
 
-The workspace currently has 132 passing tests. Clippy passes with warnings
+The workspace currently has 138 passing tests. Clippy passes with warnings
 denied. The real EXL3 source proof is external-data dependent:
 
 ```text
 cargo run -p glm-cli -- exl3-proof /external/path/source.payload
 cargo run -p glm-cli --release -- \
-  safetensors-inventory /external/model/model.safetensors.index.json
+  safetensors-inventory /external/model
 cargo run -p glm-cli --release -- \
   exl3-safetensors-proof \
-  /external/model/model.safetensors.index.json 3 0 0 gate
+  /external/model 3 0 0 gate
 ```
 
 Pinned real-payload result:
@@ -126,6 +138,12 @@ No weights or raw benchmark evidence are in Git.
     positional read path accept an ambiguous, truncated, overlapping,
     unmapped, path-traversing, or same-header/wrong-data EXL3 source while
     reporting it as proven?
+12. Can the resumable writer publish a descriptor before its payload is
+    durable, accept changed completed bytes, conceal nonzero padding, or emit
+    bytes different from the deterministic in-memory oracle?
+13. Do plain protected tensors or flat shard-directory discovery introduce
+    an ambiguous dtype, rank, shape, empty-plane, duplicate-name, or symlink
+    interpretation?
 
 ## Explicit non-claims
 
@@ -133,6 +151,6 @@ No weights or raw benchmark evidence are in Git.
 - no CUDA graph capture or real four-process worker;
 - no measured fairness/SLO tuning;
 - no filesystem I/O, fsync, io_uring, or GDS implementation;
-- no complete-model conversion or bounded-memory native rank writer;
+- no complete-model conversion or atomic four-rank directory publication;
 - no model logit/quality result;
 - no serving API or end-to-end throughput claim.
