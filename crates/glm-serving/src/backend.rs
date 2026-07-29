@@ -445,14 +445,25 @@ fn runtime_loop(
             match commands.try_recv() {
                 Ok(command) => {
                     progressed = true;
-                    process_command(
+                    if let Err(error) = process_command(
                         command,
                         &mut coordinator,
                         &mut active,
                         &mut pending_admissions,
                         owners,
                         counters,
-                    );
+                    ) {
+                        fatal.store(true, Ordering::Release);
+                        fail_all(
+                            &mut active,
+                            &commands,
+                            owners,
+                            counters,
+                            error.code,
+                            &error.message,
+                        );
+                        return;
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -470,23 +481,26 @@ fn runtime_loop(
         }
 
         for request_id in pending_admissions.iter().copied().collect::<Vec<_>>() {
-            match coordinator.poll_admission(request_id) {
-                Ok(AdmissionStatus::Pending) => {}
-                Ok(AdmissionStatus::Admitted { .. }) => {
-                    pending_admissions.remove(&request_id);
-                    progressed = true;
-                }
+            match poll_pending_admission(
+                request_id,
+                &mut coordinator,
+                &mut active,
+                &mut pending_admissions,
+                owners,
+                counters,
+            ) {
+                Ok(poll_progressed) => progressed |= poll_progressed,
                 Err(error) => {
-                    pending_admissions.remove(&request_id);
-                    fail_request(
-                        request_id,
+                    fatal.store(true, Ordering::Release);
+                    fail_all(
                         &mut active,
+                        &commands,
                         owners,
                         counters,
-                        "ADMISSION_FAILED",
-                        error.to_string(),
+                        error.code,
+                        &error.message,
                     );
-                    progressed = true;
+                    return;
                 }
             }
         }
@@ -546,14 +560,27 @@ fn runtime_loop(
 
         if !progressed {
             match commands.recv_timeout(config.idle_poll_interval) {
-                Ok(command) => process_command(
-                    command,
-                    &mut coordinator,
-                    &mut active,
-                    &mut pending_admissions,
-                    owners,
-                    counters,
-                ),
+                Ok(command) => {
+                    if let Err(error) = process_command(
+                        command,
+                        &mut coordinator,
+                        &mut active,
+                        &mut pending_admissions,
+                        owners,
+                        counters,
+                    ) {
+                        fatal.store(true, Ordering::Release);
+                        fail_all(
+                            &mut active,
+                            &commands,
+                            owners,
+                            counters,
+                            error.code,
+                            &error.message,
+                        );
+                        return;
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
@@ -569,6 +596,39 @@ fn runtime_loop(
     );
 }
 
+fn poll_pending_admission(
+    request_id: u64,
+    coordinator: &mut ServingCoordinator,
+    active: &mut BTreeMap<u64, ActiveRequest>,
+    pending_admissions: &mut BTreeSet<u64>,
+    owners: &Mutex<BTreeMap<u64, u32>>,
+    counters: &ServingMetrics,
+) -> Result<bool, ApiBackendError> {
+    match coordinator.poll_admission(request_id) {
+        Ok(AdmissionStatus::Pending) => Ok(false),
+        Ok(AdmissionStatus::Admitted { .. }) => {
+            pending_admissions.remove(&request_id);
+            Ok(true)
+        }
+        Err(error) if coordinator.has_pending_admission(request_id) => Err(ApiBackendError {
+            code: "ADMISSION_ROLLBACK_FAILED",
+            message: error.to_string(),
+        }),
+        Err(error) => {
+            pending_admissions.remove(&request_id);
+            fail_request(
+                request_id,
+                active,
+                owners,
+                counters,
+                "ADMISSION_FAILED",
+                error.to_string(),
+            );
+            Ok(true)
+        }
+    }
+}
+
 fn process_command(
     command: BackendCommand,
     coordinator: &mut ServingCoordinator,
@@ -576,7 +636,7 @@ fn process_command(
     pending_admissions: &mut BTreeSet<u64>,
     owners: &Mutex<BTreeMap<u64, u32>>,
     counters: &ServingMetrics,
-) {
+) -> Result<(), ApiBackendError> {
     match command {
         BackendCommand::Submit {
             request_id,
@@ -599,7 +659,7 @@ fn process_command(
                         "prompt token count overflow",
                     );
                     remove_owner(owners, request_id);
-                    return;
+                    return Ok(());
                 }
             };
             let admission_started_at = Instant::now();
@@ -648,21 +708,33 @@ fn process_command(
                 .get(&request_id)
                 .is_some_and(|request| request.tenant == tenant);
             if !matches_owner {
-                return;
+                return Ok(());
             }
-            pending_admissions.remove(&request_id);
-            if coordinator.cancel(request_id).is_err() {
-                fail_request(
-                    request_id,
-                    active,
-                    owners,
-                    counters,
-                    "CANCELLATION_FAILED",
-                    "the coordinator rejected cancellation",
-                );
+            match coordinator.cancel(request_id) {
+                Ok(()) => {
+                    pending_admissions.remove(&request_id);
+                }
+                Err(error) if coordinator.has_pending_admission(request_id) => {
+                    return Err(ApiBackendError {
+                        code: "CANCELLATION_ROLLBACK_FAILED",
+                        message: error.to_string(),
+                    });
+                }
+                Err(_) => {
+                    pending_admissions.remove(&request_id);
+                    fail_request(
+                        request_id,
+                        active,
+                        owners,
+                        counters,
+                        "CANCELLATION_FAILED",
+                        "the coordinator rejected cancellation",
+                    );
+                }
             }
         }
     }
+    Ok(())
 }
 
 fn dispatch_events(
@@ -1009,7 +1081,8 @@ mod tests {
     };
 
     use glm_cache::{
-        FileTierStore, NamespaceInputs, PrefixIndex, PrefixNamespace, ResidencyConfig,
+        DurablePageRequest, FileTierStore, NamespaceInputs, PagePieceBytes, PrefixIndex,
+        PrefixNamespace, ResidencyConfig, TierPiece,
     };
     use glm_engine::{
         AttentionTransport, CollectiveSchedule, GraphEntry, GraphKey, GraphProfile,
@@ -1125,6 +1198,21 @@ mod tests {
         store_root: &std::path::Path,
         workers: Tp4WorkerPool,
     ) -> ServingCoordinator {
+        coordinator_with_workers_and_capacity(
+            store_root,
+            workers,
+            ResidencyConfig {
+                hbm_bytes: 1,
+                dram_bytes: 0,
+            },
+        )
+    }
+
+    fn coordinator_with_workers_and_capacity(
+        store_root: &std::path::Path,
+        workers: Tp4WorkerPool,
+        residency: ResidencyConfig,
+    ) -> ServingCoordinator {
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [1; 32],
             tokenizer_sha256: [2; 32],
@@ -1139,10 +1227,7 @@ mod tests {
         let prefix = crate::PrefixRestoreCoordinator::new(
             PrefixIndex::new(namespace),
             store_root,
-            ResidencyConfig {
-                hbm_bytes: 1,
-                dram_bytes: 0,
-            },
+            residency,
             1,
         )
         .unwrap();
@@ -1264,6 +1349,178 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             Err(RankExecutionError::Backend(-1))
         }
+    }
+
+    #[test]
+    fn retained_admission_rollback_forces_fatal_signal_without_losing_owner() {
+        let root = temporary_store();
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [1; 32],
+            tokenizer_sha256: [2; 32],
+            chat_template_sha256: [3; 32],
+            weight_policy_hash: [4; 32],
+            target_kv_abi_sha256: [5; 32],
+            draft_kv_abi_sha256: [6; 32],
+            rope_parameters_sha256: [7; 32],
+        })
+        .unwrap();
+        let tokens: Vec<u32> = (0..64).collect();
+        let index = PrefixIndex::new(namespace);
+        let key = index.derive_keys(&tokens)[0];
+        let mut store = FileTierStore::open(&root).unwrap();
+        let record = store
+            .publish(DurablePageRequest {
+                namespace: namespace.0,
+                page_key: key.0,
+                generation: 1,
+                mtp: false,
+                pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                    .into_iter()
+                    .map(|piece| PagePieceBytes {
+                        piece,
+                        bytes: vec![piece as u8; piece.expected_bytes() as usize],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let page_bytes = record.pieces.iter().map(|piece| piece.byte_length).sum();
+        drop(store);
+
+        let mut coordinator = coordinator_with_workers_and_capacity(
+            &root,
+            Tp4WorkerPool::spawn_cpu(2, None).unwrap(),
+            ResidencyConfig {
+                hbm_bytes: page_bytes,
+                dram_bytes: page_bytes,
+            },
+        );
+        coordinator
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .register_prefix(&tokens, vec![record])
+            .unwrap();
+
+        let counters = ServingMetrics::new();
+        let owners = Mutex::new(BTreeMap::from([(50, 1)]));
+        let mut active = BTreeMap::new();
+        let mut pending_admissions = BTreeSet::new();
+        let (events, completion) = mpsc::sync_channel(4);
+        process_command(
+            BackendCommand::Submit {
+                request_id: 50,
+                tenant: 1,
+                maximum_output_tokens: 1,
+                mtp_depth: 0,
+                request_started_at: Instant::now(),
+                enqueued_at: Instant::now(),
+                tokens: tokens.clone().into_boxed_slice(),
+                decoder: Box::new(FakeDecoder {
+                    stop_on_x: false,
+                    finished: false,
+                }),
+                events,
+            },
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        assert!(pending_admissions.contains(&50));
+        assert!(coordinator.has_pending_admission(50));
+        coordinator
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .abort_pending_page_for_test(50, 0)
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let poll_error = loop {
+            match poll_pending_admission(
+                50,
+                &mut coordinator,
+                &mut active,
+                &mut pending_admissions,
+                &owners,
+                &counters,
+            ) {
+                Ok(false) => {
+                    assert!(Instant::now() < deadline, "restore fault did not arrive");
+                    thread::yield_now();
+                }
+                Err(error) => break error,
+                Ok(true) => panic!("corrupt pending admission was forgotten"),
+            }
+        };
+        assert_eq!(poll_error.code, "ADMISSION_ROLLBACK_FAILED");
+        assert!(active.contains_key(&50));
+        assert!(pending_admissions.contains(&50));
+        assert_eq!(owners.lock().unwrap().get(&50), Some(&1));
+        assert!(coordinator.has_pending_admission(50));
+        assert_eq!(coordinator.retained_prompt_bytes(), 256);
+
+        let cancel_error = process_command(
+            BackendCommand::Cancel {
+                request_id: 50,
+                tenant: 1,
+            },
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap_err();
+        assert_eq!(cancel_error.code, "CANCELLATION_ROLLBACK_FAILED");
+        assert!(active.contains_key(&50));
+        assert!(pending_admissions.contains(&50));
+        assert_eq!(owners.lock().unwrap().get(&50), Some(&1));
+        assert!(coordinator.has_pending_admission(50));
+
+        coordinator
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .repair_pending_page_identity_for_test(50, 0)
+            .unwrap();
+        process_command(
+            BackendCommand::Cancel {
+                request_id: 50,
+                tenant: 1,
+            },
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        assert!(!pending_admissions.contains(&50));
+        assert!(!coordinator.has_pending_admission(50));
+        dispatch_events(
+            coordinator.drain_events(),
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        );
+        assert!(!active.contains_key(&50));
+        assert!(!owners.lock().unwrap().contains_key(&50));
+        assert_eq!(coordinator.retained_prompt_bytes(), 0);
+        assert!(matches!(
+            completion.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ApiCompletionEvent::Failed(ApiBackendError {
+                code: "REQUEST_CANCELLED",
+                ..
+            })
+        ));
+
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

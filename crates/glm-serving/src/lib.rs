@@ -636,6 +636,11 @@ impl ServingCoordinator {
         self.retained_prompt_bytes
     }
 
+    #[must_use]
+    pub fn has_pending_admission(&self, request_id: u64) -> bool {
+        self.pending_admissions.contains_key(&request_id)
+    }
+
     fn plan_successful_step_publication(
         &self,
         batch: &ScheduledBatch,
