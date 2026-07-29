@@ -7,7 +7,8 @@ mod float;
 mod nvfp4;
 
 pub use container::{
-    HEADER_BYTES, RankFile, RankFileBuilder, RankFileError, TensorDescriptor, TensorRecord,
+    HEADER_BYTES, RankFile, RankFileBuilder, RankFileError, TensorDescriptor, TensorPayload,
+    TensorRecord,
 };
 pub use crc32c::crc32c;
 pub use exl3::{

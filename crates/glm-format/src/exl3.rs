@@ -217,6 +217,99 @@ impl Exl3Trellis {
         Ok(tensor)
     }
 
+    /// Imports the deterministic native-container split without concatenating
+    /// or reordering the pinned source components.
+    ///
+    /// The primary plane is the little-endian I16 trellis in source order.
+    /// The aux plane is `mcg`, `suh`, then `svh`, all little-endian.
+    pub fn from_container_planes(
+        metadata: Exl3Metadata,
+        primary: &[u8],
+        aux: &[u8],
+    ) -> Result<Self, Exl3Error> {
+        metadata.validate()?;
+        let expected_primary = usize::try_from(
+            metadata
+                .trellis_words
+                .checked_mul(2)
+                .ok_or(Exl3Error::Overflow)?,
+        )
+        .map_err(|_| Exl3Error::Overflow)?;
+        let expected_aux = usize::try_from(
+            metadata
+                .rotation_words
+                .checked_mul(2)
+                .and_then(|bytes| bytes.checked_add(4))
+                .ok_or(Exl3Error::Overflow)?,
+        )
+        .map_err(|_| Exl3Error::Overflow)?;
+        if primary.len() != expected_primary || aux.len() != expected_aux {
+            return Err(Exl3Error::ByteAccounting);
+        }
+
+        let k = usize::try_from(metadata.logical_k).map_err(|_| Exl3Error::Overflow)?;
+        let n = usize::try_from(metadata.logical_n).map_err(|_| Exl3Error::Overflow)?;
+        let mut primary_cursor = 0;
+        let trellis = read_u16s(
+            primary,
+            &mut primary_cursor,
+            usize::try_from(metadata.trellis_words).map_err(|_| Exl3Error::Overflow)?,
+        )?;
+        let mcg_marker = get_u32(aux, 0);
+        let mut aux_cursor = 4;
+        let suh = read_u16s(aux, &mut aux_cursor, k)?;
+        let svh = read_u16s(aux, &mut aux_cursor, n)?;
+        if primary_cursor != primary.len() || aux_cursor != aux.len() {
+            return Err(Exl3Error::ByteAccounting);
+        }
+
+        let tensor = Self {
+            metadata,
+            trellis,
+            suh,
+            svh,
+            mcg_marker,
+        };
+        tensor.validate()?;
+        Ok(tensor)
+    }
+
+    /// Serializes the source-order trellis used as the container primary
+    /// plane. No serving layout or GPU-health claim is implied.
+    pub fn primary_plane(&self) -> Result<Vec<u8>, Exl3Error> {
+        self.validate()?;
+        let mut output = Vec::with_capacity(
+            self.trellis
+                .len()
+                .checked_mul(2)
+                .ok_or(Exl3Error::Overflow)?,
+        );
+        for &word in &self.trellis {
+            output.extend_from_slice(&word.to_le_bytes());
+        }
+        Ok(output)
+    }
+
+    /// Serializes `mcg + suh + svh` as the container aux plane.
+    pub fn aux_plane(&self) -> Result<Vec<u8>, Exl3Error> {
+        self.validate()?;
+        let rotation_words = self
+            .suh
+            .len()
+            .checked_add(self.svh.len())
+            .ok_or(Exl3Error::Overflow)?;
+        let capacity = rotation_words
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or(Exl3Error::Overflow)?;
+        let mut output = Vec::with_capacity(capacity);
+        output.extend_from_slice(&self.mcg_marker.to_le_bytes());
+        for &word in self.suh.iter().chain(&self.svh) {
+            output.extend_from_slice(&word.to_le_bytes());
+        }
+        Ok(output)
+    }
+
     pub fn validate(&self) -> Result<(), Exl3Error> {
         self.metadata.validate()?;
         let trellis_words =
@@ -636,6 +729,18 @@ mod tests {
             payload.extend_from_slice(&word.to_le_bytes());
         }
         let imported = Exl3Trellis::from_source_payload(tensor.metadata.clone(), &payload).unwrap();
+        assert_eq!(imported, tensor);
+    }
+
+    #[test]
+    fn native_container_planes_round_trip_without_repacking() {
+        let tensor = fixture();
+        let primary = tensor.primary_plane().unwrap();
+        let aux = tensor.aux_plane().unwrap();
+        assert_eq!(primary.len(), 1_179_648);
+        assert_eq!(aux.len(), 13_316);
+        let imported =
+            Exl3Trellis::from_container_planes(tensor.metadata.clone(), &primary, &aux).unwrap();
         assert_eq!(imported, tensor);
     }
 

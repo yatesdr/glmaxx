@@ -15,7 +15,7 @@ use glm_engine::{
 };
 use glm_format::{
     Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4, RankFile,
-    RankFileBuilder, TensorRecord,
+    RankFileBuilder, TensorPayload, TensorRecord,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -1822,7 +1822,7 @@ fn make_builder(rank: u32, packed: PackedNvfp4) -> RankFileBuilder {
             expert_id: 0,
             tp_shard_axis: 0,
             flags: 0b0000_1010,
-            packed,
+            payload: TensorPayload::Nvfp4(packed),
         }],
     }
 }

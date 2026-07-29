@@ -2,12 +2,26 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::{Nvfp4Metadata, PackedNvfp4, crc32c, nvfp4::validate_scale_plane};
+use crate::{
+    Exl3Metadata, Exl3Trellis, Nvfp4Metadata, PackedNvfp4, crc32c, nvfp4::validate_scale_plane,
+};
 
 pub const HEADER_BYTES: usize = 4096;
 const DESCRIPTOR_BYTES: usize = 256;
 const ALIGNMENT: usize = 4096;
 const PAYLOAD_ALIGNMENT: usize = 256;
+const CODEC_NVFP4_1D: u16 = 0x0100;
+const CODEC_NVFP4_2D: u16 = 0x0101;
+const CODEC_EXL3_SOURCE: u16 = 0x0200;
+const HEADER_FLAG_DIRECT_KERNEL: u32 = 1 << 0;
+const HEADER_FLAG_NVFP4: u32 = 1 << 1;
+const HEADER_FLAG_EXL3: u32 = 1 << 2;
+const HEADER_FLAG_HYBRID: u32 = 1 << 4;
+const DESCRIPTOR_FLAG_AUX_REQUIRED: u8 = 1 << 7;
+const DTYPE_BF16: u16 = 1;
+const DTYPE_FP16: u16 = 2;
+const DTYPE_PACKED_E2M1X2: u16 = 6;
+const DTYPE_I16: u16 = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TensorDescriptor {
@@ -18,7 +32,10 @@ pub struct TensorDescriptor {
     pub layer_id: i16,
     pub expert_id: i16,
     pub codec_id: u16,
+    pub logical_dtype: u16,
+    pub stored_dtype: u16,
     pub tp_shard_axis: i8,
+    pub ndim: u8,
     pub flags: u8,
     pub logical_shape: [u32; 4],
     pub padded_shape: [u32; 4],
@@ -28,6 +45,8 @@ pub struct TensorDescriptor {
     pub aux_bytes: u64,
     pub codec_metadata_offset: u64,
     pub codec_metadata_bytes: u64,
+    pub payload_alignment: u32,
+    pub quant_group_elements: u32,
     pub payload_sha256: [u8; 32],
     pub aux_sha256: [u8; 32],
     pub codec_metadata_sha256: [u8; 32],
@@ -43,11 +62,11 @@ impl TensorDescriptor {
         put_i16(&mut out, 12, self.layer_id);
         put_i16(&mut out, 14, self.expert_id);
         put_u16(&mut out, 16, self.codec_id);
-        put_u16(&mut out, 18, 1);
-        put_u16(&mut out, 20, 6);
+        put_u16(&mut out, 18, self.logical_dtype);
+        put_u16(&mut out, 20, self.stored_dtype);
         out[22] = self.tp_shard_axis.to_le_bytes()[0];
-        out[23] = 2;
-        out[24] = self.flags | 0x80;
+        out[23] = self.ndim;
+        out[24] = self.flags;
         for (index, &dimension) in self.logical_shape.iter().enumerate() {
             put_u32(&mut out, 28 + index * 4, dimension);
         }
@@ -64,8 +83,8 @@ impl TensorDescriptor {
         put_u64(&mut out, 96, self.aux_bytes);
         put_u64(&mut out, 104, self.codec_metadata_offset);
         put_u64(&mut out, 112, self.codec_metadata_bytes);
-        put_u32(&mut out, 120, PAYLOAD_ALIGNMENT as u32);
-        put_u32(&mut out, 124, 16);
+        put_u32(&mut out, 120, self.payload_alignment);
+        put_u32(&mut out, 124, self.quant_group_elements);
         out[128..160].copy_from_slice(&self.payload_sha256);
         out[160..192].copy_from_slice(&self.aux_sha256);
         out[192..224].copy_from_slice(&self.codec_metadata_sha256);
@@ -76,12 +95,11 @@ impl TensorDescriptor {
         if bytes.len() != DESCRIPTOR_BYTES
             || bytes[25..28].iter().any(|&value| value != 0)
             || bytes[224..].iter().any(|&value| value != 0)
-            || get_u16(bytes, 18) != 1
-            || get_u16(bytes, 20) != 6
-            || bytes[23] != 2
-            || bytes[24] & 0x80 == 0
+            || bytes[23] == 0
+            || bytes[23] > 4
+            || (bytes[24] & 0b0000_0111).count_ones() > 1
             || get_u32(bytes, 120) < PAYLOAD_ALIGNMENT as u32
-            || get_u32(bytes, 124) != 16
+            || !get_u32(bytes, 120).is_power_of_two()
         {
             return Err(RankFileError::Descriptor);
         }
@@ -107,8 +125,11 @@ impl TensorDescriptor {
             layer_id: get_i16(bytes, 12),
             expert_id: get_i16(bytes, 14),
             codec_id: get_u16(bytes, 16),
+            logical_dtype: get_u16(bytes, 18),
+            stored_dtype: get_u16(bytes, 20),
             tp_shard_axis: i8::from_le_bytes([bytes[22]]),
-            flags: bytes[24] & 0x7f,
+            ndim: bytes[23],
+            flags: bytes[24],
             logical_shape,
             padded_shape,
             payload_offset: get_u64(bytes, 72),
@@ -117,11 +138,21 @@ impl TensorDescriptor {
             aux_bytes: get_u64(bytes, 96),
             codec_metadata_offset: get_u64(bytes, 104),
             codec_metadata_bytes: get_u64(bytes, 112),
+            payload_alignment: get_u32(bytes, 120),
+            quant_group_elements: get_u32(bytes, 124),
             payload_sha256,
             aux_sha256,
             codec_metadata_sha256,
         })
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum TensorPayload {
+    Nvfp4(PackedNvfp4),
+    /// Pinned EXL3 source components. This is an inspection/CPU-proof
+    /// payload until a reviewed direct SM120 kernel qualifies codec 0x0200.
+    Exl3Source(Exl3Trellis),
 }
 
 #[derive(Clone, Debug)]
@@ -133,7 +164,7 @@ pub struct TensorRecord {
     pub expert_id: i16,
     pub tp_shard_axis: i8,
     pub flags: u8,
-    pub packed: PackedNvfp4,
+    pub payload: TensorPayload,
 }
 
 #[derive(Clone, Debug)]
@@ -201,7 +232,7 @@ impl RankFileBuilder {
         put_u16(header, 10, 2);
         put_u32(header, 12, HEADER_BYTES as u32);
         put_u32(header, 16, 0x0102_0304);
-        put_u32(header, 20, 0b11);
+        put_u32(header, 20, prepared.header_flags);
         put_u32(header, 24, self.rank);
         put_u32(header, 28, 4);
         put_u32(
@@ -273,39 +304,35 @@ impl RankFileBuilder {
                 .ok_or(RankFileError::Overflow)?,
             ALIGNMENT,
         )?;
-        let metadata_len = self
-            .tensors
-            .len()
-            .checked_mul(Nvfp4Metadata::BYTES)
-            .ok_or(RankFileError::Overflow)?;
-        let payload_offset = align_up(
-            metadata_offset
-                .checked_add(metadata_len)
-                .ok_or(RankFileError::Overflow)?,
-            ALIGNMENT,
-        )?;
-        let mut metadata = vec![0_u8; metadata_len];
-        let mut payload = Vec::new();
-        let mut descriptors = Vec::with_capacity(self.tensors.len());
+        let mut metadata = Vec::new();
+        let mut metadata_locals = Vec::with_capacity(self.tensors.len());
+        let mut encoded_payloads = Vec::with_capacity(self.tensors.len());
         for (index, tensor) in self.tensors.iter().enumerate() {
-            tensor.packed.validate().map_err(RankFileError::Nvfp4)?;
             if tensor.tensor_id != u32::try_from(index).unwrap() {
                 return Err(RankFileError::TensorId);
             }
-            let encoded_metadata = tensor.packed.metadata.encode();
-            let metadata_local = index * Nvfp4Metadata::BYTES;
-            metadata[metadata_local..metadata_local + Nvfp4Metadata::BYTES]
-                .copy_from_slice(&encoded_metadata);
+            let encoded = EncodedTensor::from_record(tensor, self.rank)?;
+            let metadata_local = metadata.len();
+            metadata.extend_from_slice(&encoded.metadata);
+            metadata_locals.push(metadata_local);
+            encoded_payloads.push(encoded);
+        }
+        let payload_offset = align_up(
+            metadata_offset
+                .checked_add(metadata.len())
+                .ok_or(RankFileError::Overflow)?,
+            ALIGNMENT,
+        )?;
+        let mut payload = Vec::new();
+        let mut descriptors = Vec::with_capacity(self.tensors.len());
+        for (index, (tensor, encoded)) in self.tensors.iter().zip(&encoded_payloads).enumerate() {
+            let metadata_local = metadata_locals[index];
             let value_local = align_up(payload.len(), PAYLOAD_ALIGNMENT)?;
             payload.resize(value_local, 0);
-            payload.extend_from_slice(&tensor.packed.values);
+            payload.extend_from_slice(&encoded.primary);
             let scale_local = align_up(payload.len(), PAYLOAD_ALIGNMENT)?;
             payload.resize(scale_local, 0);
-            payload.extend_from_slice(&tensor.packed.scales);
-            let logical_n = tensor.packed.metadata.logical_n;
-            let logical_k = tensor.packed.metadata.logical_k;
-            let padded_n = tensor.packed.metadata.padded_n;
-            let padded_k = tensor.packed.metadata.padded_k;
+            payload.extend_from_slice(&encoded.aux);
             descriptors.push(TensorDescriptor {
                 tensor_id: tensor.tensor_id,
                 name_offset: u32::try_from(name_offsets[index])
@@ -315,23 +342,40 @@ impl RankFileBuilder {
                 role_id: tensor.role_id,
                 layer_id: tensor.layer_id,
                 expert_id: tensor.expert_id,
-                codec_id: tensor.packed.metadata.codec as u16,
+                codec_id: encoded.codec_id,
+                logical_dtype: encoded.logical_dtype,
+                stored_dtype: encoded.stored_dtype,
                 tp_shard_axis: tensor.tp_shard_axis,
-                flags: tensor.flags,
-                logical_shape: [logical_n, logical_k, 1, 1],
-                padded_shape: [padded_n, padded_k, 1, 1],
-                payload_offset: u64::try_from(payload_offset + value_local)
-                    .map_err(|_| RankFileError::Overflow)?,
-                payload_bytes: tensor.packed.values.len() as u64,
-                aux_offset: u64::try_from(payload_offset + scale_local)
-                    .map_err(|_| RankFileError::Overflow)?,
-                aux_bytes: tensor.packed.scales.len() as u64,
-                codec_metadata_offset: u64::try_from(metadata_offset + metadata_local)
-                    .map_err(|_| RankFileError::Overflow)?,
-                codec_metadata_bytes: Nvfp4Metadata::BYTES as u64,
-                payload_sha256: sha256(&tensor.packed.values),
-                aux_sha256: sha256(&tensor.packed.scales),
-                codec_metadata_sha256: sha256(&encoded_metadata),
+                ndim: 2,
+                flags: tensor.flags | DESCRIPTOR_FLAG_AUX_REQUIRED,
+                logical_shape: encoded.logical_shape,
+                padded_shape: encoded.padded_shape,
+                payload_offset: u64::try_from(
+                    payload_offset
+                        .checked_add(value_local)
+                        .ok_or(RankFileError::Overflow)?,
+                )
+                .map_err(|_| RankFileError::Overflow)?,
+                payload_bytes: encoded.primary.len() as u64,
+                aux_offset: u64::try_from(
+                    payload_offset
+                        .checked_add(scale_local)
+                        .ok_or(RankFileError::Overflow)?,
+                )
+                .map_err(|_| RankFileError::Overflow)?,
+                aux_bytes: encoded.aux.len() as u64,
+                codec_metadata_offset: u64::try_from(
+                    metadata_offset
+                        .checked_add(metadata_local)
+                        .ok_or(RankFileError::Overflow)?,
+                )
+                .map_err(|_| RankFileError::Overflow)?,
+                codec_metadata_bytes: encoded.metadata.len() as u64,
+                payload_alignment: PAYLOAD_ALIGNMENT as u32,
+                quant_group_elements: encoded.quant_group_elements,
+                payload_sha256: sha256(&encoded.primary),
+                aux_sha256: sha256(&encoded.aux),
+                codec_metadata_sha256: sha256(&encoded.metadata),
             });
         }
         let descriptor_bytes: Vec<u8> = descriptors
@@ -349,6 +393,7 @@ impl RankFileBuilder {
             payload_hash: sha256(&payload),
             string_hash: sha256(&strings),
             metadata_hash: sha256(&metadata),
+            header_flags: derive_header_flags(&descriptors)?,
             descriptor_bytes,
             strings,
             metadata,
@@ -369,6 +414,7 @@ struct Prepared {
     payload_hash: [u8; 32],
     string_hash: [u8; 32],
     metadata_hash: [u8; 32],
+    header_flags: u32,
     descriptor_bytes: Vec<u8>,
     strings: Vec<u8>,
     metadata: Vec<u8>,
@@ -381,6 +427,7 @@ pub struct RankFile {
     pub rank: u32,
     pub conversion_uuid: [u8; 16],
     pub file_uuid: [u8; 16],
+    pub header_flags: u32,
     pub descriptors: Vec<TensorDescriptor>,
     manifest_hash: [u8; 32],
     descriptor_hash: [u8; 32],
@@ -394,12 +441,13 @@ impl RankFile {
             return Err(RankFileError::Truncated);
         }
         let header = &bytes[..HEADER_BYTES];
+        let header_flags = get_u32(header, 20);
         if &header[0..8] != b"GLM5NAT0"
             || get_u16(header, 8) != 0
             || get_u16(header, 10) != 2
             || get_u32(header, 12) != HEADER_BYTES as u32
             || get_u32(header, 16) != 0x0102_0304
-            || get_u32(header, 20) & !0b1_1111 != 0
+            || header_flags & !0b1_1111 != 0
             || get_u32(header, 28) != 4
             || get_u64(header, 408) != 0
             || header[484..].iter().any(|&value| value != 0)
@@ -474,8 +522,12 @@ impl RankFile {
             {
                 return Err(RankFileError::StringTable);
             }
-            validate_tensor_regions(&bytes, &descriptor, &metadata, &payload)?;
+            validate_tensor_regions(&bytes, &descriptor, &metadata, &payload, rank)?;
             descriptors.push(descriptor);
+        }
+        validate_canonical_tensor_layout(&bytes, &descriptors, &metadata, &payload)?;
+        if derive_header_flags(&descriptors)? != header_flags {
+            return Err(RankFileError::HeaderFlags);
         }
         let mut file_uuid = [0_u8; 16];
         file_uuid.copy_from_slice(&header[376..392]);
@@ -496,6 +548,7 @@ impl RankFile {
             rank,
             conversion_uuid,
             file_uuid,
+            header_flags,
             descriptors,
             manifest_hash,
             descriptor_hash,
@@ -530,6 +583,53 @@ impl RankFile {
         let end = start + usize::from(descriptor.name_bytes);
         std::str::from_utf8(&self.bytes[start..end]).map_err(|_| RankFileError::StringTable)
     }
+
+    pub fn tensor_primary(&self, index: usize) -> Result<&[u8], RankFileError> {
+        let descriptor = self.descriptors.get(index).ok_or(RankFileError::TensorId)?;
+        let range = u64_range(
+            descriptor.payload_offset,
+            descriptor.payload_bytes,
+            self.bytes.len(),
+        )?;
+        Ok(&self.bytes[range])
+    }
+
+    pub fn tensor_aux(&self, index: usize) -> Result<&[u8], RankFileError> {
+        let descriptor = self.descriptors.get(index).ok_or(RankFileError::TensorId)?;
+        let range = u64_range(
+            descriptor.aux_offset,
+            descriptor.aux_bytes,
+            self.bytes.len(),
+        )?;
+        Ok(&self.bytes[range])
+    }
+
+    pub fn tensor_codec_metadata(&self, index: usize) -> Result<&[u8], RankFileError> {
+        let descriptor = self.descriptors.get(index).ok_or(RankFileError::TensorId)?;
+        let range = u64_range(
+            descriptor.codec_metadata_offset,
+            descriptor.codec_metadata_bytes,
+            self.bytes.len(),
+        )?;
+        Ok(&self.bytes[range])
+    }
+
+    /// Decodes a source EXL3 payload for inspection or CPU proof. This API
+    /// intentionally does not advertise GPU load support.
+    pub fn decode_exl3_source(&self, index: usize) -> Result<Exl3Trellis, RankFileError> {
+        let descriptor = self.descriptors.get(index).ok_or(RankFileError::TensorId)?;
+        if descriptor.codec_id != CODEC_EXL3_SOURCE {
+            return Err(RankFileError::CodecMismatch);
+        }
+        let metadata = Exl3Metadata::decode(self.tensor_codec_metadata(index)?)
+            .map_err(RankFileError::Exl3)?;
+        Exl3Trellis::from_container_planes(
+            metadata,
+            self.tensor_primary(index)?,
+            self.tensor_aux(index)?,
+        )
+        .map_err(RankFileError::Exl3)
+    }
 }
 
 fn validate_tensor_regions(
@@ -537,6 +637,7 @@ fn validate_tensor_regions(
     descriptor: &TensorDescriptor,
     metadata_region: &std::ops::Range<usize>,
     payload_region: &std::ops::Range<usize>,
+    rank: u32,
 ) -> Result<(), RankFileError> {
     let value = u64_range(
         descriptor.payload_offset,
@@ -557,25 +658,206 @@ fn validate_tensor_regions(
         || aux.end > payload_region.end
         || metadata.start < metadata_region.start
         || metadata.end > metadata_region.end
-        || sha256(&bytes[value]) != descriptor.payload_sha256
+        || sha256(&bytes[value.clone()]) != descriptor.payload_sha256
         || sha256(&bytes[aux.clone()]) != descriptor.aux_sha256
         || sha256(&bytes[metadata.clone()]) != descriptor.codec_metadata_sha256
     {
         return Err(RankFileError::TensorRegion);
     }
-    validate_scale_plane(&bytes[aux]).map_err(RankFileError::Nvfp4)?;
-    let decoded = Nvfp4Metadata::decode(&bytes[metadata]).map_err(RankFileError::Nvfp4)?;
-    if decoded.logical_n != descriptor.logical_shape[0]
-        || decoded.logical_k != descriptor.logical_shape[1]
-        || decoded.padded_n != descriptor.padded_shape[0]
-        || decoded.padded_k != descriptor.padded_shape[1]
-        || decoded.codec as u16 != descriptor.codec_id
-        || u64::from(decoded.value_plane_bytes) != descriptor.payload_bytes
-        || u64::from(decoded.scale_plane_bytes) != descriptor.aux_bytes
-    {
-        return Err(RankFileError::Descriptor);
+    match descriptor.codec_id {
+        CODEC_NVFP4_1D | CODEC_NVFP4_2D => {
+            validate_scale_plane(&bytes[aux.clone()]).map_err(RankFileError::Nvfp4)?;
+            let decoded = Nvfp4Metadata::decode(&bytes[metadata]).map_err(RankFileError::Nvfp4)?;
+            if descriptor.logical_dtype != DTYPE_BF16
+                || descriptor.stored_dtype != DTYPE_PACKED_E2M1X2
+                || descriptor.ndim != 2
+                || descriptor.flags & DESCRIPTOR_FLAG_AUX_REQUIRED == 0
+                || descriptor.payload_alignment != PAYLOAD_ALIGNMENT as u32
+                || descriptor.quant_group_elements != 16
+                || decoded.logical_n != descriptor.logical_shape[0]
+                || decoded.logical_k != descriptor.logical_shape[1]
+                || decoded.padded_n != descriptor.padded_shape[0]
+                || decoded.padded_k != descriptor.padded_shape[1]
+                || decoded.codec as u16 != descriptor.codec_id
+                || u64::from(decoded.value_plane_bytes) != descriptor.payload_bytes
+                || u64::from(decoded.scale_plane_bytes) != descriptor.aux_bytes
+            {
+                return Err(RankFileError::Descriptor);
+            }
+        }
+        CODEC_EXL3_SOURCE => {
+            let decoded = Exl3Metadata::decode(&bytes[metadata]).map_err(RankFileError::Exl3)?;
+            let layer =
+                u16::try_from(descriptor.layer_id).map_err(|_| RankFileError::Descriptor)?;
+            let expert =
+                u16::try_from(descriptor.expert_id).map_err(|_| RankFileError::Descriptor)?;
+            let expected_primary = decoded
+                .trellis_words
+                .checked_mul(2)
+                .ok_or(RankFileError::Overflow)?;
+            let expected_aux = decoded
+                .rotation_words
+                .checked_mul(2)
+                .and_then(|bytes| bytes.checked_add(4))
+                .ok_or(RankFileError::Overflow)?;
+            if descriptor.logical_dtype != DTYPE_FP16
+                || descriptor.stored_dtype != DTYPE_I16
+                || descriptor.ndim != 2
+                || descriptor.flags & DESCRIPTOR_FLAG_AUX_REQUIRED == 0
+                || descriptor.payload_alignment != PAYLOAD_ALIGNMENT as u32
+                || descriptor.quant_group_elements != 0
+                || decoded.rank != rank as u8
+                || decoded.layer != layer
+                || decoded.expert != expert
+                || decoded.logical_n != descriptor.logical_shape[0]
+                || decoded.logical_k != descriptor.logical_shape[1]
+                || descriptor.logical_shape != descriptor.padded_shape
+                || descriptor.payload_bytes != expected_primary
+                || descriptor.aux_bytes != expected_aux
+            {
+                return Err(RankFileError::Descriptor);
+            }
+            Exl3Trellis::from_container_planes(decoded, &bytes[value], &bytes[aux])
+                .map_err(RankFileError::Exl3)?;
+        }
+        codec => return Err(RankFileError::UnsupportedCodec(codec)),
     }
     Ok(())
+}
+
+fn derive_header_flags(descriptors: &[TensorDescriptor]) -> Result<u32, RankFileError> {
+    let mut saw_nvfp4 = false;
+    let mut saw_exl3 = false;
+    for descriptor in descriptors {
+        match descriptor.codec_id {
+            CODEC_NVFP4_1D | CODEC_NVFP4_2D => saw_nvfp4 = true,
+            CODEC_EXL3_SOURCE => saw_exl3 = true,
+            codec => return Err(RankFileError::UnsupportedCodec(codec)),
+        }
+    }
+    let mut flags = 0;
+    if saw_nvfp4 && !saw_exl3 {
+        flags |= HEADER_FLAG_DIRECT_KERNEL;
+    }
+    if saw_nvfp4 {
+        flags |= HEADER_FLAG_NVFP4;
+    }
+    if saw_exl3 {
+        flags |= HEADER_FLAG_EXL3;
+    }
+    if saw_nvfp4 && saw_exl3 {
+        flags |= HEADER_FLAG_HYBRID;
+    }
+    Ok(flags)
+}
+
+fn validate_canonical_tensor_layout(
+    bytes: &[u8],
+    descriptors: &[TensorDescriptor],
+    metadata_region: &std::ops::Range<usize>,
+    payload_region: &std::ops::Range<usize>,
+) -> Result<(), RankFileError> {
+    let mut metadata_cursor = metadata_region.start;
+    let mut payload_cursor = payload_region.start;
+    for descriptor in descriptors {
+        let metadata = u64_range(
+            descriptor.codec_metadata_offset,
+            descriptor.codec_metadata_bytes,
+            bytes.len(),
+        )?;
+        if metadata.start != metadata_cursor {
+            return Err(RankFileError::NonCanonicalLayout);
+        }
+        metadata_cursor = metadata.end;
+
+        let primary = u64_range(
+            descriptor.payload_offset,
+            descriptor.payload_bytes,
+            bytes.len(),
+        )?;
+        let expected_primary = align_up(payload_cursor, PAYLOAD_ALIGNMENT)?;
+        if primary.start != expected_primary
+            || bytes[payload_cursor..expected_primary]
+                .iter()
+                .any(|&byte| byte != 0)
+        {
+            return Err(RankFileError::NonCanonicalLayout);
+        }
+
+        let aux = u64_range(descriptor.aux_offset, descriptor.aux_bytes, bytes.len())?;
+        let expected_aux = align_up(primary.end, PAYLOAD_ALIGNMENT)?;
+        if aux.start != expected_aux
+            || bytes[primary.end..expected_aux]
+                .iter()
+                .any(|&byte| byte != 0)
+        {
+            return Err(RankFileError::NonCanonicalLayout);
+        }
+        payload_cursor = aux.end;
+    }
+    if metadata_cursor != metadata_region.end || payload_cursor != payload_region.end {
+        return Err(RankFileError::NonCanonicalLayout);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct EncodedTensor {
+    codec_id: u16,
+    logical_dtype: u16,
+    stored_dtype: u16,
+    logical_shape: [u32; 4],
+    padded_shape: [u32; 4],
+    quant_group_elements: u32,
+    metadata: Vec<u8>,
+    primary: Vec<u8>,
+    aux: Vec<u8>,
+}
+
+impl EncodedTensor {
+    fn from_record(record: &TensorRecord, rank: u32) -> Result<Self, RankFileError> {
+        match &record.payload {
+            TensorPayload::Nvfp4(packed) => {
+                packed.validate().map_err(RankFileError::Nvfp4)?;
+                Ok(Self {
+                    codec_id: packed.metadata.codec as u16,
+                    logical_dtype: DTYPE_BF16,
+                    stored_dtype: DTYPE_PACKED_E2M1X2,
+                    logical_shape: [packed.metadata.logical_n, packed.metadata.logical_k, 1, 1],
+                    padded_shape: [packed.metadata.padded_n, packed.metadata.padded_k, 1, 1],
+                    quant_group_elements: 16,
+                    metadata: packed.metadata.encode().to_vec(),
+                    primary: packed.values.clone(),
+                    aux: packed.scales.clone(),
+                })
+            }
+            TensorPayload::Exl3Source(source) => {
+                source.validate().map_err(RankFileError::Exl3)?;
+                let layer =
+                    u16::try_from(record.layer_id).map_err(|_| RankFileError::Descriptor)?;
+                let expert =
+                    u16::try_from(record.expert_id).map_err(|_| RankFileError::Descriptor)?;
+                if source.metadata.rank != rank as u8
+                    || source.metadata.layer != layer
+                    || source.metadata.expert != expert
+                {
+                    return Err(RankFileError::Descriptor);
+                }
+                let logical_shape = [source.metadata.logical_n, source.metadata.logical_k, 1, 1];
+                Ok(Self {
+                    codec_id: CODEC_EXL3_SOURCE,
+                    logical_dtype: DTYPE_FP16,
+                    stored_dtype: DTYPE_I16,
+                    logical_shape,
+                    padded_shape: logical_shape,
+                    quant_group_elements: 0,
+                    metadata: source.metadata.encode().to_vec(),
+                    primary: source.primary_plane().map_err(RankFileError::Exl3)?,
+                    aux: source.aux_plane().map_err(RankFileError::Exl3)?,
+                })
+            }
+        }
+    }
 }
 
 fn checked_range(
@@ -634,6 +916,7 @@ fn first_16(hash: [u8; 32]) -> [u8; 16] {
 pub enum RankFileError {
     Truncated,
     Header,
+    HeaderFlags,
     HeaderCrc,
     Rank,
     TensorCount,
@@ -641,12 +924,16 @@ pub enum RankFileError {
     Descriptor,
     Region,
     TensorRegion,
+    NonCanonicalLayout,
     StringTable,
     StrongHash,
     FileUuid,
     RankSet,
     Overflow,
+    UnsupportedCodec(u16),
+    CodecMismatch,
     Nvfp4(crate::Nvfp4Error),
+    Exl3(crate::Exl3Error),
 }
 
 impl fmt::Display for RankFileError {
@@ -692,7 +979,7 @@ fn get_u64(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Codec, KERNEL_ABI};
+    use crate::{Codec, EXL3_MCG_MULTIPLIER, Exl3Projection, KERNEL_ABI};
 
     fn builder(rank: u32) -> RankFileBuilder {
         let input: Vec<f32> = (0..128 * 64)
@@ -715,9 +1002,62 @@ mod tests {
                 expert_id: 0,
                 tp_shard_axis: 0,
                 flags: 0b0000_1010,
-                packed,
+                payload: TensorPayload::Nvfp4(packed),
             }],
         }
+    }
+
+    fn exl3_fixture(rank: u8) -> Exl3Trellis {
+        let metadata = Exl3Metadata::new(Exl3Projection::Gate, 78, 0, rank, 3, 128, 128).unwrap();
+        Exl3Trellis {
+            trellis: (0..metadata.trellis_words)
+                .map(|index| (index as u16).wrapping_mul(40_503))
+                .collect(),
+            suh: vec![0x3c00; 128],
+            svh: vec![0x3c00; 128],
+            mcg_marker: EXL3_MCG_MULTIPLIER,
+            metadata,
+        }
+    }
+
+    fn exl3_builder(rank: u32) -> RankFileBuilder {
+        let mut builder = builder(rank);
+        builder.manifest =
+            format!("{{\"rank\":{rank},\"schema\":\"exl3-source-test-v1\"}}").into_bytes();
+        builder.tensors = vec![TensorRecord {
+            tensor_id: 0,
+            name: "model.layers.78.mlp.experts.0.gate_proj.weight".into(),
+            role_id: 0x0501,
+            layer_id: 78,
+            expert_id: 0,
+            tp_shard_axis: 0,
+            flags: 0b0000_1010,
+            payload: TensorPayload::Exl3Source(exl3_fixture(rank as u8)),
+        }];
+        builder
+    }
+
+    fn resign_header(bytes: &mut [u8]) {
+        let descriptor_start = usize::try_from(get_u64(bytes, 56)).unwrap();
+        let descriptor_len = usize::try_from(get_u64(bytes, 64)).unwrap();
+        let descriptor_hash =
+            sha256(&bytes[descriptor_start..descriptor_start.checked_add(descriptor_len).unwrap()]);
+        bytes[312..344].copy_from_slice(&descriptor_hash);
+        let payload_start = usize::try_from(get_u64(bytes, 104)).unwrap();
+        let payload_len = usize::try_from(get_u64(bytes, 112)).unwrap();
+        let payload_hash =
+            sha256(&bytes[payload_start..payload_start.checked_add(payload_len).unwrap()]);
+        bytes[344..376].copy_from_slice(&payload_hash);
+        let mut uuid_hasher = Sha256::new();
+        uuid_hasher.update(b"g5n-file-v0\0");
+        uuid_hasher.update(&bytes[392..408]);
+        uuid_hasher.update(get_u32(bytes, 24).to_le_bytes());
+        uuid_hasher.update(&bytes[280..312]);
+        uuid_hasher.update(descriptor_hash);
+        uuid_hasher.update(&bytes[344..376]);
+        bytes[376..392].copy_from_slice(&first_16(uuid_hasher.finalize().into()));
+        put_u32(bytes, 416, 0);
+        put_u32(bytes, 416, crc32c(&bytes[..HEADER_BYTES]));
     }
 
     #[test]
@@ -738,6 +1078,120 @@ mod tests {
             RankFile::read(builders[rank].build(conversion).unwrap()).unwrap()
         });
         RankFile::validate_rank_set(&files).unwrap();
+    }
+
+    #[test]
+    fn exl3_source_container_is_deterministic_and_cpu_decodable() {
+        let builders = [
+            exl3_builder(0),
+            exl3_builder(1),
+            exl3_builder(2),
+            exl3_builder(3),
+        ];
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        let first = builders[0].build(conversion).unwrap();
+        assert_eq!(first, builders[0].build(conversion).unwrap());
+        assert_eq!(get_u32(&first, 20), HEADER_FLAG_EXL3);
+        let parsed = RankFile::read(first).unwrap();
+        assert_eq!(parsed.header_flags, HEADER_FLAG_EXL3);
+        assert_eq!(parsed.descriptors[0].codec_id, CODEC_EXL3_SOURCE);
+        assert_eq!(parsed.descriptors[0].logical_dtype, DTYPE_FP16);
+        assert_eq!(parsed.descriptors[0].stored_dtype, DTYPE_I16);
+        assert_eq!(parsed.descriptors[0].quant_group_elements, 0);
+        assert_eq!(parsed.decode_exl3_source(0).unwrap(), exl3_fixture(0));
+        let files = std::array::from_fn(|rank| {
+            RankFile::read(builders[rank].build(conversion).unwrap()).unwrap()
+        });
+        RankFile::validate_rank_set(&files).unwrap();
+    }
+
+    #[test]
+    fn mixed_container_sets_hybrid_flags_without_direct_layout_claim() {
+        let builders: [RankFileBuilder; 4] = std::array::from_fn(|rank| {
+            let mut builder = builder(rank as u32);
+            builder.tensors.push(TensorRecord {
+                tensor_id: 1,
+                name: "model.layers.78.mlp.experts.0.gate_proj.weight".into(),
+                role_id: 0x0501,
+                layer_id: 78,
+                expert_id: 0,
+                tp_shard_axis: 0,
+                flags: 0b0000_1010,
+                payload: TensorPayload::Exl3Source(exl3_fixture(rank as u8)),
+            });
+            builder
+        });
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        let bytes = builders[0].build(conversion).unwrap();
+        let expected = HEADER_FLAG_NVFP4 | HEADER_FLAG_EXL3 | HEADER_FLAG_HYBRID;
+        assert_eq!(get_u32(&bytes, 20), expected);
+        assert_eq!(get_u32(&bytes, 20) & HEADER_FLAG_DIRECT_KERNEL, 0);
+        let parsed = RankFile::read(bytes).unwrap();
+        assert_eq!(parsed.header_flags, expected);
+        assert!(matches!(
+            parsed.decode_exl3_source(0),
+            Err(RankFileError::CodecMismatch)
+        ));
+        assert_eq!(parsed.decode_exl3_source(1).unwrap(), exl3_fixture(0));
+    }
+
+    #[test]
+    fn invalid_exl3_source_is_rejected_before_serialization() {
+        let mut builder = exl3_builder(0);
+        let TensorPayload::Exl3Source(source) = &mut builder.tensors[0].payload else {
+            unreachable!()
+        };
+        source.mcg_marker ^= 1;
+        assert!(matches!(
+            builder.build([0; 16]),
+            Err(RankFileError::Exl3(crate::Exl3Error::CodebookMarker))
+        ));
+    }
+
+    #[test]
+    fn unknown_codec_and_header_flag_lies_are_rejected() {
+        let builders = [builder(0), builder(1), builder(2), builder(3)];
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        let mut unknown = builders[0].build(conversion).unwrap();
+        let descriptor_start = usize::try_from(get_u64(&unknown, 56)).unwrap();
+        put_u16(&mut unknown, descriptor_start + 16, 0x7777);
+        resign_header(&mut unknown);
+        assert!(matches!(
+            RankFile::read(unknown),
+            Err(RankFileError::UnsupportedCodec(0x7777))
+        ));
+
+        let mut lying = builders[0].build(conversion).unwrap();
+        put_u32(&mut lying, 20, HEADER_FLAG_EXL3);
+        resign_header(&mut lying);
+        assert!(matches!(
+            RankFile::read(lying),
+            Err(RankFileError::HeaderFlags)
+        ));
+    }
+
+    #[test]
+    fn nonzero_internal_padding_is_rejected_even_when_resigned() {
+        let builders: [RankFileBuilder; 4] = std::array::from_fn(|rank| {
+            let mut exl3 = exl3_builder(rank as u32);
+            let mut nvfp4 = builder(rank as u32).tensors.remove(0);
+            nvfp4.tensor_id = 1;
+            exl3.tensors.push(nvfp4);
+            exl3
+        });
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        let mut bytes = builders[0].build(conversion).unwrap();
+        let descriptor_start = usize::try_from(get_u64(&bytes, 56)).unwrap();
+        let aux_offset = usize::try_from(get_u64(&bytes, descriptor_start + 88)).unwrap();
+        let aux_bytes = usize::try_from(get_u64(&bytes, descriptor_start + 96)).unwrap();
+        let padding = aux_offset.checked_add(aux_bytes).unwrap();
+        assert_eq!(bytes[padding], 0);
+        bytes[padding] = 1;
+        resign_header(&mut bytes);
+        assert!(matches!(
+            RankFile::read(bytes),
+            Err(RankFileError::NonCanonicalLayout)
+        ));
     }
 
     #[test]

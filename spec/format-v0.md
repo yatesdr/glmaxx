@@ -278,6 +278,11 @@ match the fixed model operation manifest.
 Logical dtype describes the reconstructed tensor. Stored dtype describes the
 primary payload plane.
 
+For codec `0x0200`, `logical_dtype` is FP16, `stored_dtype` is I16, and
+`quant_group_elements` is zero because the trellis is not a linear
+fixed-width quantization group. NVFP4 descriptors retain BF16 logical dtype,
+packed E2M1x2 stored dtype, and a 16-element quantization group.
+
 ## 9. Codec identifiers
 
 | ID | Codec |
@@ -291,9 +296,10 @@ primary payload plane.
 
 Unknown codecs SHALL be rejected.
 
-Codec `0x0200` remains blocking-OPEN and SHALL be rejected by an
-implementation until its codec revision is nonzero and this specification
-contains the reviewed reconstruction rules.
+Codec `0x0200` remains blocking-OPEN for serving. A container reader MAY
+validate and expose the pinned source planes for inspection and CPU proof
+under section 17. A device loader MUST reject GPU health/load support until
+section 17 items 6–7 close.
 
 ## 10. Plain protected tensors
 
@@ -505,6 +511,19 @@ MCG marker, FP16 `suh[K]`, FP16 `svh[N]`, and native I16 trellis
 `[K/16,N/16,16×bits]`. The v0 candidate accepts only `bits=3`,
 MCG `0xCBAC1FED`, K/N multiples of 128, and the GLM-5.2 TP4 projection
 shapes. It does not accept legacy or alternate codebooks.
+
+In a rank container, codec `0x0200` uses three deterministic planes:
+
+```text
+primary payload = little-endian I16 trellis in pinned source order
+aux payload     = little-endian mcg marker || suh[K] || svh[N]
+codec metadata  = 96-byte Exl3Metadata record
+```
+
+The descriptor logical and padded shapes are both `[N,K,1,1]`; source EXL3
+does not imply padding. Both payload planes are 256-byte aligned. A file
+containing source EXL3 MUST clear header flag bit 0 because independent
+inspection support is not a qualified direct GPU layout.
 
 The candidate has reproduced one pinned real checkpoint projection
 byte-for-byte through independent Rust and NumPy reconstructions. The
