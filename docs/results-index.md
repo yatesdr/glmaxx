@@ -15,12 +15,15 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The complete local gate passed for `4bf7bb5`:
+The implementation remains `4bf7bb5`; the latest local run at design
+candidate `83f5005` plus its target-layer handoff/status delta passed:
 
 - `scripts/local-checks.sh`: 225 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  all 24 candidate-based review-handoff hash proofs, and the external
-  pinned-tokenizer proof;
+  and all 25 candidate-based review-handoff hash proofs;
+- the external pinned-tokenizer proof was skipped because
+  `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
+  unchanged from the earlier complete proof;
 - platform: local CPU development host;
 - CUDA compiler or GPU context: not used;
 - kernel/device correctness, one-layer replay, model quality, and performance:
@@ -130,6 +133,7 @@ verdicts:
 | quarantined checkpoint load and four-rank adoption | `4bb0708` (r1 `737603b` superseded) | `docs/fable-checkpoint-load-transaction-v1-r2-handoff.md` |
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
+| complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token

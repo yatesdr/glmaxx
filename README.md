@@ -70,6 +70,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Bounded native-rank reader CPU proof](docs/native-rank-reader-proof-v1.md)
 - [Strict production rank-manifest CPU proof](docs/production-rank-manifest-validation-v2.md)
 - [Production rank-manifest adversarial handoff](docs/fable-production-rank-manifest-validation-v2-handoff.md)
+- [Complete target-layer execution candidate](docs/target-layer-execution-v1.md)
+- [Target-layer execution adversarial handoff](docs/fable-target-layer-execution-v1-handoff.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
@@ -106,14 +108,16 @@ kernel, and engine work stays here.
 ## Current status
 
 The current local gate passes 225 Rust tests plus formatting, Clippy with
-warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
-the pinned external-tokenizer proof. It also verifies all 24 candidate-based
-Fable handoffs against their exact committed inputs and can classify an
-explicit review artifact by exact acceptance-token presence. The CPU/reference
-workspace includes
+warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
+It also verifies all 25 candidate-based Fable handoffs against their exact
+committed inputs and can classify an explicit review artifact by exact
+acceptance-token presence. The external-tokenizer fixture remains pinned from
+the prior proof; the latest run skipped that external check because
+`GLMAXX_TOKENIZER_DIR` was not set. The CPU/reference workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
 bounded file-backed four-rank verification, typed production-manifest
-validation, hybrid policy machinery, TP4
+validation, a source-pinned complete target execution design, hybrid policy
+machinery, TP4
 startup and step consensus, bounded continuous batching, distributed-sampling
 oracles, transactional prefix storage, HBM/DRAM/NVMe residency simulation,
 active page tables, persistent worker interfaces, request streaming, and
