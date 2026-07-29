@@ -32,6 +32,7 @@ table, stop and report a stale candidate instead of reviewing inferred bytes.
 | prior `fable-adversarial-v2.md` | `f0019b96d5b35bdca6d026691629b56fbeb0c3c4528e1ae4ff9c1aa06817953e` |
 | `docs/fable-v2-disposition.md` | `fd60c89ec188fc6467507ad054f114a379625b0eec40b863cb61c5ace5b1783b` |
 | `docs/cn4-preparation-result-20260729.md` | `427004e5bc1f6480bd62acbb11a5fab5146d8cd271c53b0e4b94595b7130e7f9` |
+| `docs/manifest-source-audit-20260729.md` | `02d853aad455aa120efc88926c8dbe06841c621a2831067cf59fb4a5b78d4cad` |
 
 The manifest records the model revision and source hashes that must be checked
 against the pinned GLM-5.2 graph. If the reviewer uses the read-only
