@@ -236,7 +236,9 @@ __global__ void initialize_grouped_scratch(
   const uint32_t begin = expert_offsets[expert];
   const uint32_t end = expert_offsets[expert + 1];
   const int m = static_cast<int>(end - begin);
-  const auto problem = make_shape(m, kLocalGateUp, kHidden);
+  const int n = 1024;
+  const int k = 6144;
+  const auto problem = make_shape(m, n, k);
   problem_shapes[group] = problem;
   ptr_a[group] = reinterpret_cast<const GroupedElementA*>(
       descriptor.activation_values + uint64_t{begin} * kHidden / 2);
@@ -251,17 +253,16 @@ __global__ void initialize_grouped_scratch(
       uint64_t{begin} * kLocalGateUp * sizeof(__nv_bfloat16));
   stride_a[group] =
       cutlass::make_cute_packed_stride(GroupedStrideA{},
-                                      make_shape(m, kHidden, 1));
+                                      make_shape(m, k, 1));
   stride_b[group] =
       cutlass::make_cute_packed_stride(GroupedStrideB{},
-                                      make_shape(kLocalGateUp, kHidden, 1));
+                                      make_shape(n, k, 1));
   stride_d[group] =
       cutlass::make_cute_packed_stride(GroupedStrideD{},
-                                      make_shape(m, kLocalGateUp, 1));
+                                      make_shape(m, n, 1));
   using BlockScaledConfig =
       typename GroupedCollectiveMainloop::Sm1xxBlkScaledConfig;
-  const auto batched_problem =
-      make_shape(m, kLocalGateUp, kHidden, 1);
+  const auto batched_problem = make_shape(m, n, k, 1);
   layout_sfa[group] =
       BlockScaledConfig::tile_atom_to_shape_SFA(batched_problem);
   layout_sfb[group] =
