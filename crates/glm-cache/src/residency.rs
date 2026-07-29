@@ -426,13 +426,33 @@ impl ResidencyManager {
     }
 
     pub fn unpin(&mut self, page_key: [u8; 32]) -> Result<(), ResidencyError> {
+        self.unpin_count(page_key, 1)
+    }
+
+    pub fn validate_unpin_count(
+        &self,
+        page_key: [u8; 32],
+        count: u32,
+    ) -> Result<(), ResidencyError> {
+        if count == 0 {
+            return Err(ResidencyError::Request);
+        }
+        let entry = self.entries.get(&page_key).ok_or(ResidencyError::Missing)?;
+        if entry.residency != Residency::Hbm || entry.pin_count < count {
+            return Err(ResidencyError::State);
+        }
+        Ok(())
+    }
+
+    pub fn unpin_count(&mut self, page_key: [u8; 32], count: u32) -> Result<(), ResidencyError> {
+        self.validate_unpin_count(page_key, count)?;
         let entry = self
             .entries
             .get_mut(&page_key)
             .ok_or(ResidencyError::Missing)?;
         entry.pin_count = entry
             .pin_count
-            .checked_sub(1)
+            .checked_sub(count)
             .ok_or(ResidencyError::State)?;
         Ok(())
     }

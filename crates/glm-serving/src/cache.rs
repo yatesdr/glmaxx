@@ -303,9 +303,11 @@ impl PrefixRestoreCoordinator {
     }
 
     pub fn release(&mut self, page_keys: &[PrefixPageKey]) -> Result<(), PrefixRestoreError> {
-        for (ordinal, key) in page_keys.iter().copied().enumerate().rev() {
-            let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
-            self.ranks[usize::from(owner_rank(ordinal))].unpin(key.0)?;
+        let plan = self.release_plan(page_keys)?;
+        for ((rank, page_key), count) in plan {
+            self.ranks[usize::from(rank)]
+                .unpin_count(page_key, count)
+                .expect("prefix release was preflighted under exclusive coordinator access");
         }
         Ok(())
     }
@@ -332,6 +334,23 @@ impl PrefixRestoreCoordinator {
             }
         }
         first_error.map_or(Ok(()), |error| Err(error.into()))
+    }
+
+    fn release_plan(
+        &self,
+        page_keys: &[PrefixPageKey],
+    ) -> Result<BTreeMap<(u8, [u8; 32]), u32>, PrefixRestoreError> {
+        let mut plan = BTreeMap::new();
+        for (ordinal, key) in page_keys.iter().copied().enumerate() {
+            let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
+            let rank = owner_rank(ordinal);
+            let count = plan.entry((rank, key.0)).or_insert(0_u32);
+            *count = count.checked_add(1).ok_or(PrefixRestoreError::Overflow)?;
+        }
+        for (&(rank, page_key), &count) in &plan {
+            self.ranks[usize::from(rank)].validate_unpin_count(page_key, count)?;
+        }
+        Ok(plan)
     }
 }
 
@@ -542,6 +561,17 @@ mod tests {
                 Some(Residency::Hbm)
             );
         }
+        let bogus_first = PrefixPageKey([0xee; 32]);
+        assert!(matches!(
+            coordinator.release(&[bogus_first, keys[1]]),
+            Err(PrefixRestoreError::Residency(ResidencyError::Missing))
+        ));
+        let mut newer_second = records[1].clone();
+        newer_second.generation = 2;
+        assert_eq!(
+            coordinator.ranks[1].validate_nvme_registration(&newer_second),
+            Err(ResidencyError::Pinned)
+        );
         coordinator.release(&keys).unwrap();
         coordinator.ranks[1].pin_hbm(keys[1].0).unwrap();
         let mut newer_records = records;

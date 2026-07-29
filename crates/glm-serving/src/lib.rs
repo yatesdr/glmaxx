@@ -619,22 +619,42 @@ impl ServingCoordinator {
     }
 
     fn release_request_prefix(&mut self, request_id: u64) -> Result<(), ServingError> {
-        self.release_request_tokens(request_id)?;
-        let Some(restored) = self.prefix_leases.remove(&request_id) else {
-            return Ok(());
-        };
-        self.prefix_cache
-            .as_mut()
-            .ok_or(ServingError::CacheUnavailable)?
-            .release(&restored.page_keys)?;
+        let retained_prompt_bytes = self.retained_prompt_bytes_after_token_release(request_id)?;
+        if let Some(restored) = self.prefix_leases.get(&request_id) {
+            self.prefix_cache
+                .as_mut()
+                .ok_or(ServingError::CacheUnavailable)?
+                .release(&restored.page_keys)?;
+        }
+        self.prefix_leases.remove(&request_id);
+        if let Some(retained_prompt_bytes) = retained_prompt_bytes {
+            self.request_tokens.remove(&request_id);
+            self.retained_prompt_bytes = retained_prompt_bytes;
+        }
         Ok(())
     }
 
     fn release_request_tokens(&mut self, request_id: u64) -> Result<(), ServingError> {
-        if let Some(tokens) = self.request_tokens.remove(&request_id) {
-            self.release_prompt_reservation(tokens.len())?;
+        if let Some(retained_prompt_bytes) =
+            self.retained_prompt_bytes_after_token_release(request_id)?
+        {
+            self.request_tokens.remove(&request_id);
+            self.retained_prompt_bytes = retained_prompt_bytes;
         }
         Ok(())
+    }
+
+    fn retained_prompt_bytes_after_token_release(
+        &self,
+        request_id: u64,
+    ) -> Result<Option<u64>, ServingError> {
+        let Some(tokens) = self.request_tokens.get(&request_id) else {
+            return Ok(None);
+        };
+        self.retained_prompt_bytes
+            .checked_sub(prompt_bytes(tokens.len())?)
+            .map(Some)
+            .ok_or(ServingError::Overflow)
     }
 
     fn release_prompt_reservation(&mut self, token_count: usize) -> Result<(), ServingError> {
@@ -1297,6 +1317,28 @@ mod tests {
                 cached_prompt_tokens: 64,
             }]
         );
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key])
+            .unwrap();
+        assert!(matches!(
+            serving.release_request_prefix(77),
+            Err(ServingError::Cache(PrefixRestoreError::Residency(
+                glm_cache::ResidencyError::State
+            )))
+        ));
+        assert!(serving.prefix_leases.contains_key(&77));
+        let repaired = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(999, &tokens)
+            .unwrap();
+        assert_eq!(repaired.page_keys, [key]);
+        serving.release_request_prefix(77).unwrap();
+        assert!(!serving.prefix_leases.contains_key(&77));
         assert!(serving.tick().unwrap());
         let events = serving.drain_events();
         assert!(
