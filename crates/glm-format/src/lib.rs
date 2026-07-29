@@ -6,6 +6,7 @@ mod exl3;
 mod float;
 mod nvfp4;
 mod safetensors;
+mod stream;
 
 pub use container::{
     HEADER_BYTES, RankFile, RankFileBuilder, RankFileError, TensorDescriptor, TensorPayload,
@@ -23,8 +24,12 @@ pub use nvfp4::{
     SCALE_LAYOUT_SM120_K_MAJOR, VALUE_LAYOUT_SM120_ROW_MAJOR, scale_offset,
 };
 pub use safetensors::{
-    SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, ShardedSafetensors,
-    load_exl3_projection, load_exl3_projection_sharded,
+    SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, SafeTensorReader,
+    ShardedSafetensors, ShardedTensorReader, load_exl3_projection, load_exl3_projection_sharded,
+};
+pub use stream::{
+    StreamRankError, StreamingRankConfig, StreamingRankSummary, StreamingRankWriter,
+    StreamingTensorIdentity, StreamingTensorSpec,
 };
 
 pub const CUTLASS_COMMIT: &str = "e05f953a5b3d38adc240df2ff928e0421c2abba3";

@@ -7,21 +7,21 @@ use crate::{
 };
 
 pub const HEADER_BYTES: usize = 4096;
-const DESCRIPTOR_BYTES: usize = 256;
-const ALIGNMENT: usize = 4096;
-const PAYLOAD_ALIGNMENT: usize = 256;
-const CODEC_NVFP4_1D: u16 = 0x0100;
-const CODEC_NVFP4_2D: u16 = 0x0101;
-const CODEC_EXL3_SOURCE: u16 = 0x0200;
+pub(crate) const DESCRIPTOR_BYTES: usize = 256;
+pub(crate) const ALIGNMENT: usize = 4096;
+pub(crate) const PAYLOAD_ALIGNMENT: usize = 256;
+pub(crate) const CODEC_NVFP4_1D: u16 = 0x0100;
+pub(crate) const CODEC_NVFP4_2D: u16 = 0x0101;
+pub(crate) const CODEC_EXL3_SOURCE: u16 = 0x0200;
 const HEADER_FLAG_DIRECT_KERNEL: u32 = 1 << 0;
 const HEADER_FLAG_NVFP4: u32 = 1 << 1;
 const HEADER_FLAG_EXL3: u32 = 1 << 2;
 const HEADER_FLAG_HYBRID: u32 = 1 << 4;
-const DESCRIPTOR_FLAG_AUX_REQUIRED: u8 = 1 << 7;
-const DTYPE_BF16: u16 = 1;
-const DTYPE_FP16: u16 = 2;
-const DTYPE_PACKED_E2M1X2: u16 = 6;
-const DTYPE_I16: u16 = 10;
+pub(crate) const DESCRIPTOR_FLAG_AUX_REQUIRED: u8 = 1 << 7;
+pub(crate) const DTYPE_BF16: u16 = 1;
+pub(crate) const DTYPE_FP16: u16 = 2;
+pub(crate) const DTYPE_PACKED_E2M1X2: u16 = 6;
+pub(crate) const DTYPE_I16: u16 = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TensorDescriptor {
@@ -53,7 +53,7 @@ pub struct TensorDescriptor {
 }
 
 impl TensorDescriptor {
-    fn encode(&self) -> [u8; DESCRIPTOR_BYTES] {
+    pub(crate) fn encode(&self) -> [u8; DESCRIPTOR_BYTES] {
         let mut out = [0_u8; DESCRIPTOR_BYTES];
         put_u32(&mut out, 0, self.tensor_id);
         put_u32(&mut out, 4, self.name_offset);
@@ -91,7 +91,7 @@ impl TensorDescriptor {
         out
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, RankFileError> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, RankFileError> {
         if bytes.len() != DESCRIPTOR_BYTES
             || bytes[25..28].iter().any(|&value| value != 0)
             || bytes[224..].iter().any(|&value| value != 0)
@@ -217,55 +217,35 @@ impl RankFileBuilder {
         file[prepared.payload_offset..prepared.payload_offset + prepared.payload.len()]
             .copy_from_slice(&prepared.payload);
 
-        let mut uuid_hasher = Sha256::new();
-        uuid_hasher.update(b"g5n-file-v0\0");
-        uuid_hasher.update(conversion_uuid);
-        uuid_hasher.update(self.rank.to_le_bytes());
-        uuid_hasher.update(prepared.manifest_hash);
-        uuid_hasher.update(prepared.descriptor_hash);
-        uuid_hasher.update(prepared.payload_hash);
-        let file_uuid = first_16(uuid_hasher.finalize().into());
-
-        let header = &mut file[..HEADER_BYTES];
-        header[0..8].copy_from_slice(b"GLM5NAT0");
-        put_u16(header, 8, 0);
-        put_u16(header, 10, 2);
-        put_u32(header, 12, HEADER_BYTES as u32);
-        put_u32(header, 16, 0x0102_0304);
-        put_u32(header, 20, prepared.header_flags);
-        put_u32(header, 24, self.rank);
-        put_u32(header, 28, 4);
-        put_u32(
-            header,
-            32,
-            u32::try_from(self.tensors.len()).map_err(|_| RankFileError::Overflow)?,
-        );
-        put_u64(header, 40, prepared.manifest_offset as u64);
-        put_u64(header, 48, self.manifest.len() as u64);
-        put_u64(header, 56, prepared.descriptor_offset as u64);
-        put_u64(header, 64, prepared.descriptor_bytes.len() as u64);
-        put_u64(header, 72, prepared.string_offset as u64);
-        put_u64(header, 80, prepared.strings.len() as u64);
-        put_u64(header, 88, prepared.metadata_offset as u64);
-        put_u64(header, 96, prepared.metadata.len() as u64);
-        put_u64(header, 104, prepared.payload_offset as u64);
-        put_u64(header, 112, prepared.payload.len() as u64);
-        header[120..152].copy_from_slice(&self.model_config_sha256);
-        header[152..184].copy_from_slice(&self.tokenizer_bundle_sha256);
-        header[184..216].copy_from_slice(&self.chat_template_sha256);
-        header[216..248].copy_from_slice(&self.weight_policy_sha256);
-        header[248..280].copy_from_slice(&self.kernel_abi_sha256);
-        header[280..312].copy_from_slice(&prepared.manifest_hash);
-        header[312..344].copy_from_slice(&prepared.descriptor_hash);
-        header[344..376].copy_from_slice(&prepared.payload_hash);
-        header[376..392].copy_from_slice(&file_uuid);
-        header[392..408].copy_from_slice(&conversion_uuid);
-        put_u64(header, 408, 0);
-        put_u32(header, 416, 0);
-        header[420..452].copy_from_slice(&prepared.string_hash);
-        header[452..484].copy_from_slice(&prepared.metadata_hash);
-        let crc = crc32c(header);
-        put_u32(header, 416, crc);
+        let header = encode_rank_header(
+            &RankHeaderFields {
+                rank: self.rank,
+                tensor_count: self.tensors.len(),
+                header_flags: prepared.header_flags,
+                manifest_offset: prepared.manifest_offset,
+                manifest_bytes: self.manifest.len(),
+                descriptor_offset: prepared.descriptor_offset,
+                descriptor_bytes: prepared.descriptor_bytes.len(),
+                string_offset: prepared.string_offset,
+                string_bytes: prepared.strings.len(),
+                metadata_offset: prepared.metadata_offset,
+                metadata_bytes: prepared.metadata.len(),
+                payload_offset: prepared.payload_offset,
+                payload_bytes: prepared.payload.len(),
+                model_config_sha256: self.model_config_sha256,
+                tokenizer_bundle_sha256: self.tokenizer_bundle_sha256,
+                chat_template_sha256: self.chat_template_sha256,
+                weight_policy_sha256: self.weight_policy_sha256,
+                kernel_abi_sha256: self.kernel_abi_sha256,
+                manifest_sha256: prepared.manifest_hash,
+                descriptor_sha256: prepared.descriptor_hash,
+                payload_sha256: prepared.payload_hash,
+                string_sha256: prepared.string_hash,
+                metadata_sha256: prepared.metadata_hash,
+            },
+            conversion_uuid,
+        )?;
+        file[..HEADER_BYTES].copy_from_slice(&header);
         Ok(file)
     }
 
@@ -725,7 +705,7 @@ fn validate_tensor_regions(
     Ok(())
 }
 
-fn derive_header_flags(descriptors: &[TensorDescriptor]) -> Result<u32, RankFileError> {
+pub(crate) fn derive_header_flags(descriptors: &[TensorDescriptor]) -> Result<u32, RankFileError> {
     let mut saw_nvfp4 = false;
     let mut saw_exl3 = false;
     for descriptor in descriptors {
@@ -799,6 +779,95 @@ fn validate_canonical_tensor_layout(
         return Err(RankFileError::NonCanonicalLayout);
     }
     Ok(())
+}
+
+pub(crate) struct RankHeaderFields {
+    pub rank: u32,
+    pub tensor_count: usize,
+    pub header_flags: u32,
+    pub manifest_offset: usize,
+    pub manifest_bytes: usize,
+    pub descriptor_offset: usize,
+    pub descriptor_bytes: usize,
+    pub string_offset: usize,
+    pub string_bytes: usize,
+    pub metadata_offset: usize,
+    pub metadata_bytes: usize,
+    pub payload_offset: usize,
+    pub payload_bytes: usize,
+    pub model_config_sha256: [u8; 32],
+    pub tokenizer_bundle_sha256: [u8; 32],
+    pub chat_template_sha256: [u8; 32],
+    pub weight_policy_sha256: [u8; 32],
+    pub kernel_abi_sha256: [u8; 32],
+    pub manifest_sha256: [u8; 32],
+    pub descriptor_sha256: [u8; 32],
+    pub payload_sha256: [u8; 32],
+    pub string_sha256: [u8; 32],
+    pub metadata_sha256: [u8; 32],
+}
+
+pub(crate) fn encode_rank_header(
+    fields: &RankHeaderFields,
+    conversion_uuid: [u8; 16],
+) -> Result<[u8; HEADER_BYTES], RankFileError> {
+    if fields.rank > 3 || fields.tensor_count == 0 {
+        return Err(RankFileError::Header);
+    }
+    let mut uuid_hasher = Sha256::new();
+    uuid_hasher.update(b"g5n-file-v0\0");
+    uuid_hasher.update(conversion_uuid);
+    uuid_hasher.update(fields.rank.to_le_bytes());
+    uuid_hasher.update(fields.manifest_sha256);
+    uuid_hasher.update(fields.descriptor_sha256);
+    uuid_hasher.update(fields.payload_sha256);
+    let file_uuid = first_16(uuid_hasher.finalize().into());
+
+    let mut header = [0_u8; HEADER_BYTES];
+    header[0..8].copy_from_slice(b"GLM5NAT0");
+    put_u16(&mut header, 8, 0);
+    put_u16(&mut header, 10, 2);
+    put_u32(&mut header, 12, HEADER_BYTES as u32);
+    put_u32(&mut header, 16, 0x0102_0304);
+    put_u32(&mut header, 20, fields.header_flags);
+    put_u32(&mut header, 24, fields.rank);
+    put_u32(&mut header, 28, 4);
+    put_u32(
+        &mut header,
+        32,
+        u32::try_from(fields.tensor_count).map_err(|_| RankFileError::Overflow)?,
+    );
+    put_u64(&mut header, 40, to_u64(fields.manifest_offset)?);
+    put_u64(&mut header, 48, to_u64(fields.manifest_bytes)?);
+    put_u64(&mut header, 56, to_u64(fields.descriptor_offset)?);
+    put_u64(&mut header, 64, to_u64(fields.descriptor_bytes)?);
+    put_u64(&mut header, 72, to_u64(fields.string_offset)?);
+    put_u64(&mut header, 80, to_u64(fields.string_bytes)?);
+    put_u64(&mut header, 88, to_u64(fields.metadata_offset)?);
+    put_u64(&mut header, 96, to_u64(fields.metadata_bytes)?);
+    put_u64(&mut header, 104, to_u64(fields.payload_offset)?);
+    put_u64(&mut header, 112, to_u64(fields.payload_bytes)?);
+    header[120..152].copy_from_slice(&fields.model_config_sha256);
+    header[152..184].copy_from_slice(&fields.tokenizer_bundle_sha256);
+    header[184..216].copy_from_slice(&fields.chat_template_sha256);
+    header[216..248].copy_from_slice(&fields.weight_policy_sha256);
+    header[248..280].copy_from_slice(&fields.kernel_abi_sha256);
+    header[280..312].copy_from_slice(&fields.manifest_sha256);
+    header[312..344].copy_from_slice(&fields.descriptor_sha256);
+    header[344..376].copy_from_slice(&fields.payload_sha256);
+    header[376..392].copy_from_slice(&file_uuid);
+    header[392..408].copy_from_slice(&conversion_uuid);
+    put_u64(&mut header, 408, 0);
+    put_u32(&mut header, 416, 0);
+    header[420..452].copy_from_slice(&fields.string_sha256);
+    header[452..484].copy_from_slice(&fields.metadata_sha256);
+    let crc = crc32c(&header);
+    put_u32(&mut header, 416, crc);
+    Ok(header)
+}
+
+fn to_u64(value: usize) -> Result<u64, RankFileError> {
+    u64::try_from(value).map_err(|_| RankFileError::Overflow)
 }
 
 #[derive(Clone, Debug)]
@@ -896,7 +965,7 @@ fn ordered_non_overlapping<const N: usize>(ranges: [std::ops::Range<usize>; N]) 
     ranges.windows(2).all(|pair| pair[0].end <= pair[1].start)
 }
 
-fn align_up(value: usize, alignment: usize) -> Result<usize, RankFileError> {
+pub(crate) fn align_up(value: usize, alignment: usize) -> Result<usize, RankFileError> {
     value
         .checked_add(alignment - 1)
         .map(|sum| sum / alignment * alignment)
@@ -908,7 +977,7 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-fn first_16(hash: [u8; 32]) -> [u8; 16] {
+pub(crate) fn first_16(hash: [u8; 32]) -> [u8; 16] {
     hash[..16].try_into().unwrap()
 }
 

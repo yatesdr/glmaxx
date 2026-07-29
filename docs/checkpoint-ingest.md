@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: strict structural reader and EXL3 projection importer implemented;
-bounded-memory native rank conversion is the next checkpoint gate.
+Status: strict structural reader, EXL3 projection importer, streaming tensor
+handles, and resumable bounded-memory native rank writer implemented.
 
 ## Scope
 
@@ -28,6 +28,28 @@ The reader:
 - validates the exact GLM-5.2 layer, expert, rank, projection, shape, dtype,
   marker, rotation, and trellis contract before constructing an
   `Exl3Trellis`.
+
+`glm-format::stream` writes the native rank format without retaining rank
+payloads in memory. It:
+
+- precomputes canonical offsets from a deterministic tensor plan;
+- writes through an 8 MiB bounded buffer;
+- rejects short and overlong plane readers;
+- syncs payload bytes before publishing a tensor descriptor as its durable
+  completion marker;
+- resumes only descriptors whose geometry and payload/aux hashes revalidate;
+- rejects changed completed payloads, nonzero padding, incompatible plans,
+  symlinks, hard links, and finalized files;
+- audits every payload plane and all canonical padding while computing the
+  rank payload digest;
+- derives the same deterministic conversion and file UUIDs as the in-memory
+  reference builder; and
+- produces byte-for-byte identical files to the reference builder in tests.
+
+The safetensors readers expose bounded `Read` implementations for both
+single-file tensors and verified sharded tensors. A converter can therefore
+chain EXL3 `mcg+suh+svh`, stream the trellis directly, and avoid loading a
+checkpoint shard or rank image into RAM.
 
 The cheap inventory digest is explicitly named `structure_sha256`: it is the
 single-file header digest or sharded-index digest and is not a content hash.
@@ -57,13 +79,13 @@ the source, metadata, native-plane, and reconstruction hashes as JSON.
 
 ## Fail-closed boundary
 
-This code proves source discovery and byte-exact EXL3 import. It does not
-claim that a complete model has been loaded, that a rank container can yet be
-produced with bounded memory, or that codec `0x0200` is GPU-loadable.
-The current in-memory `RankFileBuilder` remains suitable only for fixtures.
-A production converter must stream tensor planes and hashes into temporary
-rank files, atomically finalize all four headers after deriving the shared
-conversion UUID, and resume only from verified tensor boundaries.
+This code proves source discovery, byte-exact EXL3 import, and a
+bounded-memory rank-file write primitive. It does not claim that a complete
+model has been loaded or that codec `0x0200` is GPU-loadable. The next
+conversion gate must add the complete pinned GLM-5.2 inventory, plain
+protected tensors, TP slicing, four-rank staging-directory publication, and
+an external real-checkpoint smoke. The in-memory `RankFileBuilder` remains a
+fixture oracle rather than a production conversion path.
 
 Raw checkpoints, conversion scratch, and proof output remain external to
 Git.
