@@ -3,17 +3,18 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`9bdb2084619f0ede4425da3c626993b96fc3e6f8`
+`2f7d0ce30392d1fe5c3256058e4d8604100791f2`
 
-The complete local gate most recently ran against the captured-shape prefill
-candidate `4c421615120de9e73edfdf36b3ebedf60c28a693`; its provenance and
-adjacent graph-key limitation were then committed through
-`9bdb2084619f0ede4425da3c626993b96fc3e6f8`. The target CUDA/kernel and
-strict production-manifest baseline remains `4bf7bb5`; the later CPU
-candidates add review integrity, cache-lifecycle evidence, bit-exact
-indexer-scale handling, atomic publication, finite KV reconstruction, exact
-restore-result identity, all-or-nothing HBM admission, and captured-shape
-prefill progress.
+The complete local gate most recently ran against the scheduler
+batch-atomicity candidate
+`bc47da84c3fe43893b9a5ab7325d021c75400340`; its provenance record was then
+committed at `2f7d0ce30392d1fe5c3256058e4d8604100791f2`. The target
+CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
+later CPU candidates add review integrity, cache-lifecycle evidence,
+bit-exact indexer-scale handling, atomic publication, finite KV
+reconstruction, exact restore-result identity, all-or-nothing HBM
+admission, captured-shape prefill progress, and all-or-nothing scheduler
+step completion.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -21,12 +22,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at captured-shape prefill candidate `4c42161`
+The latest local run at scheduler batch-atomicity candidate `bc47da8`
 passed:
 
-- `scripts/local-checks.sh`: 236 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 237 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 35 then-present candidate-based review-handoff hash proofs;
+  and all 37 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -126,6 +127,14 @@ graph-profile identities while retaining the 85-byte hash-input layout. It
 is a design candidate only; its dedicated handoff passes local provenance,
 but independent design acceptance and all implementation evidence are
 absent.
+
+The scheduler batch-completion correction is pinned in
+`docs/scheduler-batch-atomicity-proof-v1.md`. Request updates, cumulative
+tenant service totals, completion binding, and decode-burst state are now
+preflighted in fixed C64 arrays before the inflight step is removed. Its
+forced late-overflow regression proves the exact batch remains retryable
+with no partial row mutation. The dedicated handoff passes local provenance;
+independent acceptance is absent.
 
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
@@ -235,6 +244,7 @@ verdicts:
 | all-or-nothing HBM residency admission | `c84da2a` | `docs/fable-residency-admission-atomicity-v1-handoff.md` |
 | captured-shape prefill progress | `9bdb208` | `docs/fable-prefill-captured-shape-v1-handoff.md` |
 | prefill row-bucket and graph-profile ABI v2 design | `9b04652` | `docs/fable-prefill-graph-profile-abi-v2-handoff.md` |
+| all-or-nothing scheduler batch completion | `2f7d0ce` | `docs/fable-scheduler-batch-atomicity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
