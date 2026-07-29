@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `7c718188b167615affabdb66f34939dcd6b22587`
+Baseline audited: `7e810c43a8856e09d48314dfef3959ded93c5f8f`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -66,7 +66,7 @@ State meanings:
 | S03 | REVIEW | Host request/step observability has correct clocks, counts, MTP ordinals, graph routes, no metric-recording allocation, and consistent concurrent lifecycle totals | Metrics candidate `9607aa0`; backend concurrency delta `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
 | S04 | REVIEW | Exact probabilistic parameters and deterministic seed/RNG state reach rank execution and responses | Sampling/RNG candidate `7c71818` plus pending `StepInput.v1`; backend correctly rejects non-greedy | Accept both contracts, implement CPU ABI/consensus, then remove fail-closed rejection |
 | S05 | OPEN | Nonblocking network transport sustains target concurrency with bounded memory | Retained one-request-per-connection worker transport is functional only | Replace/qualify transport after real executor is available |
-| S06 | OPEN | Admission enforces per-tenant queued-token, resident-KV, and context-band limits | Active request count and prompt bytes are bounded; KV quotas absent | C03 plus scheduler quota contract |
+| S06 | REVIEW | Admission enforces per-tenant queued-token, resident-KV, and context-band limits | Contract candidate `7e810c4` defines a single permit ledger, authenticated ingress, global-physical/tenant-logical charges, restore/step/offload transactions, exact 1M/page-slack arithmetic, and fatal cleanup; implementation is intentionally absent | Fable review of `docs/fable-tenant-resource-quotas-v1-handoff.md`, then CPU proof |
 | S07 | OPEN | Sustained multi-user, cache-thrash, cancellation, rank-fault, and slow-client tests pass | CPU unit schedules only | Load/fault harness against real service |
 
 ## P1 — hardware evidence and performance
