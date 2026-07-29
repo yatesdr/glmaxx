@@ -371,7 +371,7 @@ int32_t enqueue_dense_control(const glmaxx_fc1_descriptor& descriptor,
   return static_cast<int32_t>(cudaPeekAtLastError());
 }
 
-int32_t enqueue_grouped_control(const glmaxx_fc1_descriptor& descriptor,
+int32_t prepare_grouped_control(const glmaxx_fc1_descriptor& descriptor,
                                 const uint16_t* active_experts,
                                 uint32_t groups, cudaStream_t stream) {
   const GroupedScratch scratch = grouped_scratch(descriptor, groups);
@@ -395,7 +395,18 @@ int32_t enqueue_grouped_control(const glmaxx_fc1_descriptor& descriptor,
   if (cuda_status != cudaSuccess) {
     return static_cast<int32_t>(cuda_status);
   }
+  return 0;
+}
 
+int32_t enqueue_grouped_prepared(const glmaxx_fc1_descriptor& descriptor,
+                                 uint32_t groups, cudaStream_t stream) {
+  const GroupedScratch scratch = grouped_scratch(descriptor, groups);
+  const uint64_t scratch_bytes =
+      uint64_t{descriptor.assignments} * kHidden * sizeof(uint16_t);
+  if (scratch.metadata_bytes >= scratch_bytes) {
+    return -3;
+  }
+  cudaError_t cuda_status;
   cutlass::KernelHardwareInfo hardware{};
   cuda_status = cudaGetDevice(&hardware.device_id);
   if (cuda_status != cudaSuccess) {
@@ -444,6 +455,17 @@ int32_t enqueue_grouped_control(const glmaxx_fc1_descriptor& descriptor,
   }
   scale_and_swiglu_grouped<<<blocks, kThreads, 0, stream>>>(descriptor);
   return static_cast<int32_t>(cudaPeekAtLastError());
+}
+
+int32_t enqueue_grouped_control(const glmaxx_fc1_descriptor& descriptor,
+                                const uint16_t* active_experts,
+                                uint32_t groups, cudaStream_t stream) {
+  const int32_t prepare_status =
+      prepare_grouped_control(descriptor, active_experts, groups, stream);
+  if (prepare_status != 0) {
+    return prepare_status;
+  }
+  return enqueue_grouped_prepared(descriptor, groups, stream);
 }
 
 }  // namespace glmaxx::dense_control
@@ -516,5 +538,64 @@ extern "C" int32_t glmaxx_nvfp4_grouped_core_swiglu_launch(
   *asynchronous_error = 0;
   return glmaxx::dense_control::enqueue_grouped_control(
       *descriptor, active_experts, active_expert_count,
+      reinterpret_cast<cudaStream_t>(cuda_stream));
+}
+
+extern "C" int32_t glmaxx_nvfp4_grouped_prepare_launch(
+    const glmaxx_fc1_descriptor* descriptor,
+    const uint16_t* active_experts, uint32_t active_expert_count,
+    void* cuda_stream) {
+  if (descriptor == nullptr || active_experts == nullptr ||
+      cuda_stream == nullptr || active_expert_count == 0 ||
+      active_expert_count > glmaxx::dense_control::kExperts ||
+      active_expert_count > descriptor->assignments) {
+    return -1;
+  }
+  for (uint32_t index = 0; index < active_expert_count; ++index) {
+    if (active_experts[index] >= glmaxx::dense_control::kExperts ||
+        (index != 0 &&
+         active_experts[index - 1] >= active_experts[index])) {
+      return -2;
+    }
+  }
+  return glmaxx::dense_control::prepare_grouped_control(
+      *descriptor, active_experts, active_expert_count,
+      reinterpret_cast<cudaStream_t>(cuda_stream));
+}
+
+extern "C" int32_t glmaxx_nvfp4_grouped_prepared_control_launch(
+    const glmaxx_fc1_descriptor* descriptor,
+    uint32_t active_expert_count, void* cuda_stream,
+    int32_t* asynchronous_error) {
+  if (descriptor == nullptr || cuda_stream == nullptr ||
+      asynchronous_error == nullptr || active_expert_count == 0 ||
+      active_expert_count > glmaxx::dense_control::kExperts ||
+      active_expert_count > descriptor->assignments) {
+    return -1;
+  }
+  *asynchronous_error = 0;
+  const int32_t quantize_status =
+      glmaxx_nvfp4_grouped_quantize_launch(descriptor, cuda_stream);
+  if (quantize_status != 0) {
+    return quantize_status;
+  }
+  return glmaxx::dense_control::enqueue_grouped_prepared(
+      *descriptor, active_expert_count,
+      reinterpret_cast<cudaStream_t>(cuda_stream));
+}
+
+extern "C" int32_t glmaxx_nvfp4_grouped_prepared_core_swiglu_launch(
+    const glmaxx_fc1_descriptor* descriptor,
+    uint32_t active_expert_count, void* cuda_stream,
+    int32_t* asynchronous_error) {
+  if (descriptor == nullptr || cuda_stream == nullptr ||
+      asynchronous_error == nullptr || active_expert_count == 0 ||
+      active_expert_count > glmaxx::dense_control::kExperts ||
+      active_expert_count > descriptor->assignments) {
+    return -1;
+  }
+  *asynchronous_error = 0;
+  return glmaxx::dense_control::enqueue_grouped_prepared(
+      *descriptor, active_expert_count,
       reinterpret_cast<cudaStream_t>(cuda_stream));
 }

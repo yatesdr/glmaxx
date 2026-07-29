@@ -50,6 +50,24 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_grouped_prepare_launch(
+        descriptor: *const Fc1Descriptor,
+        active_experts: *const u16,
+        active_expert_count: u32,
+        stream: *mut c_void,
+    ) -> i32;
+    fn glmaxx_nvfp4_grouped_prepared_control_launch(
+        descriptor: *const Fc1Descriptor,
+        active_expert_count: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
+    fn glmaxx_nvfp4_grouped_prepared_core_swiglu_launch(
+        descriptor: *const Fc1Descriptor,
+        active_expert_count: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -563,29 +581,7 @@ impl NativeFc1Fixture {
             route_slots,
             &expert_offsets,
         )?;
-        let active_expert_count =
-            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
-        let mut async_error = 0_i32;
-        // SAFETY: validation above proves a non-empty, strictly increasing
-        // active-expert list and expert-major assignment ranges. The native
-        // launcher copies that host list to device on this stream; both the
-        // list and every descriptor allocation remain live until `download`
-        // synchronizes the stream.
-        let status = unsafe {
-            glmaxx_nvfp4_grouped_control_launch(
-                std::ptr::from_ref(&execution.descriptor),
-                active_experts.as_ptr(),
-                active_expert_count,
-                self.stream.0 as *mut c_void,
-                std::ptr::from_mut(&mut async_error),
-            )
-        };
-        if status != 0 {
-            return Err(KernelError::Driver(status));
-        }
-        if async_error != 0 {
-            return Err(KernelError::Async(async_error));
-        }
+        launch_native_grouped_control(&execution.descriptor, &active_experts, self.stream.0, true)?;
         execution.download(self.stream.0)
     }
 
@@ -715,11 +711,13 @@ impl NativeFc1Fixture {
             route_slots,
             &expert_offsets,
         )?;
+        prepare_native_grouped_control(&execution.descriptor, &active_experts, self.stream.0)?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
         for _ in 0..config.warmup_iterations {
-            launch_native_grouped_control(
+            launch_native_grouped_prepared(
                 &execution.descriptor,
-                &active_experts,
+                active_expert_count,
                 self.stream.0,
                 true,
             )?;
@@ -739,18 +737,18 @@ impl NativeFc1Fixture {
             })?;
         let grouped_core_swiglu_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
-                launch_native_grouped_control(
+                launch_native_grouped_prepared(
                     &execution.descriptor,
-                    &active_experts,
+                    active_expert_count,
                     self.stream.0,
                     false,
                 )
             })?;
         let inclusive_operator_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
-                launch_native_grouped_control(
+                launch_native_grouped_prepared(
                     &execution.descriptor,
-                    &active_experts,
+                    active_expert_count,
                     self.stream.0,
                     true,
                 )
@@ -758,9 +756,9 @@ impl NativeFc1Fixture {
 
         let enqueue_start = Instant::now();
         for _ in 0..config.measured_iterations {
-            launch_native_grouped_control(
+            launch_native_grouped_prepared(
                 &execution.descriptor,
-                &active_experts,
+                active_expert_count,
                 self.stream.0,
                 true,
             )?;
@@ -1058,6 +1056,60 @@ fn launch_native_grouped_control(
             glmaxx_nvfp4_grouped_core_swiglu_launch(
                 std::ptr::from_ref(descriptor),
                 active_experts.as_ptr(),
+                active_expert_count,
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        }
+    };
+    check(status)?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
+
+fn prepare_native_grouped_control(
+    descriptor: &Fc1Descriptor,
+    active_experts: &[u16],
+    stream: u64,
+) -> Result<(), KernelError> {
+    let active_expert_count =
+        u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+    // SAFETY: the caller keeps the descriptor allocations, active-expert
+    // slice, and stream live until the enqueued copy and metadata initializer
+    // complete.
+    check(unsafe {
+        glmaxx_nvfp4_grouped_prepare_launch(
+            std::ptr::from_ref(descriptor),
+            active_experts.as_ptr(),
+            active_expert_count,
+            stream as *mut c_void,
+        )
+    })
+}
+
+fn launch_native_grouped_prepared(
+    descriptor: &Fc1Descriptor,
+    active_expert_count: u32,
+    stream: u64,
+    inclusive: bool,
+) -> Result<(), KernelError> {
+    let mut async_error = 0_i32;
+    // SAFETY: `prepare_native_grouped_control` completed on this stream for
+    // the same descriptor and group count; all allocations remain live.
+    let status = unsafe {
+        if inclusive {
+            glmaxx_nvfp4_grouped_prepared_control_launch(
+                std::ptr::from_ref(descriptor),
+                active_expert_count,
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        } else {
+            glmaxx_nvfp4_grouped_prepared_core_swiglu_launch(
+                std::ptr::from_ref(descriptor),
                 active_expert_count,
                 stream as *mut c_void,
                 std::ptr::from_mut(&mut async_error),

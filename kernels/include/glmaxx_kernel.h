@@ -85,6 +85,21 @@ int32_t glmaxx_nvfp4_grouped_core_swiglu_launch(
     uint32_t active_expert_count,
     void* cuda_stream,
     int32_t* asynchronous_error);
+int32_t glmaxx_nvfp4_grouped_prepare_launch(
+    const struct glmaxx_fc1_descriptor* descriptor,
+    const uint16_t* active_experts,
+    uint32_t active_expert_count,
+    void* cuda_stream);
+int32_t glmaxx_nvfp4_grouped_prepared_control_launch(
+    const struct glmaxx_fc1_descriptor* descriptor,
+    uint32_t active_expert_count,
+    void* cuda_stream,
+    int32_t* asynchronous_error);
+int32_t glmaxx_nvfp4_grouped_prepared_core_swiglu_launch(
+    const struct glmaxx_fc1_descriptor* descriptor,
+    uint32_t active_expert_count,
+    void* cuda_stream,
+    int32_t* asynchronous_error);
 int32_t glmaxx_graph_exec_launch(uint64_t graph_exec, uint64_t stream);
 int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec);
 int32_t glmaxx_event_create(uint64_t* event);
