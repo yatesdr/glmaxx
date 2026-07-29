@@ -4,7 +4,8 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    fmt,
+    fmt, thread,
+    time::Duration,
 };
 
 use glm_cache::PrefixPageKey;
@@ -22,7 +23,9 @@ const MAXIMUM_STEP_EVENTS: usize = 512;
 mod cache;
 mod http;
 
-pub use cache::{PrefixRestoreCoordinator, PrefixRestoreError, RestoredPrefix};
+pub use cache::{
+    PrefixRestoreCoordinator, PrefixRestoreError, PrefixRestoreStatus, RestoredPrefix,
+};
 pub use http::{
     ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle, ApiErrorBody, ApiHealth,
     ApiHealthState, ApiHttpServer, ApiServerConfig, ApiUsage, ChatCompletionRequest, ChatMessage,
@@ -39,6 +42,12 @@ pub struct ServingConfig {
 pub struct ServingRequest {
     pub spec: RequestSpec,
     pub cached_prompt_tokens: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdmissionStatus {
+    Pending,
+    Admitted { cached_prompt_tokens: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +95,13 @@ pub struct ServingCoordinator {
     terminal_events: BTreeSet<u64>,
     prefix_cache: Option<PrefixRestoreCoordinator>,
     prefix_leases: BTreeMap<u64, Vec<PrefixPageKey>>,
+    pending_admissions: BTreeMap<u64, PendingAdmission>,
+    request_tokens: BTreeMap<u64, Box<[u32]>>,
+}
+
+struct PendingAdmission {
+    spec: RequestSpec,
+    tokens: Box<[u32]>,
 }
 
 impl ServingCoordinator {
@@ -110,6 +126,8 @@ impl ServingCoordinator {
             terminal_events: BTreeSet::new(),
             prefix_cache: None,
             prefix_leases: BTreeMap::new(),
+            pending_admissions: BTreeMap::new(),
+            request_tokens: BTreeMap::new(),
         })
     }
 
@@ -140,14 +158,88 @@ impl ServingCoordinator {
     }
 
     pub fn admit_tokens(&mut self, spec: RequestSpec, tokens: &[u32]) -> Result<(), ServingError> {
+        match self.begin_admit_tokens(spec, tokens)? {
+            AdmissionStatus::Admitted { .. } => return Ok(()),
+            AdmissionStatus::Pending => {}
+        }
+        loop {
+            match self.poll_admission(spec.id)? {
+                AdmissionStatus::Admitted { .. } => return Ok(()),
+                AdmissionStatus::Pending => thread::park_timeout(Duration::from_millis(1)),
+            }
+        }
+    }
+
+    pub fn begin_admit_tokens(
+        &mut self,
+        spec: RequestSpec,
+        tokens: &[u32],
+    ) -> Result<AdmissionStatus, ServingError> {
         if usize::try_from(spec.prompt_tokens).ok() != Some(tokens.len()) {
             return Err(ServingError::Request);
         }
-        let restored = self
+        if self.pending_admissions.contains_key(&spec.id)
+            || self.scheduler.request_state(spec.id).is_some()
+            || self.pending_admissions.len() >= self.event_capacity
+        {
+            return Err(ServingError::Backpressure);
+        }
+        let status = self
             .prefix_cache
             .as_mut()
             .ok_or(ServingError::CacheUnavailable)?
-            .restore_longest(spec.id, tokens)?;
+            .begin_restore_longest(spec.id, tokens)?;
+        match status {
+            PrefixRestoreStatus::Pending => {
+                self.pending_admissions.insert(
+                    spec.id,
+                    PendingAdmission {
+                        spec,
+                        tokens: tokens.to_vec().into_boxed_slice(),
+                    },
+                );
+                Ok(AdmissionStatus::Pending)
+            }
+            PrefixRestoreStatus::Ready(restored) => {
+                self.finish_token_admission(spec, tokens.to_vec().into_boxed_slice(), restored)
+            }
+        }
+    }
+
+    pub fn poll_admission(&mut self, request_id: u64) -> Result<AdmissionStatus, ServingError> {
+        if !self.pending_admissions.contains_key(&request_id) {
+            return Err(ServingError::UnknownAdmission);
+        }
+        let status = match self
+            .prefix_cache
+            .as_mut()
+            .ok_or(ServingError::CacheUnavailable)?
+            .poll_restore(request_id)
+        {
+            Ok(status) => status,
+            Err(error) => {
+                self.pending_admissions.remove(&request_id);
+                return Err(error.into());
+            }
+        };
+        match status {
+            PrefixRestoreStatus::Pending => Ok(AdmissionStatus::Pending),
+            PrefixRestoreStatus::Ready(restored) => {
+                let pending = self
+                    .pending_admissions
+                    .remove(&request_id)
+                    .ok_or(ServingError::UnknownAdmission)?;
+                self.finish_token_admission(pending.spec, pending.tokens, restored)
+            }
+        }
+    }
+
+    fn finish_token_admission(
+        &mut self,
+        spec: RequestSpec,
+        tokens: Box<[u32]>,
+        restored: RestoredPrefix,
+    ) -> Result<AdmissionStatus, ServingError> {
         let page_keys = restored.page_keys;
         let result = self.admit_prevalidated(ServingRequest {
             spec,
@@ -161,10 +253,25 @@ impl ServingCoordinator {
             return Err(error);
         }
         self.prefix_leases.insert(spec.id, page_keys);
-        Ok(())
+        self.request_tokens.insert(spec.id, tokens);
+        Ok(AdmissionStatus::Admitted {
+            cached_prompt_tokens: restored.matched_tokens,
+        })
     }
 
     pub fn cancel(&mut self, request_id: u64) -> Result<(), ServingError> {
+        if self.pending_admissions.contains_key(&request_id) {
+            self.require_event_space(1)?;
+            self.prefix_cache
+                .as_mut()
+                .ok_or(ServingError::CacheUnavailable)?
+                .cancel_restore(request_id)?;
+            self.pending_admissions.remove(&request_id);
+            self.events
+                .push_back(RequestEvent::Cancelled { request_id });
+            self.terminal_events.insert(request_id);
+            return Ok(());
+        }
         self.scheduler.cancel(request_id)?;
         self.bump_sequence_generation()
     }
@@ -379,6 +486,7 @@ impl ServingCoordinator {
     }
 
     fn release_request_prefix(&mut self, request_id: u64) -> Result<(), ServingError> {
+        self.request_tokens.remove(&request_id);
         let Some(page_keys) = self.prefix_leases.remove(&request_id) else {
             return Ok(());
         };
@@ -410,6 +518,7 @@ pub enum ServingError {
     Backpressure,
     Graph,
     Request,
+    UnknownAdmission,
     Output,
     Overflow,
     StepLimit,
@@ -874,19 +983,41 @@ mod tests {
         prefix.register_prefix(&tokens, vec![record]).unwrap();
         let mut serving = coordinator(None);
         serving.attach_prefix_cache(prefix).unwrap();
-        serving
-            .admit_tokens(
-                RequestSpec {
-                    id: 77,
-                    tenant: 1,
-                    prompt_tokens: 64,
-                    maximum_new_tokens: 1,
-                    mtp_depth: 0,
-                    sampling: SamplingCollective::Greedy,
-                },
-                &tokens,
-            )
-            .unwrap();
+        assert_eq!(
+            serving
+                .begin_admit_tokens(
+                    RequestSpec {
+                        id: 77,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 1,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    &tokens,
+                )
+                .unwrap(),
+            AdmissionStatus::Pending
+        );
+        assert!(serving.drain_events().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match serving.poll_admission(77).unwrap() {
+                AdmissionStatus::Pending => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "admission restore did not complete"
+                    );
+                    std::thread::yield_now();
+                }
+                AdmissionStatus::Admitted {
+                    cached_prompt_tokens,
+                } => {
+                    assert_eq!(cached_prompt_tokens, 64);
+                    break;
+                }
+            }
+        }
         assert_eq!(
             serving.drain_events(),
             vec![RequestEvent::Admitted {

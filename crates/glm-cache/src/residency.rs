@@ -58,6 +58,20 @@ impl RestoreHandle {
         result
     }
 
+    pub fn try_receive(&mut self) -> Result<Option<RestoreResult>, RestoreError> {
+        match self.receiver.try_recv() {
+            Ok(result) => {
+                self.release();
+                result.map(Some)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.release();
+                Err(RestoreError::WorkerClosed)
+            }
+        }
+    }
+
     fn release(&mut self) {
         if !self.released {
             self.outstanding.fetch_sub(1, Ordering::AcqRel);
