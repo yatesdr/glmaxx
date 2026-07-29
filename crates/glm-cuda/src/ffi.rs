@@ -664,50 +664,6 @@ impl NativeFc1Fixture {
         route_experts: &[u16],
         route_tokens: &[u32],
         route_slots: &[u8],
-        route_weights: &[f32],
-    ) -> Result<Vec<f32>, KernelError> {
-        let mut active_experts = Vec::new();
-        for &expert in route_experts {
-            if active_experts.last().copied() != Some(expert) {
-                active_experts.push(expert);
-            }
-        }
-        let execution = self.prepare_case(
-            input_bf16,
-            rows,
-            route_experts,
-            route_tokens,
-            route_slots,
-            route_weights,
-        )?;
-        let active_expert_count =
-            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
-        let mut async_error = 0_i32;
-        // SAFETY: `prepare_case` proved exact expert-major ranges and the
-        // active-expert slice and device allocations remain live through sync.
-        let status = unsafe {
-            glmaxx_nvfp4_fc2_grouped_control_launch(
-                std::ptr::from_ref(&execution.descriptor),
-                active_experts.as_ptr(),
-                active_expert_count,
-                self.stream.0 as *mut c_void,
-                std::ptr::from_mut(&mut async_error),
-            )
-        };
-        check(status)?;
-        if async_error != 0 {
-            return Err(KernelError::Async(async_error));
-        }
-        execution.download(self.stream.0)
-    }
-
-    pub fn run_grouped_control(
-        &self,
-        input_bf16: &[u16],
-        rows: u32,
-        route_experts: &[u16],
-        route_tokens: &[u32],
-        route_slots: &[u8],
     ) -> Result<Vec<u16>, KernelError> {
         let expert_offsets =
             self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
@@ -1227,6 +1183,50 @@ impl NativeFc2Fixture {
             glmaxx_nvfp4_fc2_dense_control_launch(
                 std::ptr::from_ref(&execution.descriptor),
                 u32::from(expert),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        check(status)?;
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
+    }
+
+    pub fn run_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+    ) -> Result<Vec<f32>, KernelError> {
+        let mut active_experts = Vec::new();
+        for &expert in route_experts {
+            if active_experts.last().copied() != Some(expert) {
+                active_experts.push(expert);
+            }
+        }
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let mut async_error = 0_i32;
+        // SAFETY: `prepare_case` proved exact expert-major ranges and the
+        // active-expert slice and device allocations remain live through sync.
+        let status = unsafe {
+            glmaxx_nvfp4_fc2_grouped_control_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                active_experts.as_ptr(),
+                active_expert_count,
                 self.stream.0 as *mut c_void,
                 std::ptr::from_mut(&mut async_error),
             )
