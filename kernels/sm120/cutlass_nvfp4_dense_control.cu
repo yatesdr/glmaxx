@@ -44,11 +44,11 @@ using ElementB = cutlass::nv_float4_t<cutlass::float_e2m1_t>;
 using LayoutBTag = cutlass::layout::ColumnMajor;
 constexpr int kAlignmentB = 32;
 
-using ElementC = cutlass::bfloat16_t;
+using ElementC = void;
 using ElementD = cutlass::bfloat16_t;
 using LayoutCTag = cutlass::layout::RowMajor;
 using LayoutDTag = cutlass::layout::RowMajor;
-constexpr int kAlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+constexpr int kAlignmentC = 1;
 constexpr int kAlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
 using ElementAccumulator = float;
@@ -152,7 +152,7 @@ int32_t enqueue_dense_control(const glmaxx_fc1_descriptor& descriptor,
       cutlass::gemm::GemmUniversalMode::kGemm,
       problem_shape,
       {a, stride_a, b, stride_b, sfa, layout_sfa, sfb, layout_sfb},
-      {{1.0f, 0.0f}, d, stride_c, d, stride_d}};
+      {{}, nullptr, stride_c, d, stride_d}};
 
   const cutlass::Status implementable = Gemm::can_implement(arguments);
   if (implementable != cutlass::Status::kSuccess) {

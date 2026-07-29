@@ -127,6 +127,23 @@ cmake --build "${build_dir}" --verbose 2>&1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-layout-probe.txt"
 "${build_dir}/glmaxx_cutlass_activation_layout_probe" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-activation-layout-probe.txt"
+cuobjdump --dump-resource-usage "${build_dir}/libglmaxx_sm120.so" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cuobjdump-resources.txt"
+cuobjdump --dump-sass "${build_dir}/libglmaxx_sm120.so" \
+  > "${GLMAXX_EVIDENCE_DIR}/glmaxx-library-sass.txt"
+owned_omma_count="$(
+  grep -c 'OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X' \
+    "${GLMAXX_EVIDENCE_DIR}/glmaxx-library-sass.txt" || true
+)"
+printf '%s\n' "${owned_omma_count}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-owned-omma-count.txt"
+if [[ "${owned_omma_count}" != "64" ]]; then
+  echo "GLMAXX-owned dense control did not retain exactly 64 expected SM120 NVFP4 OMMA instructions" >&2
+  exit 70
+fi
+nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
+  | grep 'glmaxx_nvfp4_dense_control_launch' \
+  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-dense-control-symbol.txt"
 
 check_idle
 
