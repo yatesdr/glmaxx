@@ -3,6 +3,7 @@ use std::{
     fmt,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
 };
 
@@ -53,6 +54,11 @@ pub struct FileTierStore {
     write_poisoned: bool,
 }
 
+pub struct FileTierReader {
+    data: File,
+    published: BTreeMap<[u8; 32], TierRecord>,
+}
+
 impl FileTierStore {
     pub fn open(root: &Path) -> Result<Self, StoreError> {
         fs::create_dir_all(root)?;
@@ -70,6 +76,7 @@ impl FileTierStore {
             .write(true)
             .truncate(false)
             .open(journal_path)?;
+        lock_exclusive_writer(&journal_file)?;
         let mut journal_bytes = Vec::new();
         journal_file.seek(SeekFrom::Start(0))?;
         journal_file.read_to_end(&mut journal_bytes)?;
@@ -105,22 +112,7 @@ impl FileTierStore {
     }
 
     pub fn restore(&mut self, page_key: [u8; 32]) -> Result<Option<RestoredPage>, StoreError> {
-        let Some(record) = self.published.get(&page_key).cloned() else {
-            return Ok(None);
-        };
-        let mut pieces = BTreeMap::new();
-        for piece in &record.pieces {
-            let length = usize::try_from(piece.byte_length).map_err(|_| StoreError::Overflow)?;
-            let mut bytes = vec![0_u8; length];
-            self.data.seek(SeekFrom::Start(piece.storage_offset))?;
-            self.data.read_exact(&mut bytes)?;
-            let digest: [u8; 32] = Sha256::digest(&bytes).into();
-            if digest != piece.sha256 {
-                return Err(StoreError::Checksum);
-            }
-            pieces.insert(piece.piece, bytes);
-        }
-        Ok(Some(RestoredPage { record, pieces }))
+        restore_published(&mut self.data, &self.published, page_key)
     }
 
     #[must_use]
@@ -266,11 +258,83 @@ impl FileTierStore {
     }
 }
 
+impl FileTierReader {
+    pub fn open(root: &Path) -> Result<Self, StoreError> {
+        let mut journal_file = OpenOptions::new()
+            .read(true)
+            .open(root.join("journal.log"))?;
+        lock_shared_snapshot(&journal_file)?;
+        let data = OpenOptions::new().read(true).open(root.join("pages.dat"))?;
+        let mut journal_bytes = Vec::new();
+        journal_file.read_to_end(&mut journal_bytes)?;
+        let (events, _) = decode_journal(&journal_bytes)?;
+        let published = TierJournal::from_events(events)?.recover()?;
+        Ok(Self { data, published })
+    }
+
+    pub fn restore(&mut self, page_key: [u8; 32]) -> Result<Option<RestoredPage>, StoreError> {
+        restore_published(&mut self.data, &self.published, page_key)
+    }
+}
+
+fn restore_published(
+    data: &mut File,
+    published: &BTreeMap<[u8; 32], TierRecord>,
+    page_key: [u8; 32],
+) -> Result<Option<RestoredPage>, StoreError> {
+    let Some(record) = published.get(&page_key).cloned() else {
+        return Ok(None);
+    };
+    let mut pieces = BTreeMap::new();
+    for piece in &record.pieces {
+        let length = usize::try_from(piece.byte_length).map_err(|_| StoreError::Overflow)?;
+        let mut bytes = vec![0_u8; length];
+        data.seek(SeekFrom::Start(piece.storage_offset))?;
+        data.read_exact(&mut bytes)?;
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        if digest != piece.sha256 {
+            return Err(StoreError::Checksum);
+        }
+        pieces.insert(piece.piece, bytes);
+    }
+    Ok(Some(RestoredPage { record, pieces }))
+}
+
 fn append_journal_record(file: &mut File, event: &JournalEvent) -> Result<(), StoreError> {
     let bytes = encode_journal_event(event)?;
     file.seek(SeekFrom::End(0))?;
     file.write_all(&bytes)?;
     Ok(())
+}
+
+fn lock_exclusive_writer(file: &File) -> Result<(), StoreError> {
+    // SAFETY: `file` owns a valid descriptor for the entire call. `flock`
+    // neither retains the pointer nor accesses Rust-managed memory.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Err(StoreError::WriterLocked)
+    } else {
+        Err(StoreError::Io(error))
+    }
+}
+
+fn lock_shared_snapshot(file: &File) -> Result<(), StoreError> {
+    // SAFETY: `file` owns a valid descriptor for the entire call. `flock`
+    // neither retains the pointer nor accesses Rust-managed memory.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Err(StoreError::WriterLocked)
+    } else {
+        Err(StoreError::Io(error))
+    }
 }
 
 fn encode_journal_event(event: &JournalEvent) -> Result<[u8; JOURNAL_RECORD_BYTES], StoreError> {
@@ -517,6 +581,7 @@ pub enum StoreError {
     Overflow,
     InjectedCrash,
     WritePoisoned,
+    WriterLocked,
 }
 
 impl fmt::Display for StoreError {
@@ -604,6 +669,38 @@ mod tests {
             restored.pieces[&TierPiece::DraftSidecar][0],
             0x22_u8.wrapping_add(2)
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn journal_lock_enforces_one_live_store_writer() {
+        let root = temporary_store("single-writer");
+        let mut first = FileTierStore::open(&root).unwrap();
+        first.publish(request(0x19, 1, false)).unwrap();
+
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::WriterLocked)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::WriterLocked)
+        ));
+        assert!(first.restore([0x19; 32]).unwrap().is_some());
+        drop(first);
+
+        let mut readers = (0..4)
+            .map(|_| FileTierReader::open(&root).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            readers
+                .iter_mut()
+                .all(|reader| reader.restore([0x19; 32]).unwrap().is_some())
+        );
+        let mut second = FileTierStore::open(&root).unwrap();
+        second.publish(request(0x1a, 1, false)).unwrap();
+        assert!(second.restore([0x19; 32]).unwrap().is_some());
+        assert!(second.restore([0x1a; 32]).unwrap().is_some());
         fs::remove_dir_all(root).unwrap();
     }
 

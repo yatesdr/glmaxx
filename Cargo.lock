@@ -276,6 +276,7 @@ name = "glm-cache"
 version = "0.1.0"
 dependencies = [
  "glm-format",
+ "libc",
  "sha2",
 ]
 

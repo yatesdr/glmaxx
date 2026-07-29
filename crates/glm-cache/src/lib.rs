@@ -27,7 +27,9 @@ pub use sequence::{
     MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, SequencePageError,
     SequencePageTable, SequencePageView,
 };
-pub use store::{DurablePageRequest, FileTierStore, PagePieceBytes, RestoredPage, StoreError};
+pub use store::{
+    DurablePageRequest, FileTierReader, FileTierStore, PagePieceBytes, RestoredPage, StoreError,
+};
 pub use tier::{
     DRAFT_INDEXER_PAGE_BYTES, DRAFT_KV_PAGE_BYTES, DRAFT_SIDECAR_PAGE_BYTES, JournalEvent, Tier,
     TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord, decode_draft_sidecar_payload,

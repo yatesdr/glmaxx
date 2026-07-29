@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{FileTierStore, RestoredPage, StoreError, Tier, TierRecord, owner_rank};
+use crate::{FileTierReader, RestoredPage, StoreError, Tier, TierRecord, owner_rank};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RestoreRequest {
@@ -103,7 +103,7 @@ impl RestoreService {
         if maximum_outstanding == 0 {
             return Err(RestoreError::Config);
         }
-        let mut store = FileTierStore::open(root)?;
+        let mut store = FileTierReader::open(root)?;
         let (sender, receiver) = mpsc::sync_channel::<RestoreCommand>(maximum_outstanding);
         let worker = thread::Builder::new()
             .name("glmaxx-nvme-restore".into())
@@ -177,7 +177,7 @@ impl Drop for RestoreService {
 }
 
 fn restore_one(
-    store: &mut FileTierStore,
+    store: &mut FileTierReader,
     request: RestoreRequest,
 ) -> Result<RestoreResult, RestoreError> {
     let page = store
@@ -658,7 +658,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::{DurablePageRequest, PagePieceBytes, TierPiece};
+    use crate::{DurablePageRequest, FileTierStore, PagePieceBytes, TierPiece};
 
     use super::*;
 
