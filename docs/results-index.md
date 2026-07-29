@@ -3,15 +3,15 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`13f0c598c192f389ae664a22ffc2f81e58bd9f31`
+`757d5cf44074a167a6434f708939719ef8550e1e`
 
-The complete local gate most recently ran against the indexer-key
-implementation bytes committed as
-`35a9d0358ae49bda3fcd571bc526b20cc7ec7d03`; its provenance record was then
-committed at `13f0c598c192f389ae664a22ffc2f81e58bd9f31`. The target CUDA/kernel and
+The complete local gate most recently ran against the KV
+finite-reconstruction implementation bytes committed as
+`abd851d91d371846c824d4a6a7208c2e89821166`; its provenance record was then
+committed at `757d5cf44074a167a6434f708939719ef8550e1e`. The target CUDA/kernel and
 strict production-manifest baseline remains `4bf7bb5`; the later CPU
-candidates add review integrity, cache-lifecycle evidence, and bit-exact
-indexer-scale handling.
+candidates add review integrity, cache-lifecycle evidence, bit-exact
+indexer-scale handling, atomic publication, and finite KV reconstruction.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -19,12 +19,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at indexer-scale implementation candidate `35a9d03`
+The latest local run at KV finite-reconstruction candidate `abd851d`
 passed:
 
-- `scripts/local-checks.sh`: 230 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 231 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 29 then-present candidate-based review-handoff hash proofs;
+  and all 31 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -80,6 +80,12 @@ use their native atomic no-replace operation, while other platforms fail
 closed. All 63 `glm-format` tests and workspace Clippy passed; its dedicated
 handoff passed local provenance validation, but independent acceptance is
 absent.
+
+The target/draft KV finite-reconstruction correction is pinned in
+`docs/kv-finite-reconstruction-proof-v1.md`. It rejects overflow from finite
+record factors before non-finite cache values can become observable. Its
+dedicated handoff passed local provenance validation; independent acceptance
+is absent.
 
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
@@ -183,6 +189,7 @@ verdicts:
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
 | bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
 | atomic no-replace rank-set publication | `aaeffea` | `docs/fable-atomic-rank-publication-v1-handoff.md` |
+| finite target/draft KV and indexer reconstruction | `757d5cf` | `docs/fable-kv-finite-reconstruction-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
