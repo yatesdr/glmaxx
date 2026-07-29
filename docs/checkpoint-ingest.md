@@ -220,6 +220,13 @@ parallel, rejects a kernel ABI that differs from the current binary, and emits
 one proof only after every payload passes. The CPU proof and explicit
 exclusions are recorded in `docs/native-rank-reader-proof-v1.md`.
 
+The proposed next boundary—fixed device layouts, owned pinned staging rings,
+quarantined arenas, prepared receipts, and process-atomic four-rank
+adoption—is specified in `docs/checkpoint-load-transaction-v1.md`. It remains
+a design candidate pending the adversarial review in
+`docs/fable-checkpoint-load-transaction-v1-handoff.md`; no CUDA sink is
+authorized by that candidate.
+
 ## Fail-closed boundary
 
 This code proves source discovery, the complete pinned structural inventory,

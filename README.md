@@ -68,6 +68,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
 - [Strict safetensors checkpoint ingest contract](docs/checkpoint-ingest.md)
 - [Bounded native-rank reader CPU proof](docs/native-rank-reader-proof-v1.md)
+- [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
+- [Checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-handoff.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
 - [Fable Phase-A and engine-contract review handoff](docs/fable-phase-a-engine-handoff.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
