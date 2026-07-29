@@ -74,6 +74,13 @@ construction and validation, and rejects records whose reconstructed key
 would overflow. Its dedicated handoff passed local provenance validation;
 independent acceptance is still absent.
 
+The rank-set publication correction is pinned in
+`docs/atomic-rank-publication-proof-v1.md`. Linux and Apple publication now
+use their native atomic no-replace operation, while other platforms fail
+closed. All 63 `glm-format` tests and workspace Clippy passed; its dedicated
+handoff passed local provenance validation, but independent acceptance is
+absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -175,6 +182,7 @@ verdicts:
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
 | bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
+| atomic no-replace rank-set publication | `aaeffea` | `docs/fable-atomic-rank-publication-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
