@@ -18,6 +18,7 @@ or matched end-to-end gates.
 | batching | `glm-scheduler` | captured-shape admission, multi-sequence prefill/decode/verify, configurable MTP0–6 cohorts, decode burst bound, weighted tenant ordering |
 | cancellation | `glm-scheduler` | cancellation becomes visible only at the next collective-safe step boundary |
 | sampling | `glm-reference::sampling` | sharded greedy, exact bounded top-k/top-p, unbounded distributed mass for `top_k=0,p=1`, speculative residual sampling |
+| tokenizer/text | `glm-tokenizer` | exact pinned bundle hashes, fixed chat template, mapped-vocabulary mask, incremental UTF-8 and cross-token stops |
 | prefix index | `glm-cache::prefix` | chained 64-token content keys, longest full-page match, reference counts, DCP-neutral namespace |
 | DRAM/NVMe metadata | `glm-cache::tier` | exact target/indexer/draft piece geometry, alignment, checksums, durable-piece journal, publish-after-all, crash replay |
 | FC2 and layer boundary | `glm-reference::routed_fc2` | activation ordering, rank-local down projection, route weight after FC2, shared/routed combination, fixed-rank TP reduction |

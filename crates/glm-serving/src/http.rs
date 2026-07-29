@@ -16,11 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use glm_scheduler::SamplingCollective;
+pub use glm_tokenizer::{ChatMessage, ChatRole, OrderedValue, ReasoningEffort};
+use glm_tokenizer::{ChatTemplateError, ChatTemplateOptions, render_chat};
 
 pub const GLMAXX_MODEL_ID: &str = "glm-5.2";
 const MAXIMUM_MESSAGES: usize = 4_096;
 const MAXIMUM_STOP_SEQUENCES: usize = 16;
 const MAXIMUM_STOP_BYTES: usize = 256;
+const MAXIMUM_TOOLS: usize = 128;
 const MAXIMUM_TOP_K: u16 = 256;
 const MAXIMUM_OUTPUT_TOKENS: u32 = 1_048_576;
 const MAXIMUM_HEADER_BYTES: usize = 32 * 1024;
@@ -54,26 +57,6 @@ impl ApiHealth {
             sm: 120,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub tool_call_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -114,9 +97,15 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub stream: bool,
     #[serde(default)]
-    pub tools: Option<Value>,
+    pub tools: Option<Vec<OrderedValue>>,
     #[serde(default)]
-    pub tool_choice: Option<Value>,
+    pub tool_choice: Option<OrderedValue>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub clear_thinking: Option<bool>,
     #[serde(default)]
     pub user: Option<String>,
 }
@@ -150,9 +139,16 @@ pub struct ValidatedChatRequest {
     pub mtp_depth: u8,
     pub stop: Vec<String>,
     pub stream: bool,
-    pub tools: Option<Value>,
-    pub tool_choice: Option<Value>,
+    pub tools: Option<Vec<OrderedValue>>,
+    pub tool_choice: Option<OrderedValue>,
+    pub template_options: ChatTemplateOptions,
     pub user: Option<String>,
+}
+
+impl ValidatedChatRequest {
+    pub fn render_prompt(&self) -> Result<String, ChatTemplateError> {
+        render_chat(&self.messages, self.tools.as_deref(), self.template_options)
+    }
 }
 
 impl ChatCompletionRequest {
@@ -176,13 +172,29 @@ impl ChatCompletionRequest {
         if self
             .messages
             .iter()
-            .any(|message| message.content.is_empty() || message.content.contains('\0'))
+            .any(|message| message.content.contains('\0'))
+            || self.messages.iter().any(|message| {
+                message.content.is_empty()
+                    && (message.role != ChatRole::Assistant || message.tool_calls.is_empty())
+            })
         {
             return Err(ApiRequestError::new(
                 400,
                 "INVALID_MESSAGES",
                 Some("messages"),
                 "message content must be nonempty and contain no NUL bytes",
+            ));
+        }
+        if self
+            .tools
+            .as_ref()
+            .is_some_and(|tools| tools.is_empty() || tools.len() > MAXIMUM_TOOLS)
+        {
+            return Err(ApiRequestError::new(
+                400,
+                "INVALID_TOOLS",
+                Some("tools"),
+                "tools must contain between 1 and 128 definitions",
             ));
         }
         let maximum_output_tokens = self.max_tokens.unwrap_or(1_024);
@@ -253,7 +265,7 @@ impl ChatCompletionRequest {
                 "stop must contain at most 16 nonempty strings of at most 256 bytes",
             ));
         }
-        Ok(ValidatedChatRequest {
+        let validated = ValidatedChatRequest {
             messages: self.messages,
             maximum_output_tokens,
             sampling: SamplingParameters {
@@ -267,8 +279,23 @@ impl ChatCompletionRequest {
             stream: self.stream,
             tools: self.tools,
             tool_choice: self.tool_choice,
+            template_options: ChatTemplateOptions {
+                reasoning_effort: self.reasoning_effort.unwrap_or_default(),
+                enable_thinking: self.enable_thinking.unwrap_or(true),
+                clear_thinking: self.clear_thinking,
+                add_generation_prompt: true,
+            },
             user: self.user,
-        })
+        };
+        validated.render_prompt().map_err(|error| {
+            ApiRequestError::new(
+                400,
+                "INVALID_CHAT_TEMPLATE_INPUT",
+                Some("messages"),
+                error.to_string(),
+            )
+        })?;
+        Ok(validated)
     }
 }
 
@@ -1191,6 +1218,35 @@ mod tests {
         let greedy = greedy.validate().unwrap();
         assert_eq!(greedy.sampling.collective(), SamplingCollective::Greedy);
         assert_eq!(greedy.mtp_depth, 6);
+
+        let tool_request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "model":"glm-5.2",
+                "messages":[
+                    {"role":"user","content":"call it"},
+                    {"role":"assistant","content":"","tool_calls":[
+                        {"function":{"name":"ordered","arguments":"{\"z\":1,\"a\":2}"}}
+                    ]}
+                ],
+                "tools":[
+                    {"type":"function","function":{
+                        "name":"ordered",
+                        "parameters":{"z":{"type":"number"},"a":{"type":"number"}},
+                        "strict":true
+                    }}
+                ],
+                "reasoning_effort":"high"
+            }"#,
+        )
+        .unwrap();
+        let rendered = tool_request.validate().unwrap().render_prompt().unwrap();
+        assert!(
+            rendered
+                .contains(r#""parameters": {"z": {"type": "number"}, "a": {"type": "number"}}"#)
+        );
+        assert!(rendered.contains(
+            "<arg_key>z</arg_key><arg_value>1</arg_value><arg_key>a</arg_key><arg_value>2</arg_value>"
+        ));
     }
 
     #[test]

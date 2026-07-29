@@ -64,6 +64,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Offline StepPlan, graph admission, and memory-contract candidate](docs/offline-engine-contract.md)
 - [Offline serving foundation: scheduler, sampling, tiers, startup, and FC2](docs/offline-serving-foundation.md)
 - [Executable offline serving spine: durable restore through TP4 consensus](docs/offline-serving-spine.md)
+- [Pinned tokenizer, chat-template, and streaming text contract](docs/tokenizer-serving-contract.md)
 - [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
 - [Strict safetensors checkpoint ingest contract](docs/checkpoint-ingest.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)

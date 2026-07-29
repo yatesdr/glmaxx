@@ -21,6 +21,7 @@ glm-format = { path = "../glm-format" }
 glm-reference = { path = "../glm-reference" }
 glm-scheduler = { path = "../glm-scheduler" }
 glm-serving = { path = "../glm-serving" }
+glm-tokenizer = { path = "../glm-tokenizer" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

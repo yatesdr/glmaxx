@@ -5,6 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
@@ -42,6 +43,11 @@ use glm_scheduler::{
     RequestSpec, RequestState, RouteCatalog, SamplingCollective, SchedulerConfig, TenantConfig,
 };
 use glm_serving::{PrefixRestoreCoordinator, RequestEvent, ServingConfig, ServingCoordinator};
+use glm_tokenizer::{
+    CHAT_TEMPLATE_SHA256, ChatMessage, ChatRole, ChatTemplateOptions, GENERATION_CONFIG_SHA256,
+    MODEL_VOCABULARY, PinnedTokenizer, ReasoningEffort, TOKEN_OUTPUT_TABLE_SHA256,
+    TOKENIZER_CONFIG_SHA256, TOKENIZER_SHA256, TOKENIZER_VOCABULARY, render_chat,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -114,6 +120,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .get(2)
                 .ok_or("serving-proof requires an external evidence directory")?;
             serving_proof(Path::new(path))?;
+        }
+        Some("tokenizer-proof") => {
+            let bundle = arguments
+                .get(2)
+                .ok_or("tokenizer-proof requires the pinned tokenizer directory")?;
+            let report = tokenizer_proof(Path::new(bundle))?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(3) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
         }
         Some("exl3-proof") => {
             let path = arguments
@@ -249,7 +269,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -1257,6 +1277,164 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
     fs::write(&report_path, &json)?;
     println!("wrote {} bytes to {}", json.len(), report_path.display());
     Ok(())
+}
+
+#[derive(Serialize)]
+struct TokenizerCaseProof {
+    name: &'static str,
+    utf8_sha256: String,
+    token_ids: Vec<u32>,
+    round_trip_exact: bool,
+}
+
+#[derive(Serialize)]
+struct TokenizerProof {
+    schema: &'static str,
+    base_model_revision: &'static str,
+    checkpoint_revision: &'static str,
+    tokenizer_sha256: String,
+    tokenizer_config_sha256: String,
+    generation_config_sha256: String,
+    chat_template_sha256: String,
+    token_output_table_sha256: String,
+    tokenizer_backend: &'static str,
+    model_vocabulary: u32,
+    mapped_vocabulary: u32,
+    masked_padding_ids: [u32; 2],
+    cases: Vec<TokenizerCaseProof>,
+    incremental_utf8_exact: bool,
+    cross_token_stop_exact: bool,
+    verdict: &'static str,
+}
+
+fn tokenizer_proof(root: &Path) -> Result<TokenizerProof, Box<dyn std::error::Error>> {
+    let tokenizer = Arc::new(PinnedTokenizer::open(root)?);
+    let output_table_sha256 = tokenizer.output_table_sha256();
+    if output_table_sha256 != TOKEN_OUTPUT_TABLE_SHA256 {
+        return Err("pinned tokenizer output table changed after load".into());
+    }
+    let user_prompt = render_chat(
+        &[tokenizer_message(ChatRole::User, "Hello")],
+        None,
+        ChatTemplateOptions::default(),
+    )?;
+    let history_prompt = render_chat(
+        &[
+            tokenizer_message(ChatRole::User, "Q"),
+            tokenizer_message(ChatRole::Assistant, "<think>r</think>A"),
+            tokenizer_message(ChatRole::User, "Next"),
+        ],
+        None,
+        ChatTemplateOptions {
+            reasoning_effort: ReasoningEffort::High,
+            ..ChatTemplateOptions::default()
+        },
+    )?;
+    let cases = [
+        ("ascii", "Hello, world!".to_owned(), vec![9703, 11, 1879, 0]),
+        (
+            "unicode",
+            "北京 café 👋🏽\nline 2".to_owned(),
+            vec![99_334, 51_609, 61_370, 233, 151_821, 198, 1056, 220, 17],
+        ),
+        (
+            "code",
+            "fn main() { println!(\"hi\"); }".to_owned(),
+            vec![8821, 1887, 368, 314, 13_742, 17_203, 6023, 5038, 335],
+        ),
+        (
+            "user_prompt",
+            user_prompt,
+            vec![
+                154_822, 154_824, 154_826, 25_062, 287, 29_905, 371, 25, 7487, 154_827, 9703,
+                154_828, 154_841,
+            ],
+        ),
+        (
+            "history_prompt",
+            history_prompt,
+            vec![
+                154_822, 154_824, 154_826, 25_062, 287, 29_905, 371, 25, 5124, 154_827, 48,
+                154_828, 154_841, 154_842, 32, 154_827, 5847, 154_828, 154_841,
+            ],
+        ),
+    ];
+    let mut case_proofs = Vec::with_capacity(cases.len());
+    for (name, text, expected) in cases {
+        let token_ids = tokenizer.encode(&text)?;
+        if token_ids != expected {
+            return Err(format!(
+                "pinned tokenizer case {name} changed: expected {expected:?}, observed {token_ids:?}"
+            )
+            .into());
+        }
+        let decoded = tokenizer.decode_reference(&token_ids, false)?;
+        case_proofs.push(TokenizerCaseProof {
+            name,
+            utf8_sha256: hex(&sha256(text.as_bytes())),
+            token_ids,
+            round_trip_exact: decoded == text,
+        });
+    }
+    if case_proofs.iter().any(|proof| !proof.round_trip_exact) {
+        return Err("pinned tokenizer reference round trip changed".into());
+    }
+
+    let unicode = "北京 café 👋🏽\nline 2";
+    let unicode_ids = tokenizer.encode(unicode)?;
+    let mut stream = tokenizer.stream(Vec::new())?;
+    let mut streamed = String::new();
+    for token in unicode_ids {
+        streamed.push_str(&stream.push(token)?.text);
+    }
+    streamed.push_str(&stream.finish()?.text);
+    let incremental_utf8_exact = streamed == unicode;
+
+    let stop_ids = tokenizer.encode("alpha STOP hidden")?;
+    let mut stream = tokenizer.stream(vec!["STOP".to_owned()])?;
+    let mut stopped = String::new();
+    let mut saw_stop = false;
+    for token in stop_ids {
+        let delta = stream.push(token)?;
+        stopped.push_str(&delta.text);
+        if delta.finish.is_some() {
+            saw_stop = true;
+            break;
+        }
+    }
+    let cross_token_stop_exact = saw_stop && stopped == "alpha ";
+    if !incremental_utf8_exact || !cross_token_stop_exact {
+        return Err("incremental tokenizer contract changed".into());
+    }
+    Ok(TokenizerProof {
+        schema: "glmaxx.tokenizer-proof.v1",
+        base_model_revision: "b4734de4facf877f85769a911abafc5283eab3d9",
+        checkpoint_revision: EXL3_MODEL_REVISION,
+        tokenizer_sha256: hex(&TOKENIZER_SHA256),
+        tokenizer_config_sha256: hex(&TOKENIZER_CONFIG_SHA256),
+        generation_config_sha256: hex(&GENERATION_CONFIG_SHA256),
+        chat_template_sha256: hex(&CHAT_TEMPLATE_SHA256),
+        token_output_table_sha256: hex(&output_table_sha256),
+        tokenizer_backend: "tokenizers-rs-0.23.1-pinned-files-only",
+        model_vocabulary: MODEL_VOCABULARY,
+        mapped_vocabulary: TOKENIZER_VOCABULARY,
+        masked_padding_ids: [TOKENIZER_VOCABULARY, MODEL_VOCABULARY - 1],
+        cases: case_proofs,
+        incremental_utf8_exact,
+        cross_token_stop_exact,
+        verdict: "PINNED_TOKENIZER_TEMPLATE_STREAM_PASS",
+    })
+}
+
+fn tokenizer_message(role: ChatRole, content: &str) -> ChatMessage {
+    ChatMessage {
+        role,
+        content: content.to_owned(),
+        reasoning_content: None,
+        tool_calls: Vec::new(),
+        name: None,
+        tool_call_id: None,
+    }
 }
 
 fn proof_graph(

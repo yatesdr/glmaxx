@@ -1,0 +1,111 @@
+{
+  "schema": "glmaxx.tokenizer-proof.v1",
+  "base_model_revision": "b4734de4facf877f85769a911abafc5283eab3d9",
+  "checkpoint_revision": "9297b9f1d53af5c67cffa01e30cc071a1ff7144b",
+  "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+  "tokenizer_config_sha256": "98b1271574f41abf89427ae2dda030d94dc9478f0edc5a8bd240db213c6fd5fc",
+  "generation_config_sha256": "ac76b43d8683d3b930126870fc8be73d8679308fe752fa1f381096d8354f6a55",
+  "chat_template_sha256": "172dc74a35e1752df75ecfb2b2cf9326d2852bb1379868ebeec9571654489679",
+  "token_output_table_sha256": "31b20a4136e6f2854e40bdc34396cfcb6e893259c335fe6d1bdbfef48ea5fa1a",
+  "tokenizer_backend": "tokenizers-rs-0.23.1-pinned-files-only",
+  "model_vocabulary": 154880,
+  "mapped_vocabulary": 154856,
+  "masked_padding_ids": [
+    154856,
+    154879
+  ],
+  "cases": [
+    {
+      "name": "ascii",
+      "utf8_sha256": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3",
+      "token_ids": [
+        9703,
+        11,
+        1879,
+        0
+      ],
+      "round_trip_exact": true
+    },
+    {
+      "name": "unicode",
+      "utf8_sha256": "c43dda27f295e8f8b7cf486da83debb001569d0492aab941ac42dddd40fcdc45",
+      "token_ids": [
+        99334,
+        51609,
+        61370,
+        233,
+        151821,
+        198,
+        1056,
+        220,
+        17
+      ],
+      "round_trip_exact": true
+    },
+    {
+      "name": "code",
+      "utf8_sha256": "d4fd629f6809b4459e59bef3c47a1fc450ac40a3e2218289ba6408ca4d9a5be9",
+      "token_ids": [
+        8821,
+        1887,
+        368,
+        314,
+        13742,
+        17203,
+        6023,
+        5038,
+        335
+      ],
+      "round_trip_exact": true
+    },
+    {
+      "name": "user_prompt",
+      "utf8_sha256": "9133f6aef56934eaf376a9b56cd89b65d1a25544abbff7ad95a03086b8330d0d",
+      "token_ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        9703,
+        154828,
+        154841
+      ],
+      "round_trip_exact": true
+    },
+    {
+      "name": "history_prompt",
+      "utf8_sha256": "f5721889b691af1ca56d746df334bb69b63dc351ef2ba71b6291d10838b2394d",
+      "token_ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        48,
+        154828,
+        154841,
+        154842,
+        32,
+        154827,
+        5847,
+        154828,
+        154841
+      ],
+      "round_trip_exact": true
+    }
+  ],
+  "incremental_utf8_exact": true,
+  "cross_token_stop_exact": true,
+  "verdict": "PINNED_TOKENIZER_TEMPLATE_STREAM_PASS"
+}

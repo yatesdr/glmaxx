@@ -19,10 +19,11 @@ produce a production health claim.
 - `GET /metrics`
 
 Chat completions support buffered JSON or server-sent events, deterministic
-seeds, temperature, top-p, bounded top-k, output limits, stop strings, tool
-schema values, configurable `mtp_depth` in `0..=6`, and user identity
-forwarding. Bearer keys map to fixed tenant IDs before backend admission.
-Unknown request fields fail closed.
+seeds, temperature, top-p, bounded top-k, output limits, stop strings,
+order-preserving tool schema/call values, thinking controls, configurable
+`mtp_depth` in `0..=6`, and user identity forwarding. Bearer keys map to
+fixed tenant IDs before backend admission. Unknown request fields fail
+closed.
 
 As required by `spec/engine-v0.md`, `top_p < 1` without an explicit
 `top_k` in `1..=256` returns
@@ -57,8 +58,10 @@ parser, validation, authentication, deadline, and backpressure behavior.
 
 ## Remaining integration boundary
 
-The production backend must render the pinned chat template, tokenize into
-the fixed GLM vocabulary, admit through `ServingCoordinator`, detokenize
-committed tokens, emit exact usage and finish reasons, propagate disconnect
-cancellation at a collective-safe step boundary, and supply the required
-observability registry. No current CLI command starts this server.
+`glm-tokenizer` now supplies the pinned template renderer, exact tokenizer
+loader, padding-ID mask boundary, and incremental stop-safe detokenizer. The
+production backend must connect those components to `ServingCoordinator`,
+apply the padding mask before distributed sampling, emit exact usage and
+finish reasons, propagate disconnect cancellation at a collective-safe step
+boundary, and supply the required observability registry. No current CLI
+command starts this server.

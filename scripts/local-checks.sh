@@ -35,6 +35,15 @@ cargo run --release --offline -p glm-cli --bin glmaxx -- \
   serving-proof "${proof_dir}/serving"
 cmp fixtures/cpu-serving-proof-v1.json \
   "${proof_dir}/serving/serving-proof.json"
+if [[ -n "${GLMAXX_TOKENIZER_DIR:-}" ]]; then
+  cargo run --release --offline -p glm-cli --bin glmaxx -- \
+    tokenizer-proof "${GLMAXX_TOKENIZER_DIR}" \
+    "${proof_dir}/tokenizer-proof.json"
+  cmp fixtures/tokenizer-contract-proof-v1.json \
+    "${proof_dir}/tokenizer-proof.json"
+else
+  echo "Pinned tokenizer proof skipped: GLMAXX_TOKENIZER_DIR is not set"
+fi
 
 clang++ -std=c++17 -fsyntax-only -x c++ kernels/include/glmaxx_kernel.h
 
