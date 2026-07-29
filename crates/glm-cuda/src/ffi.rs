@@ -22,6 +22,10 @@ unsafe extern "C" {
         graph_exec: *mut u64,
     ) -> i32;
     fn glmaxx_nvfp4_quantize_launch(descriptor: *const Fc1Descriptor, stream: *mut c_void) -> i32;
+    fn glmaxx_nvfp4_grouped_quantize_launch(
+        descriptor: *const Fc1Descriptor,
+        stream: *mut c_void,
+    ) -> i32;
     fn glmaxx_nvfp4_core_swiglu_launch(
         descriptor: *const Fc1Descriptor,
         stream: *mut c_void,
@@ -33,6 +37,13 @@ unsafe extern "C" {
         error_code: *mut i32,
     ) -> i32;
     fn glmaxx_nvfp4_grouped_control_launch(
+        descriptor: *const Fc1Descriptor,
+        active_experts: *const u16,
+        active_expert_count: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
+    fn glmaxx_nvfp4_grouped_core_swiglu_launch(
         descriptor: *const Fc1Descriptor,
         active_experts: *const u16,
         active_expert_count: u32,
@@ -307,6 +318,17 @@ pub struct Fc1Timing {
     pub core_swiglu_us: f32,
     pub inclusive_operator_us: f32,
     pub graph_inclusive_us: f32,
+    pub host_enqueue_us: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupedFc1Timing {
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+    pub active_experts: u32,
+    pub activation_quantization_us: f32,
+    pub grouped_core_swiglu_us: f32,
+    pub inclusive_operator_us: f32,
     pub host_enqueue_us: f64,
 }
 
@@ -664,6 +686,100 @@ impl NativeFc1Fixture {
         })
     }
 
+    pub fn benchmark_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        config: Fc1BenchmarkConfig,
+    ) -> Result<GroupedFc1Timing, KernelError> {
+        if config.warmup_iterations == 0
+            || config.warmup_iterations > 100
+            || config.measured_iterations == 0
+            || config.measured_iterations > 10_000
+        {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let active_experts = active_experts_for_grouped(route_experts, &expert_offsets)?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+
+        for _ in 0..config.warmup_iterations {
+            launch_native_grouped_control(
+                &execution.descriptor,
+                &active_experts,
+                self.stream.0,
+                true,
+            )?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+
+        let activation_quantization_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                // SAFETY: the descriptor and all referenced allocations are
+                // live for the complete benchmark.
+                check(unsafe {
+                    glmaxx_nvfp4_grouped_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                })
+            })?;
+        let grouped_core_swiglu_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                launch_native_grouped_control(
+                    &execution.descriptor,
+                    &active_experts,
+                    self.stream.0,
+                    false,
+                )
+            })?;
+        let inclusive_operator_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                launch_native_grouped_control(
+                    &execution.descriptor,
+                    &active_experts,
+                    self.stream.0,
+                    true,
+                )
+            })?;
+
+        let enqueue_start = Instant::now();
+        for _ in 0..config.measured_iterations {
+            launch_native_grouped_control(
+                &execution.descriptor,
+                &active_experts,
+                self.stream.0,
+                true,
+            )?;
+        }
+        let host_enqueue_us = enqueue_start.elapsed().as_secs_f64() * 1_000_000.0
+            / f64::from(config.measured_iterations);
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+
+        Ok(GroupedFc1Timing {
+            warmup_iterations: config.warmup_iterations,
+            measured_iterations: config.measured_iterations,
+            active_experts: active_expert_count,
+            activation_quantization_us,
+            grouped_core_swiglu_us,
+            inclusive_operator_us,
+            host_enqueue_us,
+        })
+    }
+
     fn validate_case(
         &self,
         input_bf16: &[u16],
@@ -911,6 +1027,44 @@ fn launch_native_fc1(descriptor: &Fc1Descriptor, stream: u64) -> Result<(), Kern
             std::ptr::from_mut(&mut async_error),
         )
     })?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
+
+fn launch_native_grouped_control(
+    descriptor: &Fc1Descriptor,
+    active_experts: &[u16],
+    stream: u64,
+    inclusive: bool,
+) -> Result<(), KernelError> {
+    let active_expert_count =
+        u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+    let mut async_error = 0_i32;
+    // SAFETY: the caller keeps the descriptor allocations, active-expert
+    // slice, and stream live through synchronization.
+    let status = unsafe {
+        if inclusive {
+            glmaxx_nvfp4_grouped_control_launch(
+                std::ptr::from_ref(descriptor),
+                active_experts.as_ptr(),
+                active_expert_count,
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        } else {
+            glmaxx_nvfp4_grouped_core_swiglu_launch(
+                std::ptr::from_ref(descriptor),
+                active_experts.as_ptr(),
+                active_expert_count,
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        }
+    };
+    check(status)?;
     if async_error == 0 {
         Ok(())
     } else {

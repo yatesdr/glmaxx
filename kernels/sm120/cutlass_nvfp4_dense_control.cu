@@ -494,3 +494,27 @@ extern "C" int32_t glmaxx_nvfp4_grouped_control_launch(
       *descriptor, active_experts, active_expert_count,
       reinterpret_cast<cudaStream_t>(cuda_stream));
 }
+
+extern "C" int32_t glmaxx_nvfp4_grouped_core_swiglu_launch(
+    const glmaxx_fc1_descriptor* descriptor,
+    const uint16_t* active_experts, uint32_t active_expert_count,
+    void* cuda_stream, int32_t* asynchronous_error) {
+  if (descriptor == nullptr || active_experts == nullptr ||
+      cuda_stream == nullptr || asynchronous_error == nullptr ||
+      active_expert_count == 0 ||
+      active_expert_count > glmaxx::dense_control::kExperts ||
+      active_expert_count > descriptor->assignments) {
+    return -1;
+  }
+  for (uint32_t index = 0; index < active_expert_count; ++index) {
+    if (active_experts[index] >= glmaxx::dense_control::kExperts ||
+        (index != 0 &&
+         active_experts[index - 1] >= active_experts[index])) {
+      return -2;
+    }
+  }
+  *asynchronous_error = 0;
+  return glmaxx::dense_control::enqueue_grouped_control(
+      *descriptor, active_experts, active_expert_count,
+      reinterpret_cast<cudaStream_t>(cuda_stream));
+}

@@ -153,6 +153,8 @@ shasum -a 256 \
   "${review_artifact}" \
   "${eager_summary}" \
   "${graph_summary}" \
+  "${dense_summary}" \
+  "${grouped_summary}" \
   "${kernel_dir}/libglmaxx_sm120.so" \
   "${runner}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/input-sha256.txt"
@@ -166,6 +168,15 @@ check_idle
 
 shasum -a 256 "${benchmark_dir}"/*.json \
   | tee "${GLMAXX_EVIDENCE_DIR}/benchmark-sha256.txt"
+
+grouped_benchmark_dir="${GLMAXX_EVIDENCE_DIR}/grouped-materialized-control"
+mkdir "${grouped_benchmark_dir}"
+check_idle
+"${runner}" gpu-grouped-bench "${grouped_benchmark_dir}" 2>&1 \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-grouped-bench-summary.json"
+
+shasum -a 256 "${grouped_benchmark_dir}"/*.json \
+  | tee "${GLMAXX_EVIDENCE_DIR}/grouped-benchmark-sha256.txt"
 nvidia-smi \
   --query-gpu=index,uuid,clocks.current.sm,clocks.current.memory,power.draw,power.limit,temperature.gpu \
   --format=csv,noheader \
@@ -178,6 +189,6 @@ fi
 
 printf '%s\n' \
   "PROVISIONAL_CONTROL_ONLY" \
-  "The direct CUDA-core baseline was timed only after eager and graph correctness passed." \
-  "No tensor-core performance claim is made by this result." \
+  "The direct CUDA-core baseline and grouped materialized tensor-core control were timed only after every Phase-B correctness gate passed." \
+  "The grouped result materializes gate/up and cannot qualify the production fused path." \
   | tee "${GLMAXX_EVIDENCE_DIR}/verdict.txt"
