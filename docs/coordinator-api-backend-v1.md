@@ -67,8 +67,18 @@ fake constructor used by unit tests are not production health evidence.
 - cancellation verifies the authenticated tenant before it is enqueued;
 - prefix-restore and scheduled cancellations pass through
   `ServingCoordinator::cancel`;
-- runtime shutdown or fatal step failure attempts one terminal error for every
-  active receiver and drops all request ownership.
+- submission and cancellation hold the bounded request-registry gate through
+  their nonblocking command enqueue and recheck fatal/shutdown state under
+  that gate;
+- a fatal step marks the backend unhealthy before terminal draining, sends one
+  terminal error to every active receiver, drains every already-accepted
+  queued submission with a terminal error, and only then clears ownership;
+- orderly runtime shutdown applies the same active-plus-queued drain.
+
+This ordering closes the interval in which an API thread could pass the first
+health check while the runtime was becoming fatal, enqueue after the terminal
+drain, and receive only a disconnected channel. The gate never covers a
+blocking send: command insertion remains `try_send`.
 
 Request and step telemetry is defined in
 [serving observability v1](serving-observability-v1.md). Recording uses fixed
@@ -92,7 +102,17 @@ The in-crate tests cover:
 - tenant mismatch rejection and delivery of explicit cancellation to the
   waiting completion receiver;
 - fail-closed rejection of probabilistic sampling; and
+- exact lifecycle totals for four concurrent requests across two tenants;
+- isolation of a full completion channel while a concurrent peer reaches its
+  normal terminal response;
+- an injected rank-execution failure with one active and three queued
+  submissions, proving four structured terminal errors, fatal health, zero
+  successful-step observations, and no leaked owners; and
 - HTTP refusal when a backend reports healthy state with a non-TP4 topology.
+
+The three backend concurrency/fault schedules pass ten consecutive targeted
+runs in addition to the workspace gate. They use CPU rank executors and do not
+constitute throughput or GPU evidence.
 
 The workspace proof remains `scripts/local-checks.sh`.
 

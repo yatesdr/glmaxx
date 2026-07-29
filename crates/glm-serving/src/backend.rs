@@ -218,6 +218,7 @@ impl CoordinatorApiBackend {
                         coordinator,
                         command_receiver,
                         config,
+                        &runtime_fatal,
                         &runtime_shutdown,
                         &runtime_owners,
                         &runtime_counters,
@@ -326,15 +327,6 @@ impl ApiBackend for CoordinatorApiBackend {
             })
             .map_err(|_| self.reject("REQUEST_ID_EXHAUSTED", "request id space exhausted"))?;
         let (event_sender, events) = mpsc::sync_channel(self.completion_event_capacity);
-        {
-            let mut owners = self
-                .owners
-                .lock()
-                .map_err(|_| self.reject("ENGINE_STATE_FAILED", "request registry is poisoned"))?;
-            if owners.insert(request_id, tenant).is_some() {
-                return Err(self.reject("ENGINE_STATE_FAILED", "request id collision"));
-            }
-        }
         let command = BackendCommand::Submit {
             request_id,
             tenant,
@@ -346,15 +338,30 @@ impl ApiBackend for CoordinatorApiBackend {
             decoder,
             events: event_sender,
         };
+        // Hold the registry gate through the nonblocking enqueue. A terminal
+        // runtime sets `fatal` before taking the same gate to drain commands,
+        // so no request can pass the initial health check and enter the queue
+        // after the terminal drain.
+        let mut owners = self
+            .owners
+            .lock()
+            .map_err(|_| self.reject("ENGINE_STATE_FAILED", "request registry is poisoned"))?;
+        if self.fatal.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
+            return Err(self.reject(
+                "ENGINE_NOT_HEALTHY",
+                "the serving runtime stopped during request admission",
+            ));
+        }
+        if owners.insert(request_id, tenant).is_some() {
+            return Err(self.reject("ENGINE_STATE_FAILED", "request id collision"));
+        }
         match self.command_sender.try_send(command) {
             Ok(()) => {
                 self.counters.increment_submitted();
                 Ok(ApiCompletionHandle { request_id, events })
             }
             Err(error) => {
-                if let Ok(mut owners) = self.owners.lock() {
-                    owners.remove(&request_id);
-                }
+                owners.remove(&request_id);
                 let (code, message) = match error {
                     TrySendError::Full(_) => (
                         "ENGINE_OVERLOADED",
@@ -374,12 +381,11 @@ impl ApiBackend for CoordinatorApiBackend {
         if request_id == 0 || tenant == 0 {
             return Err(self.reject("UNKNOWN_REQUEST", "request is not active"));
         }
-        let owner = self
+        let owners = self
             .owners
             .lock()
-            .map_err(|_| self.reject("ENGINE_STATE_FAILED", "request registry is poisoned"))?
-            .get(&request_id)
-            .copied();
+            .map_err(|_| self.reject("ENGINE_STATE_FAILED", "request registry is poisoned"))?;
+        let owner = owners.get(&request_id).copied();
         match owner {
             None => return Err(self.reject("UNKNOWN_REQUEST", "request is not active")),
             Some(owner) if owner != tenant => {
@@ -389,6 +395,12 @@ impl ApiBackend for CoordinatorApiBackend {
                 ));
             }
             Some(_) => {}
+        }
+        if self.fatal.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
+            return Err(self.reject(
+                "ENGINE_NOT_HEALTHY",
+                "the serving runtime stopped before cancellation",
+            ));
         }
         match self
             .command_sender
@@ -420,6 +432,7 @@ fn runtime_loop(
     mut coordinator: ServingCoordinator,
     commands: Receiver<BackendCommand>,
     config: CoordinatorBackendConfig,
+    fatal: &AtomicBool,
     shutdown: &AtomicBool,
     owners: &Mutex<BTreeMap<u64, u32>>,
     counters: &ServingMetrics,
@@ -445,6 +458,7 @@ fn runtime_loop(
                 Err(TryRecvError::Disconnected) => {
                     fail_all(
                         &mut active,
+                        &commands,
                         owners,
                         counters,
                         "BACKEND_SHUTDOWN",
@@ -497,6 +511,7 @@ fn runtime_loop(
             }
             Ok(None) => {}
             Err(error) => {
+                fatal.store(true, Ordering::Release);
                 dispatch_events(
                     coordinator.drain_events(),
                     &mut coordinator,
@@ -507,6 +522,7 @@ fn runtime_loop(
                 );
                 fail_all(
                     &mut active,
+                    &commands,
                     owners,
                     counters,
                     "ENGINE_STEP_FAILED",
@@ -545,6 +561,7 @@ fn runtime_loop(
     }
     fail_all(
         &mut active,
+        &commands,
         owners,
         counters,
         "BACKEND_SHUTDOWN",
@@ -948,6 +965,7 @@ fn fail_active_request(
 
 fn fail_all(
     active: &mut BTreeMap<u64, ActiveRequest>,
+    commands: &Receiver<BackendCommand>,
     owners: &Mutex<BTreeMap<u64, u32>>,
     counters: &ServingMetrics,
     code: &'static str,
@@ -957,6 +975,22 @@ fn fail_all(
         fail_active_request(request, counters, code, message);
     }
     if let Ok(mut owners) = owners.lock() {
+        while let Ok(command) = commands.try_recv() {
+            if let BackendCommand::Submit {
+                request_id,
+                request_started_at,
+                enqueued_at,
+                events,
+                ..
+            } = command
+            {
+                let now = Instant::now();
+                counters.observe_queue(now.saturating_duration_since(enqueued_at));
+                counters.observe_request_time(now.saturating_duration_since(request_started_at));
+                fail_sender(events, counters, code, message);
+                owners.remove(&request_id);
+            }
+        }
         owners.clear();
     }
 }
@@ -978,7 +1012,8 @@ mod tests {
         FileTierStore, NamespaceInputs, PrefixIndex, PrefixNamespace, ResidencyConfig,
     };
     use glm_engine::{
-        AttentionTransport, GraphEntry, GraphKey, GraphProfile, StepMode, Tp4WorkerPool,
+        AttentionTransport, CollectiveSchedule, GraphEntry, GraphKey, GraphProfile,
+        RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan, Tp4WorkerPool,
     };
     use glm_scheduler::{RouteCatalog, SchedulerConfig, TenantConfig};
 
@@ -1083,6 +1118,13 @@ mod tests {
     }
 
     fn coordinator(store_root: &std::path::Path) -> ServingCoordinator {
+        coordinator_with_workers(store_root, Tp4WorkerPool::spawn_cpu(2, None).unwrap())
+    }
+
+    fn coordinator_with_workers(
+        store_root: &std::path::Path,
+        workers: Tp4WorkerPool,
+    ) -> ServingCoordinator {
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [1; 32],
             tokenizer_sha256: [2; 32],
@@ -1152,7 +1194,7 @@ mod tests {
                 },
             ],
             routes,
-            Tp4WorkerPool::spawn_cpu(2, None).unwrap(),
+            workers,
         )
         .unwrap();
         coordinator.attach_prefix_cache(prefix).unwrap();
@@ -1174,18 +1216,54 @@ mod tests {
     }
 
     fn backend(store_root: &std::path::Path) -> CoordinatorApiBackend {
-        CoordinatorApiBackend::spawn_with_tokenizer(
+        backend_with(
+            coordinator(store_root),
             CoordinatorBackendConfig {
                 command_capacity: 16,
                 completion_event_capacity: 16,
                 maximum_commands_per_tick: 16,
                 idle_poll_interval: Duration::from_millis(1),
             },
-            coordinator(store_root),
+        )
+    }
+
+    fn backend_with(
+        coordinator: ServingCoordinator,
+        config: CoordinatorBackendConfig,
+    ) -> CoordinatorApiBackend {
+        CoordinatorApiBackend::spawn_with_tokenizer(
+            config,
+            coordinator,
             Arc::new(FakeTokenizer),
             "cpu-test",
         )
         .unwrap()
+    }
+
+    fn terminal_event(handle: &ApiCompletionHandle) -> ApiCompletionEvent {
+        loop {
+            match handle.events.recv_timeout(Duration::from_secs(2)).unwrap() {
+                ApiCompletionEvent::TextDelta(_) => {}
+                terminal => return terminal,
+            }
+        }
+    }
+
+    struct DelayedFailExecutor {
+        entered: Arc<AtomicBool>,
+    }
+
+    impl RankExecutor for DelayedFailExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            _plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.entered.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(100));
+            Err(RankExecutionError::Backend(-1))
+        }
     }
 
     #[test]
@@ -1339,6 +1417,170 @@ mod tests {
                 .metrics()
                 .contains("glmaxx_backend_active_requests 0")
         );
+        drop(backend);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_tenants_complete_with_exact_lifecycle_totals() {
+        let root = temporary_store();
+        let backend = backend(&root);
+        let handles = [
+            backend.submit_chat(1, validated(1, None)).unwrap(),
+            backend.submit_chat(2, validated(2, None)).unwrap(),
+            backend.submit_chat(1, validated(3, None)).unwrap(),
+            backend.submit_chat(2, validated(4, None)).unwrap(),
+        ];
+        for (handle, expected_completion_tokens) in handles.iter().zip(1_u32..=4) {
+            assert_eq!(
+                terminal_event(handle),
+                ApiCompletionEvent::Finished {
+                    finish_reason: "length".to_owned(),
+                    usage: ApiUsage {
+                        prompt_tokens: 1,
+                        completion_tokens: expected_completion_tokens,
+                        total_tokens: expected_completion_tokens + 1,
+                    },
+                }
+            );
+        }
+
+        let metrics = backend.metrics();
+        for expected in [
+            "glmaxx_backend_submitted_total 4\n",
+            "glmaxx_backend_completed_total 4\n",
+            "glmaxx_backend_cancelled_total 0\n",
+            "glmaxx_backend_failed_total 0\n",
+            "glmaxx_backend_active_requests 0\n",
+            "glmaxx_output_tokens_total 10\n",
+            "glmaxx_ttft_us_count 4\n",
+            "glmaxx_itl_us_count 6\n",
+            "glmaxx_request_time_us_count 4\n",
+        ] {
+            assert!(metrics.contains(expected), "missing metric: {expected}");
+        }
+        drop(backend);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn slow_consumer_does_not_block_a_concurrent_peer() {
+        let root = temporary_store();
+        let backend = backend_with(
+            coordinator(&root),
+            CoordinatorBackendConfig {
+                command_capacity: 16,
+                completion_event_capacity: 8,
+                maximum_commands_per_tick: 16,
+                idle_poll_interval: Duration::from_millis(1),
+            },
+        );
+        let _slow = backend.submit_chat(1, validated(1_000, None)).unwrap();
+        let peer = backend.submit_chat(2, validated(4, None)).unwrap();
+        assert_eq!(
+            terminal_event(&peer),
+            ApiCompletionEvent::Finished {
+                finish_reason: "length".to_owned(),
+                usage: ApiUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 4,
+                    total_tokens: 5,
+                },
+            }
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let metrics = backend.metrics();
+            if metrics.contains("glmaxx_backend_slow_consumers_total 1\n")
+                && metrics.contains("glmaxx_backend_active_requests 0\n")
+            {
+                assert!(metrics.contains("glmaxx_backend_completed_total 1\n"));
+                assert!(metrics.contains("glmaxx_backend_cancelled_total 1\n"));
+                assert!(metrics.contains("glmaxx_backend_failed_total 0\n"));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "slow consumer was not isolated while its peer completed"
+            );
+            std::thread::yield_now();
+        }
+        drop(backend);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fatal_step_fails_active_and_queued_requests_with_structured_events() {
+        let root = temporary_store();
+        let entered = Arc::new(AtomicBool::new(false));
+        let executors = std::array::from_fn(|_| {
+            Box::new(DelayedFailExecutor {
+                entered: Arc::clone(&entered),
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
+        let backend = backend_with(
+            coordinator_with_workers(&root, workers),
+            CoordinatorBackendConfig {
+                command_capacity: 16,
+                completion_event_capacity: 16,
+                maximum_commands_per_tick: 1,
+                idle_poll_interval: Duration::from_millis(1),
+            },
+        );
+        let first = backend.submit_chat(1, validated(8, None)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !entered.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "first request did not enter rank execution"
+            );
+            std::thread::yield_now();
+        }
+        let handles = [
+            first,
+            backend.submit_chat(2, validated(8, None)).unwrap(),
+            backend.submit_chat(1, validated(8, None)).unwrap(),
+            backend.submit_chat(2, validated(8, None)).unwrap(),
+        ];
+
+        for (index, handle) in handles.iter().enumerate() {
+            let terminal = terminal_event(handle);
+            let expected_code = if index == 0 {
+                "ENGINE_REQUEST_FAILED"
+            } else {
+                "ENGINE_STEP_FAILED"
+            };
+            assert!(
+                matches!(
+                    terminal,
+                    ApiCompletionEvent::Failed(ApiBackendError { code, .. }) if code == expected_code
+                ),
+                "unexpected terminal event: {terminal:?}"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while backend.health().state != ApiHealthState::Fatal {
+            assert!(
+                Instant::now() < deadline,
+                "fatal worker result did not poison backend health"
+            );
+            std::thread::yield_now();
+        }
+        let metrics = backend.metrics();
+        for expected in [
+            "glmaxx_backend_submitted_total 4\n",
+            "glmaxx_backend_completed_total 0\n",
+            "glmaxx_backend_cancelled_total 0\n",
+            "glmaxx_backend_failed_total 4\n",
+            "glmaxx_backend_active_requests 0\n",
+            "glmaxx_request_time_us_count 4\n",
+            "glmaxx_step_total_time_us_prefill_count 0\n",
+            "glmaxx_backend_fatal 1\n",
+        ] {
+            assert!(metrics.contains(expected), "missing metric: {expected}");
+        }
         drop(backend);
         fs::remove_dir_all(root).unwrap();
     }
