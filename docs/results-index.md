@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`bfbe7f46cbd9db52aa766950aec1432c7677778d`
+`3ab31108f571c01ae4a83642c95e012d8b195123`
 
-The complete local gate most recently ran against the pending-admission
-rollback implementation
-`7bae533137e737d466b2c059fddd58425253e8a7`; its provenance record was then
-committed at `bfbe7f46cbd9db52aa766950aec1432c7677778d`. The target
+The complete local gate most recently ran against the backend admission
+rollback fatal-drain implementation
+`6050d8ecfb3164ac50a3cb14e51fa26fb4e3eed8`; its provenance record was then
+committed at `3ab31108f571c01ae4a83642c95e012d8b195123`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -16,7 +16,7 @@ reconstruction, exact restore-result identity, all-or-nothing HBM
 admission, captured-shape prefill progress, and all-or-nothing scheduler
 step completion, prefix release, selected-step failure finalization, and
 multi-request terminal cleanup, plus retryable pending restore/admission
-rollback.
+rollback and fail-stop propagation through the API backend.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -24,12 +24,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at pending-admission rollback implementation `7bae533`
+The latest local run at backend fatal-drain implementation `6050d8e`
 passed:
 
-- `scripts/local-checks.sh`: 243 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 244 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 41 then-present candidate-based review-handoff hash proofs;
+  and all 42 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -175,6 +175,16 @@ and deterministic per-rank queue saturation regressions distinguish the old
 lost-handle and partial-abort behavior. The dedicated handoff passes local
 provenance validation; independent acceptance is absent.
 
+The backend ownership correction is pinned in
+`docs/backend-admission-rollback-fatal-proof-v1.md`. When a coordinator error
+retains pending admission ownership, poll and cancellation now preserve the
+backend active request, pending ID, and external tenant owner before
+propagating a structured fatal result. The runtime drains active and queued
+users and drops the coordinator rather than continuing with unattributed
+cache work. Its real file-backed corruption/repair regression distinguishes
+both prior lost-owner paths. The dedicated handoff passes local provenance
+validation; independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -288,6 +298,7 @@ verdicts:
 | selected-step failure finalization | `2ff0ac1` | `docs/fable-selected-step-failure-finalization-v1-handoff.md` |
 | multi-request terminal cleanup transaction | `6535248` | `docs/fable-terminal-cleanup-transaction-v1-handoff.md` |
 | retryable pending restore/admission rollback | `bfbe7f4` | `docs/fable-pending-admission-rollback-v1-handoff.md` |
+| backend retained-admission fatal drain | `3ab3110` | `docs/fable-backend-admission-rollback-fatal-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
