@@ -7,6 +7,7 @@ mod exl3;
 mod float;
 mod native_reader;
 mod nvfp4;
+mod rank_manifest;
 mod safetensors;
 mod stream;
 
@@ -38,6 +39,9 @@ pub use native_reader::{
 pub use nvfp4::{
     Codec, LAYOUT_SOURCE_SHA256, Nvfp4Error, Nvfp4Metadata, PackedNvfp4, QUANT_POLICY_SHA256,
     SCALE_LAYOUT_SM120_K_MAJOR, VALUE_LAYOUT_SM120_ROW_MAJOR, scale_offset,
+};
+pub use rank_manifest::{
+    PRODUCTION_RANK_MANIFEST_SCHEMA, RankManifestError, RankWeightProfile, ValidatedRankManifest,
 };
 pub use safetensors::{
     SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, SafeTensorReader,

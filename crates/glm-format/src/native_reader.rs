@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Exl3Metadata, Exl3Trellis, Nvfp4Metadata, PlainDtype, RankFileError, TensorDescriptor,
+    ValidatedRankManifest,
     container::{
         ALIGNMENT, CODEC_BF16_ROW_MAJOR, CODEC_EXL3_SOURCE, CODEC_FP16_ROW_MAJOR,
         CODEC_FP32_ROW_MAJOR, CODEC_NVFP4_1D, CODEC_NVFP4_2D, DESCRIPTOR_BYTES,
@@ -19,6 +20,7 @@ use crate::{
         PAYLOAD_ALIGNMENT, align_up, derive_header_flags, validate_plain_geometry,
     },
     crc32c, decode_e4m3,
+    rank_manifest::{RankManifestContext, RankManifestError, validate_rank_manifest},
 };
 
 const STREAM_BUFFER_BYTES: usize = 8 * 1024 * 1024;
@@ -104,6 +106,7 @@ pub struct NativeRankReader {
     pub payload_sha256: [u8; 32],
     pub descriptors: Vec<TensorDescriptor>,
     names: Vec<String>,
+    validated_manifest: Option<ValidatedRankManifest>,
     metadata: Arc<[u8]>,
     metadata_region: FileRegion,
     payload_region: FileRegion,
@@ -217,8 +220,6 @@ impl NativeRankReader {
         {
             return Err(RankFileError::StrongHash.into());
         }
-        validate_canonical_manifest(&manifest_bytes)?;
-
         let mut descriptors = Vec::with_capacity(tensor_count);
         let mut names = Vec::with_capacity(tensor_count);
         let mut name_cursor = 0_usize;
@@ -269,6 +270,25 @@ impl NativeRankReader {
         if derive_header_flags(&descriptors)? != header_flags {
             return Err(RankFileError::HeaderFlags.into());
         }
+        let model_config_sha256 = array32(&header[120..152]);
+        let tokenizer_bundle_sha256 = array32(&header[152..184]);
+        let chat_template_sha256 = array32(&header[184..216]);
+        let weight_policy_sha256 = array32(&header[216..248]);
+        let kernel_abi_sha256 = array32(&header[248..280]);
+        let validated_manifest = validate_rank_manifest(
+            &manifest_bytes,
+            RankManifestContext {
+                rank,
+                descriptors: &descriptors,
+                names: &names,
+                model_config_sha256,
+                tokenizer_bundle_sha256,
+                chat_template_sha256,
+                weight_policy_sha256,
+                kernel_abi_sha256,
+                payload_sha256,
+            },
+        )?;
 
         let file_uuid = array16(&header[376..392]);
         let conversion_uuid = array16(&header[392..408]);
@@ -291,16 +311,17 @@ impl NativeRankReader {
             conversion_uuid,
             file_uuid,
             header_flags,
-            model_config_sha256: array32(&header[120..152]),
-            tokenizer_bundle_sha256: array32(&header[152..184]),
-            chat_template_sha256: array32(&header[184..216]),
-            weight_policy_sha256: array32(&header[216..248]),
-            kernel_abi_sha256: array32(&header[248..280]),
+            model_config_sha256,
+            tokenizer_bundle_sha256,
+            chat_template_sha256,
+            weight_policy_sha256,
+            kernel_abi_sha256,
             manifest_sha256,
             descriptor_sha256,
             payload_sha256,
             descriptors,
             names,
+            validated_manifest,
             metadata: metadata_bytes.into(),
             metadata_region,
             payload_region,
@@ -336,6 +357,11 @@ impl NativeRankReader {
                     ..usize::try_from(end).map_err(|_| RankFileError::Overflow)?,
             )
             .ok_or_else(|| RankFileError::Region.into())
+    }
+
+    #[must_use]
+    pub const fn validated_manifest(&self) -> Option<&ValidatedRankManifest> {
+        self.validated_manifest.as_ref()
     }
 
     /// Verifies the payload and streams it to `sink` in canonical tensor
@@ -495,6 +521,7 @@ impl NativeRankReader {
         let kernel_abi = files[0].kernel_abi_sha256;
         let header_flags = files[0].header_flags;
         let tensor_count = files[0].descriptors.len();
+        let validated_manifest = files[0].validated_manifest.as_ref();
         let mut hasher = Sha256::new();
         hasher.update(b"g5n-conversion-v0\0");
         for (expected_rank, file) in files.into_iter().enumerate() {
@@ -508,6 +535,7 @@ impl NativeRankReader {
                 || file.kernel_abi_sha256 != kernel_abi
                 || file.header_flags != header_flags
                 || file.descriptors.len() != tensor_count
+                || !manifest_consensus(validated_manifest, file.validated_manifest.as_ref())
             {
                 return Err(RankFileError::RankSet.into());
             }
@@ -607,6 +635,7 @@ pub struct RankPayloadProof {
 pub enum NativeRankReaderError {
     Io(io::Error),
     Format(RankFileError),
+    Manifest(RankManifestError),
     UnsafeFile(PathBuf),
     Changed(PathBuf),
     Sink(String),
@@ -617,6 +646,7 @@ impl fmt::Display for NativeRankReaderError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Format(error) => write!(formatter, "native rank format error: {error}"),
+            Self::Manifest(error) => write!(formatter, "native rank manifest error: {error}"),
             Self::UnsafeFile(path) => {
                 write!(
                     formatter,
@@ -653,6 +683,12 @@ impl From<RankFileError> for NativeRankReaderError {
 impl From<crate::Nvfp4Error> for NativeRankReaderError {
     fn from(value: crate::Nvfp4Error) -> Self {
         Self::Format(RankFileError::Nvfp4(value))
+    }
+}
+
+impl From<RankManifestError> for NativeRankReaderError {
+    fn from(value: RankManifestError) -> Self {
+        Self::Manifest(value)
     }
 }
 
@@ -812,6 +848,27 @@ fn descriptor_semantics_match(left: &TensorDescriptor, right: &TensorDescriptor)
         && left.quant_group_elements == right.quant_group_elements
 }
 
+fn manifest_consensus(
+    left: Option<&ValidatedRankManifest>,
+    right: Option<&ValidatedRankManifest>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.profile == right.profile
+                && left.conversion_commit == right.conversion_commit
+                && left.operation_manifest_sha256 == right.operation_manifest_sha256
+                && left.profile_budget_sha256 == right.profile_budget_sha256
+                && left.review_artifact_sha256 == right.review_artifact_sha256
+                && left.format_spec_sha256 == right.format_spec_sha256
+                && left.engine_spec_sha256 == right.engine_spec_sha256
+                && left.tensor_source_payload_bytes == right.tensor_source_payload_bytes
+                && left.source_verified_file_bytes == right.source_verified_file_bytes
+        }
+        _ => false,
+    }
+}
+
 fn codec_semantics_match(
     left_file: &NativeRankReader,
     right_file: &NativeRankReader,
@@ -955,16 +1012,6 @@ fn read_control_region(file: &File, region: FileRegion) -> Result<Vec<u8>, Nativ
     let mut bytes = vec![0_u8; usize::try_from(region.len()).map_err(|_| RankFileError::Overflow)?];
     read_exact_at(file, &mut bytes, region.start)?;
     Ok(bytes)
-}
-
-fn validate_canonical_manifest(bytes: &[u8]) -> Result<(), NativeRankReaderError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| RankFileError::NonCanonicalLayout)?;
-    let canonical = serde_json::to_vec(&value).map_err(|_| RankFileError::NonCanonicalLayout)?;
-    if canonical != bytes {
-        return Err(RankFileError::NonCanonicalLayout.into());
-    }
-    Ok(())
 }
 
 fn verify_zero_gap(file: &File, start: u64, end: u64) -> Result<(), NativeRankReaderError> {
@@ -1305,8 +1352,8 @@ mod tests {
         fs::write(&manifest_path, noncanonical_manifest).unwrap();
         assert!(matches!(
             NativeRankReader::open(&manifest_path),
-            Err(NativeRankReaderError::Format(
-                RankFileError::NonCanonicalLayout
+            Err(NativeRankReaderError::Manifest(
+                RankManifestError::NonCanonical
             ))
         ));
 

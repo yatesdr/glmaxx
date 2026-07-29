@@ -26,11 +26,12 @@ use glm_engine::{
 };
 use glm_format::{
     CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
-    Exl3Trellis, KERNEL_ABI, NativeRankReader, PINNED_EXL3_REPOSITORY,
+    Exl3Trellis, KERNEL_ABI, NativeRankReader, PINNED_EXL3_REPOSITORY, PINNED_RANK_TENSOR_COUNT,
     PINNED_SOURCE_MANIFEST_SHA256, PackedNvfp4, PinnedRankPlan, PinnedSourceVerification, RankFile,
-    RankFileBuilder, RankPayloadProof, SafeTensorFile, ShardedSafetensors, StreamingRankConfig,
-    StreamingRankSet, StreamingRankSummary, TensorPayload, TensorRecord, pinned_exl3_rank_plan,
-    pinned_exl3_weight_policy_sha256, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
+    RankFileBuilder, RankPayloadProof, RankWeightProfile, SafeTensorFile, ShardedSafetensors,
+    StreamingRankConfig, StreamingRankSet, StreamingRankSummary, TensorPayload, TensorRecord,
+    pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256, validate_pinned_exl3_checkpoint,
+    verify_pinned_source_files,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -467,6 +468,7 @@ struct NativeRankEvidence {
     tensor_count: usize,
     payload_bytes: u64,
     payload_sha256: String,
+    tensor_contract_sha256: String,
     stream_chunks: u64,
     maximum_reader_scratch_bytes: usize,
 }
@@ -480,6 +482,9 @@ struct NativeRankSetProof {
     chat_template_sha256: String,
     weight_policy_sha256: String,
     kernel_abi_sha256: String,
+    operation_manifest_sha256: String,
+    profile: RankWeightProfile,
+    profile_budget_sha256: String,
     ranks: Vec<NativeRankEvidence>,
     verdict: &'static str,
 }
@@ -516,6 +521,30 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
         .try_into()
         .map_err(|_| "native rank-set reader count was not four")?;
     NativeRankReader::validate_rank_set([&readers[0], &readers[1], &readers[2], &readers[3]])?;
+    let manifests = readers
+        .iter()
+        .map(|reader| {
+            reader
+                .validated_manifest()
+                .ok_or("native rank file does not contain the production rank manifest schema")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let operation_manifest_sha256 = sha256(&operation_manifest_json()?);
+    if manifests[0].operation_manifest_sha256 != operation_manifest_sha256 {
+        return Err(format!(
+            "native rank-set operation manifest does not match this binary: file={}, binary={}",
+            hex(&manifests[0].operation_manifest_sha256),
+            hex(&operation_manifest_sha256)
+        )
+        .into());
+    }
+    if readers[0].tensor_count() != PINNED_RANK_TENSOR_COUNT {
+        return Err(format!(
+            "capacity-exl3 rank-set tensor count is {}, expected {PINNED_RANK_TENSOR_COUNT}",
+            readers[0].tensor_count()
+        )
+        .into());
+    }
     let compiled_kernel_abi_sha256 = sha256(KERNEL_ABI.as_bytes());
     if readers[0].kernel_abi_sha256 != compiled_kernel_abi_sha256 {
         return Err(format!(
@@ -550,6 +579,10 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
             tensor_count: proof.tensor_count,
             payload_bytes: proof.payload_bytes,
             payload_sha256: hex(&proof.payload_sha256),
+            tensor_contract_sha256: hex(&reader
+                .validated_manifest()
+                .unwrap()
+                .tensor_contract_sha256),
             stream_chunks: proof.stream_chunks,
             maximum_reader_scratch_bytes: proof.maximum_reader_scratch_bytes,
         })
@@ -562,6 +595,9 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
         chat_template_sha256: hex(&readers[0].chat_template_sha256),
         weight_policy_sha256: hex(&readers[0].weight_policy_sha256),
         kernel_abi_sha256: hex(&readers[0].kernel_abi_sha256),
+        operation_manifest_sha256: hex(&manifests[0].operation_manifest_sha256),
+        profile: manifests[0].profile,
+        profile_budget_sha256: hex(&manifests[0].profile_budget_sha256),
         ranks,
         verdict: "NATIVE_RANK_SET_PASS",
     })
