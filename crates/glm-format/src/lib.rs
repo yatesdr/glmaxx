@@ -5,6 +5,7 @@ mod container;
 mod crc32c;
 mod exl3;
 mod float;
+mod native_reader;
 mod nvfp4;
 mod safetensors;
 mod stream;
@@ -31,6 +32,9 @@ pub use exl3::{
     f32_to_f16_bits,
 };
 pub use float::{decode_e2m1, decode_e4m3, encode_e2m1, encode_e4m3};
+pub use native_reader::{
+    NativeRankReader, NativeRankReaderError, NullRankTensorSink, RankPayloadProof, RankTensorSink,
+};
 pub use nvfp4::{
     Codec, LAYOUT_SOURCE_SHA256, Nvfp4Error, Nvfp4Metadata, PackedNvfp4, QUANT_POLICY_SHA256,
     SCALE_LAYOUT_SM120_K_MAJOR, VALUE_LAYOUT_SM120_ROW_MAJOR, scale_offset,

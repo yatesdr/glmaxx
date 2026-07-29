@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::thread;
 
 use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
@@ -25,11 +26,11 @@ use glm_engine::{
 };
 use glm_format::{
     CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
-    Exl3Trellis, KERNEL_ABI, PINNED_EXL3_REPOSITORY, PINNED_SOURCE_MANIFEST_SHA256, PackedNvfp4,
-    PinnedRankPlan, PinnedSourceVerification, RankFile, RankFileBuilder, SafeTensorFile,
-    ShardedSafetensors, StreamingRankConfig, StreamingRankSet, StreamingRankSummary, TensorPayload,
-    TensorRecord, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
-    validate_pinned_exl3_checkpoint, verify_pinned_source_files,
+    Exl3Trellis, KERNEL_ABI, NativeRankReader, PINNED_EXL3_REPOSITORY,
+    PINNED_SOURCE_MANIFEST_SHA256, PackedNvfp4, PinnedRankPlan, PinnedSourceVerification, RankFile,
+    RankFileBuilder, RankPayloadProof, SafeTensorFile, ShardedSafetensors, StreamingRankConfig,
+    StreamingRankSet, StreamingRankSummary, TensorPayload, TensorRecord, pinned_exl3_rank_plan,
+    pinned_exl3_weight_policy_sha256, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -174,6 +175,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("checkpoint-source-proof requires the pinned safetensors index")?;
             checkpoint_source_proof(Path::new(path))?;
         }
+        Some("native-rank-proof") => {
+            if arguments.len() > 4 {
+                return Err(
+                    "native-rank-proof accepts a rank-set directory and optional output path"
+                        .into(),
+                );
+            }
+            let directory = arguments
+                .get(2)
+                .ok_or("native-rank-proof requires the native rank-set directory")?;
+            let proof = native_rank_proof(Path::new(directory))?;
+            let mut json = serde_json::to_vec_pretty(&proof)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(3) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("convert-pinned-exl3") => {
             let index = arguments
                 .get(2)
@@ -304,7 +325,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -437,6 +458,113 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
     };
     println!("{}", serde_json::to_string_pretty(&proof)?);
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRankEvidence {
+    rank: u32,
+    file_uuid: String,
+    tensor_count: usize,
+    payload_bytes: u64,
+    payload_sha256: String,
+    stream_chunks: u64,
+    maximum_reader_scratch_bytes: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeRankSetProof {
+    schema: &'static str,
+    conversion_uuid: String,
+    model_config_sha256: String,
+    tokenizer_bundle_sha256: String,
+    chat_template_sha256: String,
+    weight_policy_sha256: String,
+    kernel_abi_sha256: String,
+    ranks: Vec<NativeRankEvidence>,
+    verdict: &'static str,
+}
+
+fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std::error::Error>> {
+    let metadata = directory.symlink_metadata()?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err("native-rank-proof requires a real rank-set directory".into());
+    }
+    let expected_names: BTreeSet<String> = (0..4).map(|rank| format!("rank-{rank}.g5n")).collect();
+    let mut actual_names = BTreeSet::new();
+    for entry in directory.read_dir()? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "native rank-set directory contains a non-UTF-8 entry")?;
+        actual_names.insert(name);
+    }
+    if actual_names != expected_names {
+        return Err(format!(
+            "native rank-set directory must contain exactly rank-0.g5n through rank-3.g5n; found {actual_names:?}"
+        )
+        .into());
+    }
+
+    let paths: [PathBuf; 4] =
+        std::array::from_fn(|rank| directory.join(format!("rank-{rank}.g5n")));
+    let readers: Vec<NativeRankReader> = paths
+        .iter()
+        .map(NativeRankReader::open)
+        .collect::<Result<_, _>>()?;
+    let readers: [NativeRankReader; 4] = readers
+        .try_into()
+        .map_err(|_| "native rank-set reader count was not four")?;
+    NativeRankReader::validate_rank_set([&readers[0], &readers[1], &readers[2], &readers[3]])?;
+    let compiled_kernel_abi_sha256 = sha256(KERNEL_ABI.as_bytes());
+    if readers[0].kernel_abi_sha256 != compiled_kernel_abi_sha256 {
+        return Err(format!(
+            "native rank-set kernel ABI does not match this binary: file={}, binary={}",
+            hex(&readers[0].kernel_abi_sha256),
+            hex(&compiled_kernel_abi_sha256)
+        )
+        .into());
+    }
+
+    let payload_proofs: Vec<RankPayloadProof> = thread::scope(|scope| {
+        let handles: Vec<_> = readers
+            .iter()
+            .map(|reader| scope.spawn(|| reader.verify()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| "native rank verifier thread panicked".to_owned())?
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+    let ranks = payload_proofs
+        .iter()
+        .zip(&readers)
+        .map(|(proof, reader)| NativeRankEvidence {
+            rank: proof.rank,
+            file_uuid: hex(&reader.file_uuid),
+            tensor_count: proof.tensor_count,
+            payload_bytes: proof.payload_bytes,
+            payload_sha256: hex(&proof.payload_sha256),
+            stream_chunks: proof.stream_chunks,
+            maximum_reader_scratch_bytes: proof.maximum_reader_scratch_bytes,
+        })
+        .collect();
+    Ok(NativeRankSetProof {
+        schema: "glmaxx.native-rank-set-proof.v1",
+        conversion_uuid: hex(&readers[0].conversion_uuid),
+        model_config_sha256: hex(&readers[0].model_config_sha256),
+        tokenizer_bundle_sha256: hex(&readers[0].tokenizer_bundle_sha256),
+        chat_template_sha256: hex(&readers[0].chat_template_sha256),
+        weight_policy_sha256: hex(&readers[0].weight_policy_sha256),
+        kernel_abi_sha256: hex(&readers[0].kernel_abi_sha256),
+        ranks,
+        verdict: "NATIVE_RANK_SET_PASS",
+    })
 }
 
 fn convert_pinned_exl3(

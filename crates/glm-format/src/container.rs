@@ -498,6 +498,7 @@ impl RankFile {
             || get_u32(header, 16) != 0x0102_0304
             || header_flags & !0b1_1111 != 0
             || get_u32(header, 28) != 4
+            || header[36..40].iter().any(|&value| value != 0)
             || get_u64(header, 408) != 0
             || header[484..].iter().any(|&value| value != 0)
         {
@@ -526,6 +527,11 @@ impl RankFile {
         let payload = checked_range(header, 104, 112, bytes.len(), ALIGNMENT)?;
         if descriptor.len() != tensor_count * DESCRIPTOR_BYTES
             || manifest.start != ALIGNMENT
+            || descriptor.start != align_up(manifest.end, ALIGNMENT)?
+            || strings.start != align_up(descriptor.end, ALIGNMENT)?
+            || metadata.start != align_up(strings.end, ALIGNMENT)?
+            || payload.start != align_up(metadata.end, ALIGNMENT)?
+            || payload.end != bytes.len()
             || !ordered_non_overlapping([
                 0..HEADER_BYTES,
                 manifest.clone(),
@@ -1548,6 +1554,29 @@ mod tests {
         assert!(matches!(
             RankFile::read(bytes),
             Err(RankFileError::StrongHash)
+        ));
+    }
+
+    #[test]
+    fn reserved_header_bytes_and_trailing_file_bytes_are_rejected() {
+        let builders = [builder(0), builder(1), builder(2), builder(3)];
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+
+        let mut reserved = builders[0].build(conversion).unwrap();
+        reserved[36] = 1;
+        put_u32(&mut reserved, 416, 0);
+        let crc = crc32c(&reserved[..HEADER_BYTES]);
+        put_u32(&mut reserved, 416, crc);
+        assert!(matches!(
+            RankFile::read(reserved),
+            Err(RankFileError::Header)
+        ));
+
+        let mut trailing = builders[0].build(conversion).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            RankFile::read(trailing),
+            Err(RankFileError::Region)
         ));
     }
 }
