@@ -447,25 +447,53 @@ impl Scheduler {
     }
 
     fn build_prefill_batch(&mut self) -> Result<ScheduledBatch, SchedulerError> {
-        let mut eligible = self.ordered_requests(RequestState::WaitingPrefill, None);
-        eligible.truncate(usize::from(self.config.maximum_batch_sequences));
-        let mut rows = Vec::new();
-        let mut available = self.config.maximum_prefill_tokens;
-        for request_id in eligible {
-            if available == 0 {
-                break;
+        let eligible = self.ordered_requests(RequestState::WaitingPrefill, None);
+        let mut best: Option<(u32, Vec<BatchRow>)> = None;
+        for entry in self
+            .profile
+            .entries
+            .iter()
+            .filter(|entry| entry.key.mode == StepMode::Prefill)
+        {
+            let maximum_sequences = usize::from(
+                self.config
+                    .maximum_batch_sequences
+                    .min(entry.maximum_active_sequences),
+            );
+            let mut available = self
+                .config
+                .maximum_prefill_tokens
+                .min(entry.maximum_prompt_tokens)
+                .min(entry.maximum_query_rows);
+            let mut rows = Vec::new();
+            for &request_id in eligible.iter().take(maximum_sequences) {
+                if available == 0 {
+                    break;
+                }
+                let request = &self.requests[&request_id];
+                let remaining = request.spec.prompt_tokens - request.prompt_done;
+                let tokens = remaining.min(available);
+                if tokens != 0 {
+                    rows.push(BatchRow {
+                        request_id,
+                        prompt_tokens: tokens,
+                    });
+                    available -= tokens;
+                }
             }
-            let request = &self.requests[&request_id];
-            let remaining = request.spec.prompt_tokens - request.prompt_done;
-            let tokens = remaining.min(available);
-            if tokens != 0 {
-                rows.push(BatchRow {
-                    request_id,
-                    prompt_tokens: tokens,
-                });
-                available -= tokens;
+            let query_rows = rows.iter().try_fold(0_u32, |sum, row| {
+                sum.checked_add(row.prompt_tokens)
+                    .ok_or(SchedulerError::Overflow)
+            })?;
+            if query_rows != 0
+                && best.as_ref().is_none_or(|(best_query_rows, best_rows)| {
+                    (query_rows, rows.len()) > (*best_query_rows, best_rows.len())
+                })
+            {
+                best = Some((query_rows, rows));
             }
         }
+        let (_, rows) = best.ok_or(SchedulerError::UncapturedShape)?;
         self.finalize_batch(BatchKind::Prefill, SamplingCollective::Greedy, rows)
     }
 
@@ -933,6 +961,104 @@ mod tests {
                 generated: 0,
                 mtp_depth: 0,
             }
+        );
+    }
+
+    #[test]
+    fn prefill_chunks_to_a_captured_shape_when_config_is_wider() {
+        let profile = GraphProfile::new(vec![
+            entry(1, StepMode::Prefill, 4, 32, 0),
+            entry(2, StepMode::Decode, 4, 4, 0),
+        ])
+        .unwrap();
+        let mut scheduler = Scheduler::new(
+            SchedulerConfig {
+                maximum_batch_sequences: 4,
+                maximum_prefill_tokens: 64,
+                maximum_decode_burst: 2,
+            },
+            profile,
+            vec![TenantConfig {
+                tenant: 1,
+                weight: 1,
+                maximum_active_requests: 1,
+            }],
+        )
+        .unwrap();
+        scheduler
+            .admit(RequestSpec {
+                id: 1,
+                tenant: 1,
+                prompt_tokens: 65,
+                maximum_new_tokens: 1,
+                mtp_depth: 0,
+                sampling: SamplingCollective::Greedy,
+            })
+            .unwrap();
+
+        for expected_rows in [32, 32, 1] {
+            let batch = scheduler.next_batch().unwrap().unwrap();
+            assert_eq!(batch.kind, BatchKind::Prefill);
+            assert_eq!(batch.query_rows, expected_rows);
+            assert_eq!(batch.rows[0].prompt_tokens, expected_rows);
+            scheduler.complete_batch(true).unwrap();
+        }
+        assert_eq!(
+            scheduler.request_progress(1).unwrap().state,
+            RequestState::Decoding
+        );
+    }
+
+    #[test]
+    fn prefill_selects_the_highest_work_fitting_graph_across_shape_tradeoffs() {
+        let profile = GraphProfile::new(vec![
+            entry(1, StepMode::Prefill, 1, 64, 0),
+            entry(2, StepMode::Prefill, 4, 32, 0),
+            entry(3, StepMode::Decode, 4, 4, 0),
+        ])
+        .unwrap();
+        let mut scheduler = Scheduler::new(
+            SchedulerConfig {
+                maximum_batch_sequences: 4,
+                maximum_prefill_tokens: 64,
+                maximum_decode_burst: 2,
+            },
+            profile,
+            vec![TenantConfig {
+                tenant: 1,
+                weight: 1,
+                maximum_active_requests: 2,
+            }],
+        )
+        .unwrap();
+        for (id, prompt_tokens) in [(1, 1), (2, 65)] {
+            scheduler
+                .admit(RequestSpec {
+                    id,
+                    tenant: 1,
+                    prompt_tokens,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                })
+                .unwrap();
+        }
+
+        let batch = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(batch.graph_id, 2);
+        assert_eq!(batch.query_rows, 32);
+        assert_eq!(
+            batch.rows,
+            [
+                BatchRow {
+                    request_id: 1,
+                    prompt_tokens: 1,
+                },
+                BatchRow {
+                    request_id: 2,
+                    prompt_tokens: 31,
+                },
+            ]
         );
     }
 
