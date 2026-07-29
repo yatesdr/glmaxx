@@ -23,7 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace {
+namespace glmaxx::dense_control {
 
 using namespace cute;
 
@@ -188,13 +188,14 @@ int32_t enqueue_dense_control(const glmaxx_fc1_descriptor& descriptor,
   return static_cast<int32_t>(cudaPeekAtLastError());
 }
 
-}  // namespace
+}  // namespace glmaxx::dense_control
 
 extern "C" int32_t glmaxx_nvfp4_dense_control_launch(
     const glmaxx_fc1_descriptor* descriptor, uint32_t expert,
     void* cuda_stream, int32_t* asynchronous_error) {
   if (descriptor == nullptr || cuda_stream == nullptr ||
-      asynchronous_error == nullptr || expert >= kExperts) {
+      asynchronous_error == nullptr ||
+      expert >= glmaxx::dense_control::kExperts) {
     return -1;
   }
   *asynchronous_error = 0;
@@ -203,6 +204,6 @@ extern "C" int32_t glmaxx_nvfp4_dense_control_launch(
   if (quantize_status != 0) {
     return quantize_status;
   }
-  return enqueue_dense_control(
+  return glmaxx::dense_control::enqueue_dense_control(
       *descriptor, expert, reinterpret_cast<cudaStream_t>(cuda_stream));
 }
