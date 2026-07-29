@@ -367,16 +367,23 @@ impl SequencePageTable {
     }
 
     pub fn remove_sequence(&mut self, sequence_id: u64) -> Result<(), SequencePageError> {
-        let sequence = self
-            .sequences
-            .remove(&sequence_id)
-            .ok_or(SequencePageError::Sequence)?;
-        if sequence.tentative.is_some() {
-            self.sequences.insert(sequence_id, sequence);
-            return Err(SequencePageError::Transaction);
-        }
-        for page in sequence.pages.into_iter().rev() {
-            self.release_page(page.physical)?;
+        let snapshot = self.clone();
+        let result = (|| {
+            let sequence = self
+                .sequences
+                .remove(&sequence_id)
+                .ok_or(SequencePageError::Sequence)?;
+            if sequence.tentative.is_some() {
+                return Err(SequencePageError::Transaction);
+            }
+            for page in sequence.pages.into_iter().rev() {
+                self.release_page(page.physical)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            *self = snapshot;
+            return Err(error);
         }
         Ok(())
     }
@@ -818,6 +825,46 @@ mod tests {
         let stats = table.stats().unwrap();
         assert_eq!(stats.maximum_target_only_sequence_tokens, 256);
         assert_eq!(stats.maximum_mtp_sequence_tokens, 0);
+    }
+
+    #[test]
+    fn failed_sequence_removal_restores_every_page_and_is_retryable() {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 2,
+            draft_pages_per_rank: 0,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, false, &[]).unwrap();
+        table.append_committed(1, 65).unwrap();
+        let pages = table.sequences[&1].pages.clone();
+        let first = pages[0].physical;
+        let second = pages[1].physical;
+        let missing = table.physical.remove(&first).unwrap();
+        assert!(
+            !table.free_target[usize::from(second.owner_rank)]
+                .contains(&second.target_local_page_id)
+        );
+
+        assert_eq!(table.remove_sequence(1), Err(SequencePageError::Invariant));
+        assert_eq!(table.sequences[&1].pages.len(), 2);
+        assert_eq!(table.physical[&second].references, 1);
+        assert!(
+            !table.free_target[usize::from(second.owner_rank)]
+                .contains(&second.target_local_page_id)
+        );
+
+        assert!(table.physical.insert(first, missing).is_none());
+        table.remove_sequence(1).unwrap();
+        assert!(!table.sequences.contains_key(&1));
+        assert!(!table.physical.contains_key(&first));
+        assert!(!table.physical.contains_key(&second));
+        assert!(
+            table.free_target[usize::from(first.owner_rank)].contains(&first.target_local_page_id)
+        );
+        assert!(
+            table.free_target[usize::from(second.owner_rank)]
+                .contains(&second.target_local_page_id)
+        );
     }
 
     #[test]
