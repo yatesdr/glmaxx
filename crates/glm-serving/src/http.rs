@@ -218,7 +218,10 @@ impl ChatCompletionRequest {
             ));
         }
         let temperature = self.temperature.unwrap_or(1.0);
-        if !temperature.is_finite() || !(0.0..=2.0).contains(&temperature) {
+        if !temperature.is_finite()
+            || !(0.0..=2.0).contains(&temperature)
+            || (temperature == 0.0 && temperature.is_sign_negative())
+        {
             return Err(ApiRequestError::new(
                 400,
                 "INVALID_TEMPERATURE",
@@ -1222,6 +1225,13 @@ mod tests {
         let greedy = greedy.validate().unwrap();
         assert_eq!(greedy.sampling.collective(), SamplingCollective::Greedy);
         assert_eq!(greedy.mtp_depth, 6);
+
+        let negative_zero: ChatCompletionRequest =
+            serde_json::from_str(&chat_json(false, r#","temperature":-0.0"#)).unwrap();
+        assert_eq!(
+            negative_zero.validate().unwrap_err().body.error.code,
+            "INVALID_TEMPERATURE"
+        );
 
         let tool_request: ChatCompletionRequest = serde_json::from_str(
             r#"{

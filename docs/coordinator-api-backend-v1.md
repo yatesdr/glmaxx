@@ -40,8 +40,9 @@ top_k       = omitted
 Every probabilistic request returns `SAMPLING_ABI_NOT_PROMOTED` before it
 enters the scheduler. `StepInput.v1` defines the exact sampling and RNG fields,
 but that candidate has not passed adversarial review or been implemented by
-rank execution. Silently accepting the API values now would change output
-quality.
+rank execution. Negative-zero temperature is rejected rather than treated as
+canonical greedy zero. Silently accepting unsupported API values now would
+change output quality.
 
 Prompt tokens plus requested output must fit 1,048,576 positions. Request IDs,
 token counts, positions, and usage use checked arithmetic. A missing or
