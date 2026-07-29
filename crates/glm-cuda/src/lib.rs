@@ -17,6 +17,6 @@ mod ffi;
 
 #[cfg(feature = "cuda-ffi")]
 pub use ffi::{
-    Fc1Timing, GraphReplay, NativeFc1Fixture, NativeKernelDriver, run_single_expert,
-    validate_native_abi,
+    Fc1BenchmarkConfig, Fc1Timing, GraphReplay, NativeFc1Fixture, NativeKernelDriver,
+    run_single_expert, validate_native_abi,
 };

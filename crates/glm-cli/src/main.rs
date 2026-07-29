@@ -987,8 +987,10 @@ fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
             &route_experts,
             &route_tokens,
             &route_slots,
-            WARMUP,
-            ITERATIONS,
+            glm_cuda::Fc1BenchmarkConfig {
+                warmup_iterations: WARMUP,
+                measured_iterations: ITERATIONS,
+            },
         )?;
         let output = device.run(
             &activation_bf16,

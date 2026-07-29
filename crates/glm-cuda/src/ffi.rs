@@ -294,6 +294,12 @@ pub struct Fc1Timing {
     pub host_enqueue_us: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fc1BenchmarkConfig {
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+}
+
 pub struct NativeFc1Fixture {
     stream: NativeStream,
     weight_values: NativeBuffer,
@@ -464,13 +470,12 @@ impl NativeFc1Fixture {
         route_experts: &[u16],
         route_tokens: &[u32],
         route_slots: &[u8],
-        warmup_iterations: u32,
-        measured_iterations: u32,
+        config: Fc1BenchmarkConfig,
     ) -> Result<Fc1Timing, KernelError> {
-        if warmup_iterations == 0
-            || warmup_iterations > 100
-            || measured_iterations == 0
-            || measured_iterations > 10_000
+        if config.warmup_iterations == 0
+            || config.warmup_iterations > 100
+            || config.measured_iterations == 0
+            || config.measured_iterations > 10_000
         {
             return Err(KernelError::Shape);
         }
@@ -485,13 +490,13 @@ impl NativeFc1Fixture {
             &expert_offsets,
         )?;
 
-        for _ in 0..warmup_iterations {
+        for _ in 0..config.warmup_iterations {
             launch_native_fc1(&execution.descriptor, self.stream.0)?;
         }
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
         let activation_quantization_us =
-            time_cuda_launches(self.stream.0, measured_iterations, || {
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 // SAFETY: the descriptor and all referenced allocations are
                 // live for the complete benchmark.
                 check(unsafe {
@@ -501,7 +506,7 @@ impl NativeFc1Fixture {
                     )
                 })
             })?;
-        let core_swiglu_us = time_cuda_launches(self.stream.0, measured_iterations, || {
+        let core_swiglu_us = time_cuda_launches(self.stream.0, config.measured_iterations, || {
             // SAFETY: quantization above populated the activation buffers and
             // the descriptor remains live.
             check(unsafe {
@@ -511,9 +516,10 @@ impl NativeFc1Fixture {
                 )
             })
         })?;
-        let inclusive_operator_us = time_cuda_launches(self.stream.0, measured_iterations, || {
-            launch_native_fc1(&execution.descriptor, self.stream.0)
-        })?;
+        let inclusive_operator_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                launch_native_fc1(&execution.descriptor, self.stream.0)
+            })?;
 
         let mut graph_exec = 0_u64;
         // SAFETY: the fixed descriptor and buffers remain live for all graph
@@ -529,22 +535,23 @@ impl NativeFc1Fixture {
             return Err(KernelError::Driver(-1));
         }
         let graph = NativeGraph(graph_exec);
-        let graph_inclusive_us = time_cuda_launches(self.stream.0, measured_iterations, || {
-            // SAFETY: graph and stream are caller-owned and live.
-            check(unsafe { glmaxx_graph_exec_launch(graph.0, self.stream.0) })
-        })?;
+        let graph_inclusive_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                // SAFETY: graph and stream are caller-owned and live.
+                check(unsafe { glmaxx_graph_exec_launch(graph.0, self.stream.0) })
+            })?;
 
         let enqueue_start = Instant::now();
-        for _ in 0..measured_iterations {
+        for _ in 0..config.measured_iterations {
             launch_native_fc1(&execution.descriptor, self.stream.0)?;
         }
-        let host_enqueue_us =
-            enqueue_start.elapsed().as_secs_f64() * 1_000_000.0 / f64::from(measured_iterations);
+        let host_enqueue_us = enqueue_start.elapsed().as_secs_f64() * 1_000_000.0
+            / f64::from(config.measured_iterations);
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
         Ok(Fc1Timing {
-            warmup_iterations,
-            measured_iterations,
+            warmup_iterations: config.warmup_iterations,
+            measured_iterations: config.measured_iterations,
             activation_quantization_us,
             core_swiglu_us,
             inclusive_operator_us,

@@ -20,9 +20,10 @@ physical/cache ABI amendment. Separate operator authorization is also
 required. The kernel is not yet qualified as functional on SM120, and it is
 not a performance candidate yet. The authorized cn4 preparation pass compiled
 native `sm_120f` cubins with pinned CUDA 13.3 and CUTLASS 4.6.1, proved the
-CUTLASS layout, linked the Rust/native ABI, and ran all 115 Rust tests without
-creating a CUDA context. There is still no device launch, counter, or timing
-evidence. The compact result is recorded in
+CUTLASS layout, linked the Rust/native ABI, and ran all 117 Rust tests without
+creating a CUDA context. The compile-only dense control contains 64 native
+SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions. There is still no device
+launch, counter, or timing evidence. The compact result is recorded in
 `docs/cn4-preparation-result-20260729.md`.
 
 The first cn4 session must establish correctness before replacing the

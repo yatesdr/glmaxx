@@ -102,3 +102,55 @@ without a scale transform.
 | `verdict.txt` | `3d0e151f9f146ce7d391c425b23ca95d945d4ca0619cb2a59b95fcd42be9dc3b` |
 | `libglmaxx_sm120.so` | `2c6306953bbf52e050f33722018dbaefe7f844096ae2cac1c9dd73f3c900d87a` |
 | `glmaxx_cutlass_activation_layout_probe` | `eb9d5e7ecc68e00d32fc9a9b309405e8e1f6812fa9adff18deea67173bff5dd7` |
+
+## Compile-only SM120 tensor-core control
+
+Commit `0aa490d2af326c57f43cb39c5376837cee50a13a` added the pinned
+CUTLASS 79a dense NVFP4 control to the no-launch build. The successful fresh
+preparation record is:
+
+```text
+/home/derek/glmaxx/evidence/prepare-20260729T064629Z
+```
+
+The result remained `PREPARED_NO_DEVICE_LAUNCH`. All 117 Rust tests passed,
+as did the 393,216 SFB and 42,564,864 SFA comparisons. CUDA 13.3 compiled and
+linked a native `sm_120f` CUTLASS kernel. Its resource record reports 168
+registers and 1,024 shared bytes. The retained SASS contains exactly 64
+native:
+
+```text
+OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X
+```
+
+instructions. This proves that the pinned source/toolchain combination emits
+SM120 block-scaled E2M1 tensor-core instructions with UE4M3 scales. It does
+not prove device execution or numerical agreement; the executable was not
+run.
+
+The preceding immutable attempt at commit
+`b9ede575f952805773936931fc5f3cccc8bd723e` is retained at
+`/home/derek/glmaxx/evidence/prepare-20260729T064429Z`. It stopped at compile
+time because the example's `helper.h` include path was absent. No verdict file
+was written and no CUDA kernel was launched. Commit `0aa490d` added only the
+missing pinned CUTLASS `examples/common` include path before the fresh run.
+
+| Successful record or artifact | SHA-256 |
+|---|---|
+| `source-commit.txt` | `a211777edb3a1103d4c3903438a7ace7ff7d39bcaacf70db58ef286a231ff79d` |
+| `input-sha256.txt` | `9581c12bfb8c2e313273555e13756e4ea80cc6c8581c68b2b5c51dc0369e3093` |
+| `cargo-test.txt` | `769a8115e956b0abfafb68b934bd7632b570a072e5b19cac3077dda591f445b5` |
+| `cmake-build.txt` | `b133851dd0fc345b1bf00fbc7563df846906983c6fedd8f8d716e0f08abd0390` |
+| `cutlass-dense-control-elf.txt` | `090d2e1a6a4035b2c8604b1252843fc826ca425446be335ddd734f9a50b6da5f` |
+| `cutlass-dense-control-resources.txt` | `61e4fe21072e00d0f1da024ff9429a028833a417eb504f9f1682e0458ee61d2c` |
+| `cutlass-dense-control-sass.txt` | `9b8c94845a48306b93dd4c29fc9f70ebe10f3c96e6aaa8f8da35c827fa2447b5` |
+| `build-artifact-sha256.txt` | `021199bd6cbf4134c610f8ccadec0092e948e61b08920a26a3d7326d4bb86988` |
+| `verdict.txt` | `46e37de26271cb0be15f5ace05d17611b678ec6f05e17543e60ce6f85f8686d4` |
+| `libglmaxx_sm120.so` | `c84d0f38b72655d311b41fcbe33979b0fdb1663fc8cd412413f89282dd5d06b2` |
+| `glmaxx_cutlass_nvfp4_dense_control` | `77f27b1dc3c2a762f28155fbfda59a29fa2ae5e1020ada0b890b71d0a32a2855` |
+| release `glmaxx` | `daaf2d07f17a2a9fff41c0c418426ed01f879181f82d40cda62d72bf858aec68` |
+
+| Failed-attempt record | SHA-256 |
+|---|---|
+| `source-commit.txt` | `155330fdcc509fc09cef54b102f798c824430843d6419fda4de0c62993077bf2` |
+| `cmake-build.txt` | `3c7188c37d6062bc4201d5fcf3e8cf4c7acc252f2635f43f6dc022c3ffdcafe4` |
