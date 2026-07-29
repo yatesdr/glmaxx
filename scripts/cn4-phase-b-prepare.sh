@@ -112,13 +112,17 @@ owned_omma_count="$(
 )"
 printf '%s\n' "${owned_omma_count}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-owned-omma-count.txt"
-if [[ "${owned_omma_count}" != "64" ]]; then
-  echo "GLMAXX-owned dense control did not retain exactly 64 expected SM120 NVFP4 OMMA instructions" >&2
+if [[ "${owned_omma_count}" != "128" ]]; then
+  echo "GLMAXX-owned dense and grouped controls did not retain exactly 128 expected SM120 NVFP4 OMMA instructions" >&2
   exit 70
 fi
 nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
-  | grep 'glmaxx_nvfp4_dense_control_launch' \
-  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-dense-control-symbol.txt"
+  | grep -E 'glmaxx_nvfp4_(dense|grouped)_control_launch' \
+  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-control-symbols.txt"
+if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-control-symbols.txt" | tr -d ' ')" != "2" ]]; then
+  echo "GLMAXX shared library must export exactly the dense and grouped control launchers" >&2
+  exit 70
+fi
 cuobjdump --list-elf "${build_dir}/glmaxx_cutlass_nvfp4_dense_control" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-dense-control-elf.txt"
 cuobjdump --dump-resource-usage \
@@ -150,7 +154,7 @@ fi
 
 printf '%s\n' \
   "PREPARED_NO_DEVICE_LAUNCH" \
-  "The sm_120f library, SFA/SFB probes, unlaunched CUTLASS dense control, and Rust FFI binary are built." \
+  "The sm_120f library, SFA/SFB probes, unlaunched CUTLASS dense/grouped controls, and Rust FFI binary are built." \
   "No CUDA device kernel was launched by this script." \
   "An accepted manifest/v0.2.2 independent review remains mandatory before scripts/cn4-phase-b.sh." \
   | tee "${GLMAXX_EVIDENCE_DIR}/verdict.txt"

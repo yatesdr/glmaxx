@@ -5,8 +5,8 @@ use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 
 use crate::{
     CudaDriver, Fc1Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor,
-    workspace_bytes,
+    active_experts_for_grouped, grouped_sfa_capacity_bytes, grouped_sfa_plan,
+    grouped_workspace_bytes, validate_descriptor, workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -28,6 +28,13 @@ unsafe extern "C" {
     fn glmaxx_nvfp4_dense_control_launch(
         descriptor: *const Fc1Descriptor,
         expert: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
+    fn glmaxx_nvfp4_grouped_control_launch(
+        descriptor: *const Fc1Descriptor,
+        active_experts: *const u16,
+        active_expert_count: u32,
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
@@ -501,6 +508,51 @@ impl NativeFc1Fixture {
             glmaxx_nvfp4_dense_control_launch(
                 std::ptr::from_ref(&execution.descriptor),
                 u32::from(expert),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        if status != 0 {
+            return Err(KernelError::Driver(status));
+        }
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
+    }
+
+    pub fn run_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+    ) -> Result<Vec<u16>, KernelError> {
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let active_experts = active_experts_for_grouped(route_experts, &expert_offsets)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let mut async_error = 0_i32;
+        // SAFETY: validation above proves a non-empty, strictly increasing
+        // active-expert list and expert-major assignment ranges. The native
+        // launcher copies that host list to device on this stream; both the
+        // list and every descriptor allocation remain live until `download`
+        // synchronizes the stream.
+        let status = unsafe {
+            glmaxx_nvfp4_grouped_control_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                active_experts.as_ptr(),
+                active_expert_count,
                 self.stream.0 as *mut c_void,
                 std::ptr::from_mut(&mut async_error),
             )

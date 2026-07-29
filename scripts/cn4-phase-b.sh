@@ -137,13 +137,17 @@ owned_omma_count="$(
 )"
 printf '%s\n' "${owned_omma_count}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-owned-omma-count.txt"
-if [[ "${owned_omma_count}" != "64" ]]; then
-  echo "GLMAXX-owned dense control did not retain exactly 64 expected SM120 NVFP4 OMMA instructions" >&2
+if [[ "${owned_omma_count}" != "128" ]]; then
+  echo "GLMAXX-owned dense and grouped controls did not retain exactly 128 expected SM120 NVFP4 OMMA instructions" >&2
   exit 70
 fi
 nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
-  | grep 'glmaxx_nvfp4_dense_control_launch' \
-  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-dense-control-symbol.txt"
+  | grep -E 'glmaxx_nvfp4_(dense|grouped)_control_launch' \
+  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-control-symbols.txt"
+if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-control-symbols.txt" | tr -d ' ')" != "2" ]]; then
+  echo "GLMAXX shared library must export exactly the dense and grouped control launchers" >&2
+  exit 70
+fi
 
 check_idle
 
@@ -196,6 +200,20 @@ cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
 
 shasum -a 256 "${dense_control_dir}"/*.json \
   | tee "${GLMAXX_EVIDENCE_DIR}/dense-control-correctness-sha256.txt"
+
+grouped_control_dir="${GLMAXX_EVIDENCE_DIR}/grouped-control-correctness"
+if [[ -e "${grouped_control_dir}" ]]; then
+  echo "Grouped-control evidence directory already exists; refusing to overwrite it" >&2
+  exit 65
+fi
+mkdir "${grouped_control_dir}"
+check_idle
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
+  -- gpu-grouped-control "${grouped_control_dir}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-grouped-control-summary.json"
+
+shasum -a 256 "${grouped_control_dir}"/*.json \
+  | tee "${GLMAXX_EVIDENCE_DIR}/grouped-control-correctness-sha256.txt"
 nvidia-smi \
   --query-gpu=index,uuid,clocks.current.sm,clocks.current.memory,power.limit,persistence_mode \
   --format=csv,noheader \
@@ -211,4 +229,4 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 70
 fi
 
-echo "Eager, CUDA-graph, and SM120 CUTLASS dense-control correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures; the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures; and the dense-control summary reports 2 bitwise-deterministic cases over 20 repeats with zero failures."
+echo "Eager, CUDA-graph, and SM120 CUTLASS dense/grouped-control correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures; the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures; the dense-control summary reports 2 bitwise-deterministic cases over 20 repeats with zero failures; and the grouped-control summary reports 14 positive cases, 2 negative route rejections, 2 bitwise-deterministic cases over 20 repeats, and zero failures."

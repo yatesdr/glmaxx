@@ -269,6 +269,37 @@ pub fn grouped_workspace_bytes(assignments: u32) -> Result<u64, KernelError> {
         .ok_or(KernelError::Overflow)
 }
 
+#[cfg(any(feature = "cuda-ffi", test))]
+pub(crate) fn active_experts_for_grouped(
+    route_experts: &[u16],
+    expert_offsets: &[u32; EXPERTS as usize + 1],
+) -> Result<Vec<u16>, KernelError> {
+    if route_experts.is_empty() || expert_offsets[EXPERTS as usize] as usize != route_experts.len()
+    {
+        return Err(KernelError::Shape);
+    }
+    let mut active_experts = Vec::new();
+    for expert in 0_u16..EXPERTS as u16 {
+        let begin = expert_offsets[usize::from(expert)] as usize;
+        let end = expert_offsets[usize::from(expert) + 1] as usize;
+        if begin == end {
+            continue;
+        }
+        if route_experts
+            .get(begin..end)
+            .is_none_or(|routes| routes.iter().any(|&candidate| candidate != expert))
+        {
+            return Err(KernelError::Shape);
+        }
+        active_experts.push(expert);
+    }
+    if active_experts.is_empty() {
+        Err(KernelError::Shape)
+    } else {
+        Ok(active_experts)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelError {
     Abi,
@@ -387,6 +418,31 @@ mod tests {
         assert_eq!(
             grouped_sfa_capacity_bytes(256).unwrap(),
             256 * 128 * SFA_BYTES_PER_PADDED_ROW
+        );
+    }
+
+    #[test]
+    fn grouped_active_experts_require_exact_expert_major_ranges() {
+        let routes = [0_u16, 0, 17, 255, 255];
+        let mut offsets = [0_u32; EXPERTS as usize + 1];
+        offsets[1..=17].fill(2);
+        offsets[18..=255].fill(3);
+        offsets[256] = 5;
+        assert_eq!(
+            active_experts_for_grouped(&routes, &offsets).unwrap(),
+            [0, 17, 255]
+        );
+
+        let mut unsorted = routes;
+        unsorted.swap(1, 2);
+        assert_eq!(
+            active_experts_for_grouped(&unsorted, &offsets),
+            Err(KernelError::Shape)
+        );
+        offsets[256] = 4;
+        assert_eq!(
+            active_experts_for_grouped(&routes, &offsets),
+            Err(KernelError::Shape)
         );
     }
 }
