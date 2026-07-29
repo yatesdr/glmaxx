@@ -406,7 +406,7 @@ cudaError_t enqueue_core(const glmaxx_fc2_descriptor& descriptor,
   const uint32_t ctas_per_sm =
       descriptor.path == GLMAXX_FC1_DECODE_PERSISTENT ? 2 : 8;
   const uint64_t target_blocks =
-      uint64_t{properties.multiProcessorCount} * ctas_per_sm;
+      static_cast<uint64_t>(properties.multiProcessorCount) * ctas_per_sm;
   const uint32_t blocks = static_cast<uint32_t>(
       total_blocks < target_blocks ? total_blocks : target_blocks);
   direct_fc2<<<blocks, kThreads, 0, stream>>>(descriptor);
@@ -418,7 +418,7 @@ cudaError_t enqueue_reduce(const glmaxx_fc2_descriptor& descriptor,
                            cudaStream_t stream) {
   const uint64_t total = uint64_t{descriptor.rows} * kHidden;
   const uint64_t target_blocks =
-      uint64_t{properties.multiProcessorCount} * 8;
+      static_cast<uint64_t>(properties.multiProcessorCount) * 8;
   const uint64_t required_blocks = (total + kThreads - 1) / kThreads;
   const uint32_t blocks = static_cast<uint32_t>(
       required_blocks < target_blocks ? required_blocks : target_blocks);

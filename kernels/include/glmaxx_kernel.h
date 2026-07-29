@@ -152,6 +152,11 @@ int32_t glmaxx_nvfp4_fc2_core_launch(
 int32_t glmaxx_nvfp4_fc2_reduce_launch(
     const struct glmaxx_fc2_descriptor* descriptor,
     void* cuda_stream);
+int32_t glmaxx_nvfp4_fc2_dense_control_launch(
+    const struct glmaxx_fc2_descriptor* descriptor,
+    uint32_t expert,
+    void* cuda_stream,
+    int32_t* asynchronous_error);
 int32_t glmaxx_graph_exec_launch(uint64_t graph_exec, uint64_t stream);
 int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec);
 int32_t glmaxx_event_create(uint64_t* event);
