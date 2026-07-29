@@ -106,6 +106,7 @@ cuobjdump --dump-resource-usage "${build_dir}/libglmaxx_sm120.so" \
 export GLMAXX_KERNEL_LIB_DIR="${build_dir}"
 cargo build --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/cargo-cuda-ffi-build.txt"
+export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 ldd "${CARGO_TARGET_DIR}/release/glmaxx" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cuda-ffi-linkage.txt"
 
