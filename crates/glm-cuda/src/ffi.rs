@@ -24,6 +24,12 @@ unsafe extern "C" {
         descriptor: *const Fc1Descriptor,
         stream: *mut c_void,
     ) -> i32;
+    fn glmaxx_nvfp4_dense_control_launch(
+        descriptor: *const Fc1Descriptor,
+        expert: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -461,6 +467,49 @@ impl NativeFc1Fixture {
             repeat_count,
             bitwise_deterministic,
         })
+    }
+
+    pub fn run_dense_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+    ) -> Result<Vec<u16>, KernelError> {
+        let &expert = route_experts.first().ok_or(KernelError::Shape)?;
+        if route_experts.iter().any(|&candidate| candidate != expert) {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        let mut async_error = 0_i32;
+        // SAFETY: the prepared descriptor and every referenced allocation
+        // remain live until the output download synchronizes the stream. The
+        // one-expert restriction is checked above.
+        let status = unsafe {
+            glmaxx_nvfp4_dense_control_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                u32::from(expert),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        if status != 0 {
+            return Err(KernelError::Driver(status));
+        }
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
     }
 
     pub fn benchmark(

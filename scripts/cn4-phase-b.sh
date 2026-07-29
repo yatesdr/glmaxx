@@ -165,6 +165,20 @@ cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
 
 shasum -a 256 "${graph_dir}"/*.json \
   | tee "${GLMAXX_EVIDENCE_DIR}/graph-correctness-sha256.txt"
+
+dense_control_dir="${GLMAXX_EVIDENCE_DIR}/dense-control-correctness"
+if [[ -e "${dense_control_dir}" ]]; then
+  echo "Dense-control evidence directory already exists; refusing to overwrite it" >&2
+  exit 65
+fi
+mkdir "${dense_control_dir}"
+check_idle
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
+  -- gpu-dense-control "${dense_control_dir}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-dense-control-summary.json"
+
+shasum -a 256 "${dense_control_dir}"/*.json \
+  | tee "${GLMAXX_EVIDENCE_DIR}/dense-control-correctness-sha256.txt"
 nvidia-smi \
   --query-gpu=index,uuid,clocks.current.sm,clocks.current.memory,power.limit,persistence_mode \
   --format=csv,noheader \
@@ -180,4 +194,4 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 70
 fi
 
-echo "Eager and CUDA-graph correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures, and the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures."
+echo "Eager, CUDA-graph, and SM120 CUTLASS dense-control correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures; the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures; and the dense-control summary reports 2 bitwise-deterministic cases over 20 repeats with zero failures."

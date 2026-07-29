@@ -124,6 +124,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_graph(Path::new(path))?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-dense-control") => {
+            let path = arguments
+                .get(2)
+                .ok_or("gpu-dense-control requires an external evidence directory")?;
+            gpu_dense_control(Path::new(path))?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-bench") => {
             let path = arguments
                 .get(2)
@@ -132,7 +139,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-bench evidence-dir>"
                     .into(),
             );
         }
@@ -614,6 +621,22 @@ struct GpuGraphCaseReport {
 
 #[cfg(feature = "cuda-ffi")]
 #[derive(Serialize)]
+struct GpuDenseControlSummary {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    backend: &'static str,
+    cases: usize,
+    repeat_count: usize,
+    failed_elements: usize,
+    bitwise_deterministic_cases: usize,
+    runtime_weight_repack_bytes: u64,
+    persistent_dequant_bytes: u64,
+    materialized_gate_up_control: bool,
+    evidence_directory: String,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
 struct GpuBenchmarkSummary {
     schema: &'static str,
     kernel_abi: &'static str,
@@ -946,6 +969,68 @@ fn gpu_graph(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
 }
 
 #[cfg(feature = "cuda-ffi")]
+fn gpu_dense_control(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    validate_empty_external_gpu_directory(evidence_directory, "gpu-dense-control")?;
+
+    const CONTROL_ROWS: [usize; 2] = [1, 256];
+    const REPEAT_COUNT: usize = 20;
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let fixture =
+        generate_numerical_fixture(NumericalCase::DeterministicRandom, CONTROL_ROWS[1], n, k)?;
+    let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+    let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
+    let mut failed_elements = 0_usize;
+    let mut bitwise_deterministic_cases = 0_usize;
+
+    for rows in CONTROL_ROWS {
+        let activation = &fixture.activations[..rows * k];
+        let activation_bf16 = to_bf16_bits(activation);
+        let reference = routed_fc1_oracle(activation, rows, k, &packed)?;
+        let routes = generate_routes(RoutingCase::OneHotExpert0, rows)?;
+        let compacted = compact_routes(&routes, rows)?;
+        let report = execute_dense_control_case(
+            &device,
+            rows,
+            &activation_bf16,
+            &reference,
+            &packed,
+            &compacted,
+            REPEAT_COUNT,
+        )?;
+        if report.eager_bitwise_deterministic {
+            bitwise_deterministic_cases += 1;
+        }
+        failed_elements = failed_elements
+            .checked_add(report.failures.len())
+            .ok_or("failure count overflow")?;
+        write_gpu_case(evidence_directory, &report)?;
+    }
+
+    let summary = GpuDenseControlSummary {
+        schema: "glmaxx.sm120-fc1-dense-control-summary.v1",
+        kernel_abi: KERNEL_ABI,
+        backend: "cutlass-sm120-nvfp4-materialized-gate-up-control",
+        cases: CONTROL_ROWS.len(),
+        repeat_count: REPEAT_COUNT,
+        failed_elements,
+        bitwise_deterministic_cases,
+        runtime_weight_repack_bytes: 0,
+        persistent_dequant_bytes: 0,
+        materialized_gate_up_control: true,
+        evidence_directory: evidence_directory.display().to_string(),
+    };
+    let summary_bytes = serde_json::to_vec_pretty(&summary)?;
+    fs::write(evidence_directory.join("summary.json"), &summary_bytes)?;
+    println!("{}", String::from_utf8(summary_bytes)?);
+    if failed_elements != 0 || bitwise_deterministic_cases != CONTROL_ROWS.len() {
+        return Err("SM120 CUTLASS dense control correctness gate failed".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
 fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !evidence_directory.is_dir() {
         return Err("gpu-bench evidence directory must already exist".into());
@@ -1141,6 +1226,127 @@ fn execute_gpu_case(
         eager_bitwise_deterministic,
         failures,
     })
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[allow(clippy::too_many_arguments)]
+fn execute_dense_control_case(
+    device: &glm_cuda::NativeFc1Fixture,
+    rows: usize,
+    activation_bf16: &[u16],
+    reference: &[f32],
+    packed: &PackedNvfp4,
+    compacted: &[glm_reference::CompactedRoute],
+    repeat_count: usize,
+) -> Result<GpuCaseReport, Box<dyn std::error::Error>> {
+    let route_experts: Vec<u16> = compacted.iter().map(|route| route.expert).collect();
+    let route_tokens: Vec<u32> = compacted.iter().map(|route| route.token).collect();
+    let route_slots: Vec<u8> = compacted.iter().map(|route| route.slot).collect();
+    let rows_u32 = u32::try_from(rows)?;
+    let first = device.run_dense_control(
+        activation_bf16,
+        rows_u32,
+        &route_experts,
+        &route_tokens,
+        &route_slots,
+    )?;
+    let mut eager_bitwise_deterministic = true;
+    for _ in 1..repeat_count {
+        let repeated = device.run_dense_control(
+            activation_bf16,
+            rows_u32,
+            &route_experts,
+            &route_tokens,
+            &route_slots,
+        )?;
+        eager_bitwise_deterministic &= repeated == first;
+    }
+    let local_intermediate = ModelConstants::default().local_intermediate as usize;
+    let mut maximum_absolute = 0.0_f32;
+    let mut maximum_relative = 0.0_f32;
+    let mut finite_errors = true;
+    let mut failures = Vec::new();
+    for (assignment, route) in compacted.iter().enumerate() {
+        let token = usize::try_from(route.token)?;
+        for column in 0..local_intermediate {
+            let reference_value = reference[token * local_intermediate + column];
+            let actual_bits = first[assignment * local_intermediate + column];
+            let actual = f32::from_bits(u32::from(actual_bits) << 16);
+            let absolute = (reference_value - actual).abs();
+            let relative = absolute / reference_value.abs().max(1.0e-6);
+            if absolute.is_finite() && relative.is_finite() {
+                maximum_absolute = maximum_absolute.max(absolute);
+                maximum_relative = maximum_relative.max(relative);
+            } else {
+                finite_errors = false;
+            }
+            let reason = if !reference_value.is_finite() {
+                Some("non-finite CPU reference")
+            } else if !actual.is_finite() {
+                Some("non-finite GPU output")
+            } else if absolute > 0.5 + 0.02 * reference_value.abs() {
+                Some("element tolerance exceeded")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                failures.push(GpuFailure {
+                    assignment,
+                    column,
+                    reference_f32_bits: reference_value.to_bits(),
+                    actual_bf16_bits: actual_bits,
+                    reason,
+                });
+            }
+        }
+    }
+    if !eager_bitwise_deterministic {
+        failures.push(GpuFailure {
+            assignment: usize::MAX,
+            column: usize::MAX,
+            reference_f32_bits: 0,
+            actual_bf16_bits: 0,
+            reason: "dense control repeat output was not bitwise deterministic",
+        });
+    }
+    Ok(GpuCaseReport {
+        schema: "glmaxx.sm120-fc1-case-result.v1",
+        suite: "dense-control",
+        rows,
+        routing: RoutingCase::OneHotExpert0.id(),
+        numerical: NumericalCase::DeterministicRandom.id(),
+        assignments: compacted.len(),
+        packed_weight_sha256: packed_hash(packed),
+        output_sha256: u16_hash(&first),
+        tolerance: "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.02 * abs(cpu)",
+        maximum_absolute_error: finite_errors.then_some(maximum_absolute),
+        maximum_relative_error: finite_errors.then_some(maximum_relative),
+        eager_repeat_count: repeat_count,
+        eager_bitwise_deterministic,
+        failures,
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn validate_empty_external_gpu_directory(
+    evidence_directory: &Path,
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_directory.is_dir() {
+        return Err(format!("{command} evidence directory must already exist").into());
+    }
+    if evidence_directory.read_dir()?.next().is_some() {
+        return Err(format!("{command} evidence directory must be empty").into());
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if evidence_directory.canonicalize()?.starts_with(repository) {
+        return Err("raw GPU evidence must be outside the Git repository".into());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "cuda-ffi")]
