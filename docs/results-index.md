@@ -118,6 +118,15 @@ prompt-row buckets under one sequence/transport key. The correction handoff
 passes local provenance validation; independent acceptance and the separate
 ABI extension are absent.
 
+The proposed ABI correction is pinned in
+`docs/prefill-graph-profile-abi-v2.md`. It replaces the mode-specific
+verifier bucket with a mode-neutral row bucket, splits the 3,072-row prefill
+limit from the 448-row decode/verify limit, and bumps both step-plan and
+graph-profile identities while retaining the 85-byte hash-input layout. It
+is a design candidate only; its dedicated handoff passes local provenance,
+but independent design acceptance and all implementation evidence are
+absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -225,6 +234,7 @@ verdicts:
 | exact asynchronous restore request/result identity | `dc16273` | `docs/fable-restore-identity-v1-handoff.md` |
 | all-or-nothing HBM residency admission | `c84da2a` | `docs/fable-residency-admission-atomicity-v1-handoff.md` |
 | captured-shape prefill progress | `9bdb208` | `docs/fable-prefill-captured-shape-v1-handoff.md` |
+| prefill row-bucket and graph-profile ABI v2 design | `9b04652` | `docs/fable-prefill-graph-profile-abi-v2-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
