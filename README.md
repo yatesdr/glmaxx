@@ -81,6 +81,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Resource quota adversarial handoff](docs/fable-tenant-resource-quotas-v1-handoff.md)
 - [Nonblocking Linux HTTP transport candidate](docs/nonblocking-http-transport-v1.md)
 - [Nonblocking transport adversarial handoff](docs/fable-nonblocking-http-transport-v1-handoff.md)
+- [Direct DRAM/NVMe tier I/O candidate](docs/direct-tier-io-v1.md)
+- [Direct tier I/O adversarial handoff](docs/fable-direct-tier-io-v1-handoff.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)

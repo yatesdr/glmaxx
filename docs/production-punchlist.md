@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `3608a030530d2157fedc25a1432cd769ec8e9f98`
+Baseline audited: `69895e040617a79dea78d7eaf1ced88234ccb193`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -52,7 +52,7 @@ State meanings:
 |---|---|---|---|---|
 | K01 | PASS | CPU KV/page arithmetic represents one 1,048,576-token MTP-capable sequence with balanced DCP4 ownership and explicit slack | `glm-cache` tests plus budget/profile at `c33648a` | Preserve while integrating C03 |
 | K02 | OPEN | Real target/indexer/draft KV uses preallocated HBM arenas and qualified asynchronous HBM↔DRAM transfers | CPU byte-owning residency only | C03/C05, pinned host memory and CUDA transfer streams |
-| K03 | OPEN | Qualified DRAM↔NVMe restore/eviction works under pressure without blocking decode | Crash-consistent store and CPU restore workers exist | Direct-I/O/io_uring or measured retained path, with tier telemetry |
+| K03 | REVIEW | Qualified DRAM↔NVMe restore/eviction works under pressure without blocking decode | Contract candidate `69895e0` defines aligned 493/501-block direct extents, registered-buffer io_uring ownership, restore dedup/cancel, shared catalog epochs, tier scheduling, segment cleaning, and matched decode-isolation evidence; implementation is intentionally absent | Fable review of `docs/fable-direct-tier-io-v1-handoff.md`, then direct-format/CPU state proof |
 | K04 | REVIEW | Newly sealed runtime pages publish target plus draft sidecar durably and become reusable without restart | Contract candidate `d0a09d7` separates HBM/durable generations, publication leases, live catalog, incremental/restart index, and bounded writes; implementation is intentionally absent | Fable review of `docs/fable-online-prefix-publication-v1-handoff.md`, then CPU proof matrix |
 | K05 | OPEN | Prefix cache survives restart, corruption, torn journal, cache thrash, pinned pressure, and DCP posture changes end to end | Store unit tests cover several faults; no model/GPU lifecycle | Integrated fault matrix with cold/warm evidence |
 | K06 | OPEN | One live 1M request is admitted and executed without false active-capacity accounting or tier thrash | CPU table/budget proof only | Full fit-capable checkpoint plus C02/C03/C05 |
