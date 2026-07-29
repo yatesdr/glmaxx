@@ -234,6 +234,12 @@ pub struct ResidencyManager {
     clock: u64,
 }
 
+struct HbmAdmissionPlan {
+    victims: BTreeMap<[u8; 32], Residency>,
+    hbm_bytes: u64,
+    dram_bytes: u64,
+}
+
 impl ResidencyManager {
     pub fn new(config: ResidencyConfig) -> Result<Self, ResidencyError> {
         if config.hbm_bytes == 0 {
@@ -365,8 +371,8 @@ impl ResidencyManager {
             return Err(ResidencyError::Stale);
         }
         let bytes = entry_bytes(&entry.record)?;
-        self.make_hbm_room(bytes, Some(page_key))?;
-        self.clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let plan = self.plan_hbm_admission(bytes, 0, Some(page_key))?;
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -374,11 +380,9 @@ impl ResidencyManager {
         entry.residency = Residency::Hbm;
         entry.restored = Some(result.page);
         entry.pending_restore = None;
-        entry.last_touch = self.clock;
-        self.hbm_bytes = self
-            .hbm_bytes
-            .checked_add(bytes)
-            .ok_or(ResidencyError::Overflow)?;
+        entry.last_touch = next_clock;
+        self.apply_hbm_admission(plan);
+        self.clock = next_clock;
         Ok(())
     }
 
@@ -388,39 +392,36 @@ impl ResidencyManager {
             return Err(ResidencyError::State);
         }
         let bytes = entry_bytes(&entry.record)?;
-        self.make_hbm_room(bytes, Some(page_key))?;
-        self.clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let plan = self.plan_hbm_admission(bytes, bytes, Some(page_key))?;
         let entry = self
             .entries
             .get_mut(&page_key)
             .ok_or(ResidencyError::Missing)?;
         entry.residency = Residency::Hbm;
-        entry.last_touch = self.clock;
-        self.dram_bytes = self
-            .dram_bytes
-            .checked_sub(bytes)
-            .ok_or(ResidencyError::Overflow)?;
-        self.hbm_bytes = self
-            .hbm_bytes
-            .checked_add(bytes)
-            .ok_or(ResidencyError::Overflow)?;
+        entry.last_touch = next_clock;
+        self.apply_hbm_admission(plan);
+        self.clock = next_clock;
         Ok(())
     }
 
     pub fn pin_hbm(&mut self, page_key: [u8; 32]) -> Result<(), ResidencyError> {
-        self.clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let entry = self.entries.get(&page_key).ok_or(ResidencyError::Missing)?;
+        if entry.residency != Residency::Hbm {
+            return Err(ResidencyError::State);
+        }
+        let next_pin_count = entry
+            .pin_count
+            .checked_add(1)
+            .ok_or(ResidencyError::Overflow)?;
+        let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
         let entry = self
             .entries
             .get_mut(&page_key)
             .ok_or(ResidencyError::Missing)?;
-        if entry.residency != Residency::Hbm {
-            return Err(ResidencyError::State);
-        }
-        entry.pin_count = entry
-            .pin_count
-            .checked_add(1)
-            .ok_or(ResidencyError::Overflow)?;
-        entry.last_touch = self.clock;
+        entry.pin_count = next_pin_count;
+        entry.last_touch = next_clock;
+        self.clock = next_clock;
         Ok(())
     }
 
@@ -451,56 +452,92 @@ impl ResidencyManager {
         self.dram_bytes
     }
 
-    fn make_hbm_room(
-        &mut self,
+    fn plan_hbm_admission(
+        &self,
         incoming_bytes: u64,
+        dram_release_bytes: u64,
         excluded: Option<[u8; 32]>,
-    ) -> Result<(), ResidencyError> {
-        while self
-            .hbm_bytes
+    ) -> Result<HbmAdmissionPlan, ResidencyError> {
+        let mut hbm_after = self.hbm_bytes;
+        let mut dram_after = self
+            .dram_bytes
+            .checked_sub(dram_release_bytes)
+            .ok_or(ResidencyError::Overflow)?;
+        if hbm_after
+            .checked_add(incoming_bytes)
+            .ok_or(ResidencyError::Overflow)?
+            <= self.config.hbm_bytes
+        {
+            return Ok(HbmAdmissionPlan {
+                victims: BTreeMap::new(),
+                hbm_bytes: hbm_after + incoming_bytes,
+                dram_bytes: dram_after,
+            });
+        }
+
+        let mut candidates = self
+            .entries
+            .iter()
+            .filter(|(key, entry)| {
+                Some(**key) != excluded && entry.residency == Residency::Hbm && entry.pin_count == 0
+            })
+            .map(|(key, entry)| Ok((*key, entry.last_touch, entry_bytes(&entry.record)?)))
+            .collect::<Result<Vec<_>, ResidencyError>>()?;
+        candidates.sort_by_key(|(key, last_touch, _)| (*last_touch, *key));
+
+        let mut victims = BTreeMap::new();
+        for (key, _, bytes) in candidates {
+            if hbm_after
+                .checked_add(incoming_bytes)
+                .ok_or(ResidencyError::Overflow)?
+                <= self.config.hbm_bytes
+            {
+                break;
+            }
+            hbm_after = hbm_after
+                .checked_sub(bytes)
+                .ok_or(ResidencyError::Overflow)?;
+            let destination = if dram_after
+                .checked_add(bytes)
+                .ok_or(ResidencyError::Overflow)?
+                <= self.config.dram_bytes
+            {
+                dram_after += bytes;
+                Residency::Dram
+            } else {
+                Residency::Nvme
+            };
+            victims.insert(key, destination);
+        }
+        if hbm_after
             .checked_add(incoming_bytes)
             .ok_or(ResidencyError::Overflow)?
             > self.config.hbm_bytes
         {
-            let victim = self
-                .entries
-                .iter()
-                .filter(|(key, entry)| {
-                    Some(**key) != excluded
-                        && entry.residency == Residency::Hbm
-                        && entry.pin_count == 0
-                })
-                .min_by_key(|(key, entry)| (entry.last_touch, **key))
-                .map(|(key, _)| *key)
-                .ok_or(ResidencyError::Pinned)?;
-            self.demote(victim)?;
+            return Err(ResidencyError::Pinned);
         }
-        Ok(())
+        let hbm_bytes = hbm_after
+            .checked_add(incoming_bytes)
+            .ok_or(ResidencyError::Overflow)?;
+        Ok(HbmAdmissionPlan {
+            victims,
+            hbm_bytes,
+            dram_bytes: dram_after,
+        })
     }
 
-    fn demote(&mut self, page_key: [u8; 32]) -> Result<(), ResidencyError> {
-        let entry = self
-            .entries
-            .get_mut(&page_key)
-            .ok_or(ResidencyError::Missing)?;
-        let bytes = entry_bytes(&entry.record)?;
-        self.hbm_bytes = self
-            .hbm_bytes
-            .checked_sub(bytes)
-            .ok_or(ResidencyError::Overflow)?;
-        if self
-            .dram_bytes
-            .checked_add(bytes)
-            .ok_or(ResidencyError::Overflow)?
-            <= self.config.dram_bytes
-        {
-            entry.residency = Residency::Dram;
-            self.dram_bytes += bytes;
-        } else {
-            entry.residency = Residency::Nvme;
-            entry.restored = None;
+    fn apply_hbm_admission(&mut self, plan: HbmAdmissionPlan) {
+        for (key, entry) in &mut self.entries {
+            let Some(destination) = plan.victims.get(key) else {
+                continue;
+            };
+            entry.residency = *destination;
+            if *destination == Residency::Nvme {
+                entry.restored = None;
+            }
         }
-        Ok(())
+        self.hbm_bytes = plan.hbm_bytes;
+        self.dram_bytes = plan.dram_bytes;
     }
 }
 
@@ -592,6 +629,16 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn mtp_page(key: u8) -> DurablePageRequest {
+        let mut request = page(key);
+        request.mtp = true;
+        request.pieces.push(PagePieceBytes {
+            piece: TierPiece::DraftSidecar,
+            bytes: vec![key; TierPiece::DraftSidecar.expected_bytes() as usize],
+        });
+        request
     }
 
     #[test]
@@ -808,6 +855,114 @@ mod tests {
             })
             .unwrap();
         assert_eq!(manager.location(record.page_key), Some(Residency::Hbm));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_multi_victim_admission_does_not_demote_any_page() {
+        let root = temporary_store("residency-atomic-room");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let first = store.publish(page(0x61)).unwrap();
+        let second = store.publish(page(0x62)).unwrap();
+        let incoming = store.publish(mtp_page(0x63)).unwrap();
+        let page_bytes = entry_bytes(&first).unwrap();
+        assert_eq!(entry_bytes(&second).unwrap(), page_bytes);
+        assert!(entry_bytes(&incoming).unwrap() > page_bytes);
+
+        let hbm_capacity = page_bytes.checked_mul(2).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: hbm_capacity,
+            dram_bytes: hbm_capacity,
+        })
+        .unwrap();
+        for record in [&first, &second, &incoming] {
+            manager.register_nvme(record.clone()).unwrap();
+        }
+        for (request_id, ordinal, record) in [(1, 0, &first), (2, 4, &second)] {
+            manager
+                .begin_restore(request_id, record.page_key, ordinal, owner_rank(ordinal))
+                .unwrap();
+            manager
+                .complete_restore(RestoreResult {
+                    request_id,
+                    page_ordinal: ordinal,
+                    page: store.restore(record.page_key).unwrap().unwrap(),
+                })
+                .unwrap();
+        }
+        manager.pin_hbm(second.page_key).unwrap();
+        manager
+            .begin_restore(3, incoming.page_key, 8, owner_rank(8))
+            .unwrap();
+        assert_eq!(
+            manager.complete_restore(RestoreResult {
+                request_id: 3,
+                page_ordinal: 8,
+                page: store.restore(incoming.page_key).unwrap().unwrap(),
+            }),
+            Err(ResidencyError::Pinned)
+        );
+
+        assert_eq!(manager.location(first.page_key), Some(Residency::Hbm));
+        assert_eq!(manager.location(second.page_key), Some(Residency::Hbm));
+        assert_eq!(
+            manager.location(incoming.page_key),
+            Some(Residency::Restoring)
+        );
+        assert_eq!(manager.hbm_bytes(), hbm_capacity);
+        assert_eq!(manager.dram_bytes(), 0);
+
+        manager.abort_restore(incoming.page_key).unwrap();
+        manager.unpin(second.page_key).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn successful_multi_victim_admission_commits_one_bounded_plan() {
+        let root = temporary_store("residency-atomic-room-success");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let first = store.publish(page(0x71)).unwrap();
+        let second = store.publish(page(0x72)).unwrap();
+        let incoming = store.publish(mtp_page(0x73)).unwrap();
+        let page_bytes = entry_bytes(&first).unwrap();
+        let incoming_bytes = entry_bytes(&incoming).unwrap();
+        let hbm_capacity = page_bytes.checked_mul(2).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: hbm_capacity,
+            dram_bytes: hbm_capacity,
+        })
+        .unwrap();
+        for record in [&first, &second, &incoming] {
+            manager.register_nvme(record.clone()).unwrap();
+        }
+        for (request_id, ordinal, record) in [(1, 0, &first), (2, 4, &second)] {
+            manager
+                .begin_restore(request_id, record.page_key, ordinal, owner_rank(ordinal))
+                .unwrap();
+            manager
+                .complete_restore(RestoreResult {
+                    request_id,
+                    page_ordinal: ordinal,
+                    page: store.restore(record.page_key).unwrap().unwrap(),
+                })
+                .unwrap();
+        }
+        manager
+            .begin_restore(3, incoming.page_key, 8, owner_rank(8))
+            .unwrap();
+        manager
+            .complete_restore(RestoreResult {
+                request_id: 3,
+                page_ordinal: 8,
+                page: store.restore(incoming.page_key).unwrap().unwrap(),
+            })
+            .unwrap();
+
+        assert_eq!(manager.location(first.page_key), Some(Residency::Dram));
+        assert_eq!(manager.location(second.page_key), Some(Residency::Dram));
+        assert_eq!(manager.location(incoming.page_key), Some(Residency::Hbm));
+        assert_eq!(manager.hbm_bytes(), incoming_bytes);
+        assert_eq!(manager.dram_bytes(), hbm_capacity);
         fs::remove_dir_all(root).unwrap();
     }
 }
