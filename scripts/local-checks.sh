@@ -27,6 +27,10 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   inspect "${proof_dir}/rank0.g5n"
 cargo run --offline -p glm-cli --bin glmaxx -- budget
 cargo run --offline -p glm-cli --bin glmaxx -- abi-check
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  engine-proof "${proof_dir}/engine-proof.json"
+cmp fixtures/engine-contract-proof-v1.json \
+  "${proof_dir}/engine-proof.json"
 
 clang++ -std=c++17 -fsyntax-only -x c++ kernels/include/glmaxx_kernel.h
 

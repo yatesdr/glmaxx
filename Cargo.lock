@@ -69,6 +69,7 @@ version = "0.1.0"
 dependencies = [
  "glm-cache",
  "glm-cuda",
+ "glm-engine",
  "glm-format",
  "glm-reference",
  "serde",
@@ -81,6 +82,16 @@ name = "glm-cuda"
 version = "0.1.0"
 dependencies = [
  "glm-format",
+]
+
+[[package]]
+name = "glm-engine"
+version = "0.1.0"
+dependencies = [
+ "glm-cache",
+ "glm-format",
+ "serde",
+ "sha2",
 ]
 
 [[package]]

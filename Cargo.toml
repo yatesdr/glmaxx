@@ -3,6 +3,7 @@ members = [
     "crates/glm-cache",
     "crates/glm-cli",
     "crates/glm-cuda",
+    "crates/glm-engine",
     "crates/glm-format",
     "crates/glm-reference",
 ]

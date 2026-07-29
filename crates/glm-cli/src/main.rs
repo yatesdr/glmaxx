@@ -4,6 +4,11 @@ use std::path::Path;
 
 use glm_cache::{Budget, CacheCapacity, MODEL_POSITIONS};
 use glm_cuda::{Fc1Descriptor, KernelPath, LaunchGeometry, workspace_bytes};
+use glm_engine::{
+    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB, GraphEntry,
+    GraphKey, GraphProfile, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
+    StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, plan_system_memory,
+};
 use glm_format::{Codec, KERNEL_ABI, PackedNvfp4, RankFile, RankFileBuilder, TensorRecord};
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -61,6 +66,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("budget") => print_budget()?,
         Some("abi-check") => abi_check()?,
+        Some("engine-proof") => {
+            let report = engine_proof()?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            if let Some(path) = arguments.get(2) {
+                json.push(b'\n');
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -79,7 +95,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|gpu-smoke [rows]|gpu-matrix evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|gpu-smoke [rows]|gpu-matrix evidence-dir>"
                     .into(),
             );
         }
@@ -701,6 +717,142 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
     let _ = descriptor;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+#[derive(Serialize)]
+struct EngineProof {
+    schema: &'static str,
+    step_plan_abi: &'static str,
+    step_plan_record_bytes: usize,
+    plan_hash: String,
+    collective_schedule_hash: String,
+    collective_operations: usize,
+    graph_profile_hash: String,
+    graph_entries: usize,
+    full_context_positions: u64,
+    system_memory_plan: SystemMemoryPlan,
+    memory_evidence: &'static str,
+    mixed_mode_posture: &'static str,
+    gpu_evidence: &'static str,
+}
+
+fn engine_proof() -> Result<EngineProof, Box<dyn std::error::Error>> {
+    let schedule = CollectiveSchedule::new(vec![
+        CollectiveOp {
+            ordinal: 0,
+            kind: CollectiveKind::DcpQueryGather,
+            route_id: 3,
+            payload_bytes: 32_768,
+            participant_mask: TP_RANK_MASK,
+        },
+        CollectiveOp {
+            ordinal: 1,
+            kind: CollectiveKind::DcpPartialStateReturn,
+            route_id: 4,
+            payload_bytes: 98_304,
+            participant_mask: TP_RANK_MASK,
+        },
+        CollectiveOp {
+            ordinal: 2,
+            kind: CollectiveKind::TpReduce,
+            route_id: 9,
+            payload_bytes: 98_304,
+            participant_mask: TP_RANK_MASK,
+        },
+        CollectiveOp {
+            ordinal: 3,
+            kind: CollectiveKind::LogitsArgmax,
+            route_id: 12,
+            payload_bytes: 128,
+            participant_mask: TP_RANK_MASK,
+        },
+    ])?;
+    let plan = StepPlan::build(
+        StepPlanRequest {
+            epoch: 7,
+            step_id: 42,
+            mode: StepMode::Decode,
+            active_sequences: 8,
+            sequence_bucket: 8,
+            scheduled_prompt_tokens: 0,
+            query_rows: 8,
+            verifier_row_bucket: 8,
+            mtp_depth: 0,
+            graph_id: 11,
+            tp_route_id: 9,
+            dcp_route_id: 3,
+            attention_transport: AttentionTransport::DecodeQueryLse,
+            sampling_route_id: 12,
+            sequence_table_generation: 99,
+        },
+        &schedule,
+    )?;
+    let profile = GraphProfile::new(vec![GraphEntry {
+        graph_id: 11,
+        key: GraphKey {
+            mode: StepMode::Decode,
+            sequence_bucket: 8,
+            verifier_row_bucket: 8,
+            mtp_depth: 0,
+            attention_transport: AttentionTransport::DecodeQueryLse,
+        },
+        maximum_active_sequences: 8,
+        maximum_prompt_tokens: 0,
+        maximum_query_rows: 8,
+        compatible_tp_routes: vec![9],
+        compatible_dcp_routes: vec![3, 4],
+        compatible_sampling_routes: vec![12],
+        maximum_scratch_bytes: 64 << 20,
+        argument_bytes: 64 << 10,
+        graph_object_bytes: 2 << 20,
+        resident_module_bytes: 8 << 20,
+        admission_slo_class: 1,
+    }])?;
+    profile.admit(&plan)?;
+
+    let memory_inputs = (0..4)
+        .map(|rank| RankMemoryInput {
+            rank,
+            profile: ProfileClass::HybridServe,
+            mtp_enabled: true,
+            // These are deliberately synthetic proof values. The production
+            // artifact consumes measured cn4 free bytes and converted payload
+            // bytes; this fixture only proves deterministic accounting.
+            measured_usable_hbm_bytes: 95 * GIB,
+            weight_bytes: 82 * GIB,
+            module_and_context_bytes: GIB,
+            graph_resident_bytes: 256 << 20,
+            maximum_prefill_workspace_bytes: 512 << 20,
+            maximum_verifier_workspace_bytes: 128 << 20,
+            collective_bytes: 256 << 20,
+            staging_bytes: 256 << 20,
+            model_metadata_bytes: 64 << 20,
+            page_table_bytes: 64 << 20,
+            allocator_padding_bytes: 256 << 20,
+            escrow_bytes: GIB,
+            target_committed_slots: 262_144,
+            target_slack_slots: 0,
+            draft_committed_slots: 262_144,
+            draft_tentative_slots: 448,
+        })
+        .collect();
+    let system_memory_plan = plan_system_memory(memory_inputs)?;
+
+    Ok(EngineProof {
+        schema: "glmaxx.engine-contract-proof.v1",
+        step_plan_abi: STEP_PLAN_ABI,
+        step_plan_record_bytes: STEP_PLAN_RECORD_BYTES,
+        plan_hash: hex(&plan.plan_hash),
+        collective_schedule_hash: hex(&plan.collective_schedule_hash),
+        collective_operations: schedule.operations().len(),
+        graph_profile_hash: hex(&profile.profile_hash),
+        graph_entries: profile.entries.len(),
+        full_context_positions: MODEL_POSITIONS,
+        system_memory_plan,
+        memory_evidence: "synthetic accounting fixture; not measured cn4 HBM and not a converted weight policy",
+        mixed_mode_posture: "fail-closed pending reviewed dual-attention transport contract",
+        gpu_evidence: "none: deterministic CPU control-plane proof only",
+    })
 }
 
 fn actual_shape_values(n: usize, k: usize) -> Vec<f32> {

@@ -61,6 +61,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [cn4 kernel readiness and punchlist](docs/cn4-kernel-readiness.md)
 - [Phase A CPU preparation proof](docs/phase-a-proof.md)
 - [cn0 SM86 non-acceptance compile/link bring-up](docs/cn0-sm86-bringup.md)
+- [Offline StepPlan, graph admission, and memory-contract candidate](docs/offline-engine-contract.md)
+- [Fable Phase-A and engine-contract review handoff](docs/fable-phase-a-engine-handoff.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Draft roadmap](docs/roadmap.md)
@@ -90,3 +92,10 @@ occupied A6000. Pinned CUDA 13.3 compilation and SM120 correctness remain
 blocked on independent review of the generated manifest/v0.2.2 amendment and
 a separately authorized cn4 session. The first performance task is to replace
 the retained CUDA-core control with CUTLASS block-scaled MMA.
+
+While SM120 execution is pending, `glm-engine` now supplies a deterministic
+CPU candidate for the rank-invariant `StepPlan`, collective digest, graph
+admission profile, and four-rank physical-memory planner. Mixed prefill/decode
+fails closed because the current logical ABI has only one attention-transport
+field; that choice is preserved as an explicit review question rather than
+silently frozen in code.
