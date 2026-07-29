@@ -67,6 +67,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Pinned tokenizer, chat-template, and streaming text contract](docs/tokenizer-serving-contract.md)
 - [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
 - [Strict safetensors checkpoint ingest contract](docs/checkpoint-ingest.md)
+- [Bounded native-rank reader CPU proof](docs/native-rank-reader-proof-v1.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
 - [Fable Phase-A and engine-contract review handoff](docs/fable-phase-a-engine-handoff.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
@@ -100,17 +101,18 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 216 Rust tests plus formatting, Clippy with
+The current local gate passes 221 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
 the pinned external-tokenizer proof. It also verifies all 20 candidate-based
 Fable handoffs against their exact committed inputs and can classify an
 explicit review artifact by exact acceptance-token presence. The CPU/reference
 workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
-hybrid policy machinery, TP4 startup and step consensus, bounded continuous
-batching, distributed-sampling oracles, transactional prefix storage,
-HBM/DRAM/NVMe residency simulation, active page tables, persistent worker
-interfaces, request streaming, and bounded host observability.
+bounded file-backed four-rank verification, hybrid policy machinery, TP4
+startup and step consensus, bounded continuous batching, distributed-sampling
+oracles, transactional prefix storage, HBM/DRAM/NVMe residency simulation,
+active page tables, persistent worker interfaces, request streaming, and
+bounded host observability.
 
 This is still a CPU/control-plane and kernel-preparation implementation, not a
 production inference engine. The latest checked-in cn4 preparation record

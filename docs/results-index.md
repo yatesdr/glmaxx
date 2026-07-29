@@ -3,14 +3,10 @@
 Date: 2026-07-29
 
 Current implementation baseline:
-`59e11e5b14737020f72659b8a49d8c82982deba8`
+`ee9d16bc1d20d90aefaf1e45d0d5ecfbd8a99a23`
 
 The complete local gate most recently ran at repository commit
-`39af260a8a839ffcb9240705c98d73b57fb8739c`. Its newest implementation
-change is `59e11e5`; later commits add evidence wording and unimplemented
-online-publication, distributed-sampling, tenant-resource-quota,
-nonblocking-transport, direct-tier-I/O, and quality-acceptance design
-candidates and their handoffs.
+`ee9d16bc1d20d90aefaf1e45d0d5ecfbd8a99a23`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -18,9 +14,9 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The complete local gate passed at `39af260`:
+The complete local gate passed at `ee9d16b`:
 
-- `scripts/local-checks.sh`: 216 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 221 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   all 20 candidate-based review-handoff hash proofs, and the external
   pinned-tokenizer proof;
@@ -48,6 +44,12 @@ The profile validates as arithmetic but remains
 The review-handoff verifier contract, implementation hashes, commands, and
 exclusions are pinned in `docs/review-provenance-verifier-v1.md`. It validates
 candidate bytes and exact review-token presence; it does not accept any gate.
+
+The new bounded native-rank reader CPU proof is pinned in
+`docs/native-rank-reader-proof-v1.md`. It establishes one-pass file-backed
+payload verification and four-rank semantic consensus, but explicitly excludes
+actual full-rank evidence, CUDA upload, device residency, and checkpoint
+startup.
 
 ## Historical cn4 preparation evidence
 

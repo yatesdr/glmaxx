@@ -5,7 +5,8 @@ Date: 2026-07-29
 Status: strict structural reader, exact pinned checkpoint manifest,
 role-specific TP slice readers, protected-tensor and EXL3 payload definitions,
 resumable bounded-memory native rank writer, full source-file verification,
-and atomic four-rank publication implemented.
+atomic four-rank publication, and bounded-memory native rank verification
+implemented.
 
 ## Scope
 
@@ -83,6 +84,15 @@ sibling directory. It derives one content identity, finalizes all four
 headers, fsyncs the staging directory, and atomically publishes the directory.
 Restart handles incomplete rank bodies and the case where only a subset of
 rank headers was finalized before a crash.
+
+`glm-format::NativeRankReader` is the corresponding file-backed read path. It
+retains only the bounded control regions, streams each rank payload once with
+an 8 MiB buffer, and retains at most one EXL3 projection while validating that
+codec. It verifies canonical JSON, header/control/payload identities, exact
+padding, every plane hash, codec geometry, NVFP4 scale bytes, EXL3 source
+planes, stable file identity, and four-rank semantic consensus. A
+`RankTensorSink` may stage bytes toward a future device arena, but those bytes
+must remain quarantined until the complete rank verification returns success.
 
 The rank format carries protected BF16, FP16, and FP32 tensors directly with
 their exact logical rank and shape. Plain payloads have no auxiliary or
@@ -196,13 +206,28 @@ Conversion resumes at durable tensor-group boundaries. Publication is atomic,
 and an already-published directory is accepted only after a full four-file
 cryptographic audit.
 
+Verify a published native rank set without materializing rank payloads in
+host memory:
+
+```text
+cargo run -p glm-cli --release -- \
+  native-rank-proof /external/native/capacity-exl3 \
+  /external/evidence/native-rank-proof-v1.json
+```
+
+The command requires exactly four canonical rank files, verifies them in
+parallel, rejects a kernel ABI that differs from the current binary, and emits
+one proof only after every payload passes. The CPU proof and explicit
+exclusions are recorded in `docs/native-rank-reader-proof-v1.md`.
+
 ## Fail-closed boundary
 
 This code proves source discovery, the complete pinned structural inventory,
 byte-exact EXL3 and protected-tensor payload definitions, role-specific
 bounded TP slicing, complete source authentication, and the production
-four-rank write/publication path. It does not claim that a complete model has
-been converted or loaded, or that codec `0x0200` is GPU-loadable.
+four-rank write/publication and bounded file-backed verification paths. It
+does not claim that a complete model has been converted or loaded into device
+arenas, or that codec `0x0200` is GPU-loadable.
 
 The checked-in `profiles/profile-budget-v0.json` is deliberately a blocked
 review candidate. It now includes 4,096 page/owner-slack slots and 448
