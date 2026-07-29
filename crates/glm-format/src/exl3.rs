@@ -718,21 +718,80 @@ mod tests {
         );
     }
 
+    fn forward_trellis_slot(lane: usize, weight: usize) -> (usize, usize) {
+        assert!(lane < 32 && weight < 8);
+        let row0 = (lane % 4) * 2;
+        let rows = [row0, row0 + 1, row0 + 8, row0 + 9];
+        let column0 = lane / 8;
+        let column1 = column0 + 4;
+        let parity = (lane >> 2) & 1;
+        let row = rows[weight % 4];
+        let column = 2 * (if weight < 4 { column0 } else { column1 }) + parity;
+        (row, column)
+    }
+
+    fn decode_forward_slot(
+        trellis: &[u16],
+        tile_index: usize,
+        bits: usize,
+        lane: usize,
+        weight: usize,
+    ) -> u16 {
+        let tile_words = 8 * bits;
+        let tile_base = tile_index * 16 * bits;
+        let end_bit = (lane * 8 + weight + 257) * bits;
+        let start_bit = end_bit - 16;
+        let first_word = start_bit / 32;
+        let last_word = (end_bit - 1) / 32;
+        let shift = (last_word + 1) * 32 - end_bit;
+        let read_word = |index: usize| {
+            let half = tile_base + (index % tile_words) * 2;
+            u32::from(trellis[half]) | (u32::from(trellis[half + 1]) << 16)
+        };
+        let merged = (u64::from(read_word(first_word)) << 32) | u64::from(read_word(last_word));
+        decode_3inst_f16(((merged >> shift) & 0xffff) as u16)
+    }
+
     #[test]
-    fn inverse_scatter_recovers_every_trellis_tile_position() {
+    fn forward_scatter_cross_checks_inverse_and_off_diagonal_tile_addressing() {
         let tensor = fixture();
-        let native = tensor.reconstruct_native_f16().unwrap();
         let n = tensor.metadata.logical_n as usize;
+        let n_tiles = n / 16;
         let bits = usize::from(tensor.metadata.bits);
-        for &(row_base, column_base) in &[(0, 0), (6_128, 496)] {
-            for local_row in 0..16 {
-                for local_column in 0..16 {
-                    let row = row_base + local_row;
-                    let column = column_base + local_column;
+
+        // The two off-diagonal tiles make a K/N tile-address transposition
+        // observable; the old first/last pair were both fixed points.
+        let mut off_diagonal_differences = 0;
+        for lane in 0..32 {
+            for weight in 0..8 {
+                if decode_forward_slot(&tensor.trellis, 1, bits, lane, weight)
+                    != decode_forward_slot(&tensor.trellis, n_tiles, bits, lane, weight)
+                {
+                    off_diagonal_differences += 1;
+                }
+            }
+        }
+        assert!(off_diagonal_differences > 0);
+
+        for &(tile_row, tile_column) in &[(0, 0), (0, 1), (1, 0), (383, 31)] {
+            let tile_index = tile_row * n_tiles + tile_column;
+            for lane in 0..32 {
+                for weight in 0..8 {
+                    let (local_row, local_column) = forward_trellis_slot(lane, weight);
                     assert_eq!(
-                        decode_native_at(&tensor.trellis, n, bits, row, column),
-                        native[row * n + column]
+                        inverse_trellis_slot(local_row, local_column),
+                        (lane, weight)
                     );
+                    let expected =
+                        decode_forward_slot(&tensor.trellis, tile_index, bits, lane, weight);
+                    let observed = decode_native_at(
+                        &tensor.trellis,
+                        n,
+                        bits,
+                        tile_row * 16 + local_row,
+                        tile_column * 16 + local_column,
+                    );
+                    assert_eq!(observed, expected);
                 }
             }
         }

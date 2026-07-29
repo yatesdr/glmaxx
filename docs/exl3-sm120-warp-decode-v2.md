@@ -47,6 +47,18 @@ trellis load. All threads synchronize, active subwarps consume the eight
 tiles in ascending order, and all threads synchronize before the stage is
 overwritten.
 
+The load mapping is fixed as:
+
+```text
+stage_tile = threadIdx.x / 24
+word       = threadIdx.x % 24
+```
+
+for threads 0–191. The 256-thread shape deliberately retains two idle warps
+as layout headroom for the paired gate/up successor. Its occupancy cost must
+be measured against a 192-thread control before the shape can survive the
+performance gate.
+
 Both real K tile counts are exact multiples of eight:
 
 | Projection | K tiles | N tiles | K-stage iterations |
@@ -71,10 +83,12 @@ source_u32 = tile_index * 24 + word
 stage[k_tile % 8][word] = trellis_u32[source_u32]
 ```
 
-The 4-byte source alignment already required by the v1 descriptor makes the
-U32 view legal. A tile is 96 bytes, so every tile base is also 4-byte aligned.
-Little-endian half-to-word assembly is therefore identical to the scalar
-control on the pinned little-endian cn4 host.
+The implementation forms one `const uint32_t*` from the descriptor's raw
+64-bit trellis address before indexing it. The 4-byte source alignment
+already required by the v1 descriptor makes that U32 view legal. A tile is
+96 bytes, so every tile base is also 4-byte aligned. Little-endian
+half-to-word assembly is therefore identical to the scalar control on the
+pinned little-endian cn4 host.
 
 Within a staged tile, the existing inverse mapping remains authoritative:
 
@@ -111,6 +125,9 @@ It must therefore be bitwise identical at the intermediate FP16 projection
 plane, not merely within a tolerance. The unchanged output rotation must then
 be bitwise identical as well. Any difference is a correctness failure; the
 candidate may not relax the v1 threshold after observing hardware output.
+The scalar and staged entry points must be compiled into the same native
+library by the same CUDA compilation rule, with identical floating-point and
+FTZ flags. A comparison built with different flags is not admissible.
 
 ## Traffic and capacity claims
 
@@ -136,7 +153,8 @@ The optimized entry point must:
 
 - accept only the unchanged v1 descriptor and rows 1–8;
 - reject all other rows rather than silently selecting another kernel;
-- repeat the v1 SM120 device-property check;
+- repeat the retained v1 control's `cudaGetDeviceProperties` check requiring
+  compute capability 12.0;
 - retain all pointer, shape, bit-width, reserved-field, and workspace checks;
 - clear and preserve the three-stage device validation word;
 - enqueue only on the caller-owned stream; and

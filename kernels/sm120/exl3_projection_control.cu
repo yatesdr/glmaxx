@@ -87,9 +87,8 @@ __global__ void rotate_input_f16(
   const uint32_t row = blockIdx.x;
   const uint32_t block = blockIdx.y;
   const uint32_t output_offset = threadIdx.x;
-  if (row >= descriptor.rows || output_offset >= kH128) {
-    return;
-  }
+  const bool active =
+      row < descriptor.rows && output_offset < kH128;
   const uint32_t index = block * kH128 + output_offset;
   const auto* input =
       reinterpret_cast<const uint16_t*>(descriptor.input_f16);
@@ -99,13 +98,18 @@ __global__ void rotate_input_f16(
       reinterpret_cast<uint16_t*>(descriptor.rotated_input_f16);
   auto* validation =
       reinterpret_cast<uint32_t*>(descriptor.validation_error_u32);
-  const float scaled =
-      half_bits_to_float(input[uint64_t{row} * descriptor.logical_k +
-                               index]) *
-      half_bits_to_float(suh[index]);
-  const __half rounded = __float2half_rn(scaled);
-  source[output_offset] = __half2float(rounded);
+  if (active) {
+    const float scaled = __fmul_rn(
+        half_bits_to_float(
+            input[uint64_t{row} * descriptor.logical_k + index]),
+        half_bits_to_float(suh[index]));
+    const __half rounded = __float2half_rn(scaled);
+    source[output_offset] = __half2float(rounded);
+  }
   __syncthreads();
+  if (!active) {
+    return;
+  }
 
   float sum = 0.0f;
   for (uint32_t column = 0; column < kH128; ++column) {
@@ -171,9 +175,8 @@ __global__ void rotate_output_f16(
   const uint32_t row = blockIdx.x;
   const uint32_t block = blockIdx.y;
   const uint32_t output_offset = threadIdx.x;
-  if (row >= descriptor.rows || output_offset >= kH128) {
-    return;
-  }
+  const bool active =
+      row < descriptor.rows && output_offset < kH128;
   const uint32_t index = block * kH128 + output_offset;
   const auto* projected =
       reinterpret_cast<const uint16_t*>(descriptor.projected_f16);
@@ -183,9 +186,14 @@ __global__ void rotate_output_f16(
       reinterpret_cast<uint16_t*>(descriptor.output_f16);
   auto* validation =
       reinterpret_cast<uint32_t*>(descriptor.validation_error_u32);
-  source[output_offset] = half_bits_to_float(
-      projected[uint64_t{row} * descriptor.logical_n + index]);
+  if (active) {
+    source[output_offset] = half_bits_to_float(
+        projected[uint64_t{row} * descriptor.logical_n + index]);
+  }
   __syncthreads();
+  if (!active) {
+    return;
+  }
 
   float sum = 0.0f;
   for (uint32_t column = 0; column < kH128; ++column) {
@@ -259,6 +267,20 @@ bool descriptor_valid(const glmaxx_exl3_descriptor& descriptor) {
          descriptor.reserved[3] == 0u;
 }
 
+cudaError_t require_sm120_device() {
+  int device = -1;
+  cudaError_t status = cudaGetDevice(&device);
+  cudaDeviceProp properties{};
+  if (status == cudaSuccess) {
+    status = cudaGetDeviceProperties(&properties, device);
+  }
+  if (status == cudaSuccess &&
+      (properties.major != 12 || properties.minor != 0)) {
+    return cudaErrorInvalidDevice;
+  }
+  return status;
+}
+
 }  // namespace
 
 extern "C" int32_t glmaxx_exl3_projection_launch(
@@ -269,6 +291,10 @@ extern "C" int32_t glmaxx_exl3_projection_launch(
     return -1;
   }
   *asynchronous_error = 0;
+  const cudaError_t device_status = require_sm120_device();
+  if (device_status != cudaSuccess) {
+    return static_cast<int32_t>(device_status);
+  }
   const cudaStream_t stream =
       reinterpret_cast<cudaStream_t>(cuda_stream);
   cudaError_t status = cudaMemsetAsync(

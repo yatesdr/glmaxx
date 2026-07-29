@@ -43,6 +43,9 @@ The loader remains responsible for metadata CRC, component lengths, finite
 rotations, projection identity, layer/expert/rank bounds, MCG marker, and
 container hashes. The launch descriptor independently rejects shape,
 version, pointer, alignment, reserved-field, and workspace lies.
+Before any asynchronous operation, the native launcher also queries the
+caller-bound CUDA device and rejects anything other than compute capability
+12.0.
 
 ## Arithmetic
 
@@ -104,6 +107,10 @@ The retained control enqueues three kernels on one caller-owned stream:
 1. one 128-thread CTA per `(row,K/128)` input rotation block;
 2. a strided 256-thread scalar projection grid;
 3. one 128-thread CTA per `(row,N/128)` output rotation block.
+
+Both rotation kernels guard work while keeping every CTA thread live through
+the shared-memory barrier. Their FP32 multiplies use explicit
+round-to-nearest intrinsics.
 
 Non-finite values set distinct device-validation bits for input rotation,
 projection, and output rotation. A nonzero word fails the Rust result after
