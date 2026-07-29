@@ -1,0 +1,394 @@
+# Checkpoint load transaction v1
+
+Date: 2026-07-29
+
+Status: design candidate; implementation token withheld pending adversarial
+review
+
+GPU claim: none
+
+## Purpose
+
+The native rank reader can verify and stream four rank files without
+materializing their payloads. This contract defines the next boundary: staging
+those tentative bytes into four rank-local device arenas without making one
+rank, tensor, or partially verified generation executable.
+
+The engine loads exactly one weight generation in v0. Hot replacement and
+runtime weight paging are outside scope.
+
+## Normative startup order
+
+The engine specification's startup state machine is authoritative:
+
+```text
+CREATED
+  -> HOST_VALIDATED
+  -> CUDA_CONTEXTS_READY
+  -> TOPOLOGY_VALIDATED
+  -> MODULES_READY
+  -> MEMORY_PLANNED
+  -> WEIGHTS_LOADED
+  -> GRAPHS_CAPTURED
+  -> KV_READY
+  -> COLLECTIVES_VOTED
+  -> HEALTHY
+```
+
+The current Rust mock uses different names and places its memory proof after
+weight loading. That mock is not the production ordering and must be replaced
+or versioned before implementation. In particular:
+
+- the four-file validator completes at `HOST_VALIDATED`, before any GPU load;
+- modules and codec capability tables exist before arena planning;
+- the measured per-rank memory plan is accepted before allocating weight
+  arenas; and
+- no request enters scheduling before the later graph, KV, collective, and
+  smoke gates reach `HEALTHY`.
+
+No implementation may silently map the current mock states onto the normative
+states when their ordering differs.
+
+## Immutable load plan
+
+The coordinator constructs one `RankSetLoadPlan.v1` after host validation and
+before device allocation. It contains:
+
+```text
+schema
+conversion_uuid
+verification_mode
+serving_profile
+weight_policy_sha256
+kernel_abi_sha256
+memory_plan_sha256
+codec_capability_sha256
+model_config_sha256
+tokenizer_bundle_sha256
+chat_template_sha256
+operation_manifest_sha256
+tensor_catalog_sha256
+profile_budget_sha256
+rank[4]
+plan_sha256
+```
+
+Each rank entry binds:
+
+```text
+rank
+CUDA device identity
+file_uuid
+manifest_sha256
+descriptor_sha256
+payload_sha256
+tensor_count
+file payload bytes
+device weight-arena bytes
+device metadata-arena bytes
+arena-layout SHA-256
+```
+
+The plan SHA-256 is over a fixed-order binary encoding, not JSON text. The
+plan rejects zero identities, duplicate/missing ranks, arithmetic overflow,
+an arena interval overlap, a tensor absent from the fixed GLM-5.2 operation
+manifest, and any descriptor-to-arena interval mismatch.
+
+Every tensor layout entry binds its tensor ID, role, codec, primary,
+auxiliary, and codec-metadata destination offsets and lengths. The complete
+layout is fixed before streaming begins. A rank cannot infer a different
+layout, codec route, alignment, or protection decision from local device
+pressure.
+
+The codec capability table is process-common and hash-bound. A profile
+containing EXL3 source payloads is rejected before allocation while the EXL3
+device-load gate is closed. A direct-layout flag is a required property, not
+permission to guess an unreviewed kernel route.
+
+### Canonical plan encoding
+
+All integers below are little-endian. Reserved bytes are zero. The plan
+preimage is:
+
+```text
+416-byte RankSetLoadPlanHeader.v1
+4 × 216-byte RankLoadEntry.v1, rank order
+rank 0 TensorArenaEntry.v1 records, tensor-ID order
+rank 1 TensorArenaEntry.v1 records, tensor-ID order
+rank 2 TensorArenaEntry.v1 records, tensor-ID order
+rank 3 TensorArenaEntry.v1 records, tensor-ID order
+```
+
+The 416-byte header is:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | magic `G5LOAD1\0` |
+| 8 | 2 | version `1` |
+| 10 | 2 | header bytes `416` |
+| 12 | 1 | verification mode: `1=FULL_SHA256`, `2=FS_VERITY` |
+| 13 | 1 | profile: `1=nvfp4-laboratory`, `2=capacity-exl3`, `3=hybrid-serve` |
+| 14 | 1 | rank count `4` |
+| 15 | 1 | reserved |
+| 16 | 4 | common tensor count |
+| 20 | 4 | rank-entry bytes `216` |
+| 24 | 4 | tensor-entry bytes `64` |
+| 28 | 4 | reader chunk bytes `8,388,608` |
+| 32 | 16 | conversion UUID |
+| 48 | 32 | weight-policy SHA-256 |
+| 80 | 32 | kernel-ABI SHA-256 |
+| 112 | 32 | memory-plan SHA-256 |
+| 144 | 32 | codec-capability SHA-256 |
+| 176 | 32 | model-config SHA-256 |
+| 208 | 32 | tokenizer-bundle SHA-256 |
+| 240 | 32 | chat-template SHA-256 |
+| 272 | 32 | operation-manifest SHA-256 |
+| 304 | 32 | tensor-catalog SHA-256 |
+| 336 | 32 | reviewed profile-budget SHA-256 |
+| 368 | 4 | pinned staging-slot bytes; at least reader chunk bytes |
+| 372 | 2 | pinned staging slots per rank; at least `2` |
+| 374 | 42 | reserved |
+
+Each 216-byte rank entry is:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 1 | rank |
+| 1 | 7 | reserved |
+| 8 | 32 | CUDA-device identity SHA-256 |
+| 40 | 16 | file UUID |
+| 56 | 32 | manifest SHA-256 |
+| 88 | 32 | descriptor SHA-256 |
+| 120 | 32 | payload SHA-256 |
+| 152 | 4 | tensor count |
+| 156 | 4 | reserved |
+| 160 | 8 | file payload bytes |
+| 168 | 8 | device weight-arena bytes |
+| 176 | 8 | device metadata-arena bytes |
+| 184 | 32 | arena-layout SHA-256 |
+
+Each 64-byte tensor entry is:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 4 | tensor ID |
+| 4 | 2 | role ID |
+| 6 | 2 | codec ID |
+| 8 | 4 | descriptor flags |
+| 12 | 8 | metadata destination offset |
+| 20 | 8 | metadata bytes |
+| 28 | 8 | primary destination offset |
+| 36 | 8 | primary bytes |
+| 44 | 8 | auxiliary destination offset |
+| 52 | 8 | auxiliary bytes |
+| 60 | 4 | required device alignment |
+
+`plan_sha256 = SHA256("glmaxx.rank-set-load-plan.v1\0" || plan_preimage)`.
+The file's names, logical/padded shapes, layer/expert identities, TP axes, and
+codec semantics remain bound through the validated descriptor and tensor
+catalog hashes rather than being duplicated in this physical layout table.
+The tensor-catalog digest is the manifest's common
+`tensor_contract_sha256`, recomputed from the complete canonical manifest
+tensor inventory; the operation-manifest digest must match the compiled
+GLM-5.2 manifest. A serving profile also requires the exact reviewed
+profile-budget digest with `measurement_status=complete` and
+`conversion_allowed=true`. The laboratory subset uses a separately identified
+non-serving budget and cannot be promoted by changing only the profile byte.
+
+## Quarantined arena ownership
+
+Each persistent rank thread allocates its planned weight and metadata arenas
+and returns a non-executable `QuarantinedRankArena`. Only that thread may
+access its CUDA context, stream, events, or allocations.
+
+The type state is:
+
+```text
+Allocated -> Staging -> Prepared -> Adopted
+     \          \          \
+      +----------+-----------> Aborted
+```
+
+There is no reverse transition and no public conversion from `Allocated`,
+`Staging`, or `Prepared` to the executor's `WeightArenaHandle`.
+`QuarantinedRankArena::drop` synchronizes any outstanding copies and frees
+the generation. Aborting one rank aborts all four.
+
+Every destination interval is initialized exactly once from its matching
+descriptor plane. File padding is verified by the reader but is not copied
+into HBM. Codec metadata is copied into the immutable metadata arena.
+
+## Streaming and asynchronous-copy lifetime
+
+`NativeRankReader::verify_and_stream` owns an 8 MiB ordinary host buffer and
+may reuse it immediately after a sink callback returns. A CUDA sink therefore
+must not retain the callback pointer.
+
+Each rank sink owns the plan's fixed-capacity pinned host staging ring and one
+completion event per slot. For every callback it:
+
+1. waits only when the next ring slot is still in flight;
+2. copies the borrowed bytes into that owned pinned slot;
+3. checks the planned tensor, plane, cursor, and destination bounds;
+4. enqueues one host-to-device copy on the owner rank's load stream;
+5. records the slot event; and
+6. returns only after it no longer depends on the reader's borrowed bytes.
+
+The final partial chunk is copied at its exact length. Ring slots are not
+reused before their events complete. Reader and sink buffers, CUDA events,
+and load streams are fixed before staging; the per-chunk path allocates
+nothing.
+
+The reader hashes the bytes it read. `Prepared` additionally requires all
+copy events to complete and every asynchronous CUDA error to be observed.
+Whether a device-side digest or another end-to-end HBM-content check is also
+required is an explicit adversarial-review question; copy submission alone
+is not described as cryptographic device-memory proof.
+
+## Full verification and preparation
+
+The first load uses `FULL_SHA256`. All four readers run with bounded
+concurrency, and each rank records:
+
+- bytes read and uploaded;
+- manifest, descriptor, metadata, auxiliary, tensor-plane, and complete
+  payload verification results;
+- maximum reader and pinned-ring scratch;
+- storage-read, host-copy, PCIe-copy, and synchronization elapsed time; and
+- its prepared-arena receipt.
+
+An FS-verity restart route remains unavailable until a separate implementation
+and evidence gate pins the root-digest provenance. Size, mtime, inode, CRC, or
+a prior successful run cannot substitute for the first full proof.
+
+After a rank's payload returns success, its sink drains every event, validates
+exact primary/auxiliary/metadata byte totals, seals the allocations against
+further writes, and produces a `PreparedRankReceipt.v1`. The receipt binds the
+rank-set plan hash, rank, device identity, file UUID, payload hash, arena
+layout hash, allocation sizes, verification mode, verified bytes, uploaded
+bytes, and a monotonically increasing owner-thread generation.
+
+The receipt is exactly 256 bytes:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | magic `G5PRP1\0\0` |
+| 8 | 2 | version `1` |
+| 10 | 2 | record bytes `256` |
+| 12 | 1 | rank |
+| 13 | 1 | verification mode |
+| 14 | 2 | reserved |
+| 16 | 32 | CUDA-device identity SHA-256 |
+| 48 | 16 | file UUID |
+| 64 | 32 | plan SHA-256 |
+| 96 | 32 | payload SHA-256 |
+| 128 | 32 | arena-layout SHA-256 |
+| 160 | 8 | device weight-arena bytes |
+| 168 | 8 | device metadata-arena bytes |
+| 176 | 8 | verified file-payload bytes |
+| 184 | 8 | uploaded plane/metadata bytes |
+| 192 | 8 | owner-thread allocation generation |
+| 200 | 32 | verification-evidence SHA-256 |
+| 232 | 24 | reserved |
+
+`prepared_rank_sha256` hashes the domain
+`"glmaxx.prepared-rank-receipt.v1\0"` followed by the record bytes.
+
+Any late reader, hash, sink, CUDA, byte-count, seal, or receipt failure drops
+every quarantined arena. A prepared rank remains non-executable while another
+rank is still staging.
+
+## Four-rank adoption
+
+Preparation and adoption are separate phases.
+
+1. The coordinator collects exactly one prepared receipt from ranks 0–3.
+2. It validates the common plan plus each rank's expected device, file,
+   layout, byte counts, and nonzero owner allocation generation.
+3. It derives `rank_set_receipt_sha256` as
+   `SHA256("glmaxx.prepared-rank-set.v1\0" || rank0_prepared_sha256 || ... ||
+   rank3_prepared_sha256)`.
+4. It sends the identical `ADOPT(plan_sha256, rank_set_receipt_sha256)`
+   command to all persistent rank threads.
+5. Each rank rechecks its local receipt, moves its sealed arena into an
+   executor-internal slot, and acknowledges the two hashes.
+6. Only after four identical acknowledgments does startup enter
+   `WEIGHTS_LOADED`.
+
+Adoption does not open scheduling; the later startup gates still run. If an
+adoption acknowledgment fails after another rank has moved its handle, the
+worker generation becomes terminal and all four allocations are destroyed.
+The process does not retry one rank or reuse an adopted subset.
+
+This is process-atomic visibility rather than an impossible simultaneous
+four-device instruction: no model step can observe the new generation unless
+the coordinator has four matching adoption acknowledgments and later reaches
+`HEALTHY`.
+
+## Failure and fallback rules
+
+The whole load fails on:
+
+- a changed rank path or file descriptor identity;
+- rank-set, manifest, tensor-catalog, profile, policy, ABI, or capability
+  disagreement;
+- a destination interval mismatch, overflow, overlap, short write, duplicate
+  write, or unfilled interval;
+- host allocation, CUDA allocation, copy, event, synchronization, or sealing
+  failure;
+- a rank receipt or adoption digest mismatch;
+- a rank thread exit or timeout; or
+- any attempt to expose a quarantined arena to execution.
+
+There is no rank-local codec fallback, repack, smaller arena, verification
+mode, retry, or device substitution. A coordinator may choose a different
+predeclared profile only by starting a new process-wide load plan before any
+arena allocation. That choice must remain within the reviewed quality and
+capacity policy.
+
+## Memory and performance accounting
+
+The combined startup resource plan accounts for, per rank:
+
+- exact weight and codec-metadata arenas including allocator alignment;
+- CUDA module/context and graph-independent startup allocations;
+- the load stream and events;
+- the pinned host staging ring;
+- reader control regions and payload-verification scratch; and
+- temporary device verification workspace if the review requires it.
+
+Only device-resident terms enter the HBM inequality; reader control memory and
+the pinned ring are separate explicit host-memory terms with their own
+process-wide cap. Weight load does not consume the serving escrow or KV floor.
+The observed HBM high-water must fit the same rank independently; aggregate
+free memory cannot rescue a failing rank.
+
+Evidence reports the four rank timelines separately and the critical path.
+Parallel rank loading may not hide storage contention: aggregate and per-rank
+read throughput, host-copy throughput, PCIe throughput, wait time, and final
+drain time are all retained.
+
+## Required CPU/mock proof after review
+
+Before a CUDA sink implementation, tests must cover:
+
+- exact normative startup ordering and rejection of the old memory-after-load
+  sequence;
+- deterministic load-plan and four-rank receipt encodings;
+- actual GLM-5.2 tensor counts, roles, codec memberships, and arena arithmetic;
+- plain, NVFP4, EXL3, metadata, empty-auxiliary, and final-partial-chunk paths;
+- late corruption on rank 3 after ranks 0–2 prepare;
+- reader failure, sink failure, short/duplicate plane, bounds overflow,
+  allocation failure, event failure, and final-drain failure on every rank;
+- a prepared-receipt mismatch and an adoption failure after one prior
+  acknowledgment;
+- exactly-once abort/free behavior with no published handle;
+- kernel ABI, capability, profile, policy, device, and memory-plan mismatch;
+- fixed ring capacity and no per-chunk allocation;
+- proof that no executor can receive a weight handle before four-rank
+  adoption; and
+- full evidence receipt serialization with no GPU or performance claim.
+
+After that CPU proof, the next gate is a qualified CUDA upload sink and
+small-checkpoint smoke. Full-checkpoint residency remains blocked by policy
+fit, EXL3 device acceptance, quality gates, and measured capacity.
