@@ -3,13 +3,15 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`d0ac1d3708a76f6877b89cdb019211b28bb782eb`
+`13f0c598c192f389ae664a22ffc2f81e58bd9f31`
 
-The complete local gate most recently ran against the implementation bytes
-subsequently committed as
-`d0ac1d3708a76f6877b89cdb019211b28bb782eb`. The target CUDA/kernel and strict
-production-manifest baseline remains `4bf7bb5`; this later candidate adds
-CPU-only review integrity and cache-lifecycle evidence.
+The complete local gate most recently ran against the indexer-key
+implementation bytes committed as
+`35a9d0358ae49bda3fcd571bc526b20cc7ec7d03`; its provenance record was then
+committed at `13f0c598c192f389ae664a22ffc2f81e58bd9f31`. The target CUDA/kernel and
+strict production-manifest baseline remains `4bf7bb5`; the later CPU
+candidates add review integrity, cache-lifecycle evidence, and bit-exact
+indexer-scale handling.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -17,12 +19,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at cache-lifecycle candidate `d0ac1d3` plus its
-status-only delta passed:
+The latest local run at indexer-scale implementation candidate `35a9d03`
+passed:
 
-- `scripts/local-checks.sh`: 227 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 230 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 27 then-present candidate-based review-handoff hash proofs;
+  and all 29 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -65,6 +67,12 @@ The integrated cache lifecycle implementation and scope boundary are pinned
 in `docs/cache-lifecycle-proof-v1.md`. Its deterministic fixture proves the
 CPU file-store/prefix/residency/page-table lifecycle but does not qualify
 CUDA, direct I/O, real NVMe, model attention, or long-context performance.
+
+The indexer-key correction and exhaustive binary32 boundary proof are pinned
+in `docs/indexer-key-scale-proof-v1.md`. It removes host-libm scale
+construction and validation, and rejects records whose reconstructed key
+would overflow. Its dedicated handoff passed local provenance validation;
+independent acceptance is still absent.
 
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
@@ -166,6 +174,7 @@ verdicts:
 | Rust-owned SM120 rank executor design | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
+| bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
