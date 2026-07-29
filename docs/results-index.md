@@ -5,14 +5,12 @@ Date: 2026-07-29
 Current implementation baseline:
 `59e11e5b14737020f72659b8a49d8c82982deba8`
 
-The complete gate ran against implementation commit `63b13fd`; `8aaef8e`
-changes only the accompanying terminal-delivery wording. `d0a09d7`,
-`7c71818`, `7e810c4`, `3608a03`, and `69895e0` add only the unimplemented
-online-publication, distributed-sampling, tenant-resource-quota, and
-nonblocking-transport and direct-tier-I/O design candidates. `59e11e5`
-adds the review-provenance verifier and is the newest fully checked
-implementation. `70222ab` adds only the unimplemented quality-acceptance
-candidate.
+The complete local gate most recently ran at repository commit
+`39af260a8a839ffcb9240705c98d73b57fb8739c`. Its newest implementation
+change is `59e11e5`; later commits add evidence wording and unimplemented
+online-publication, distributed-sampling, tenant-resource-quota,
+nonblocking-transport, direct-tier-I/O, and quality-acceptance design
+candidates and their handoffs.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -20,7 +18,7 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The complete local gate passed at the source baseline:
+The complete local gate passed at `39af260`:
 
 - `scripts/local-checks.sh`: 216 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
