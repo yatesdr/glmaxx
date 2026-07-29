@@ -9,11 +9,13 @@ use std::{
     fmt,
 };
 
-use glm_engine::{GraphEntry, GraphProfile, StepMode};
+use glm_engine::{GraphEntry, GraphProfile, MAX_ACTIVE_SEQUENCES, StepMode};
 
 mod compile;
 
 pub use compile::{CompileError, CompiledStep, RouteCatalog, SamplingCollective, StepPlanCompiler};
+
+const MAXIMUM_BATCH_ROWS: usize = MAX_ACTIVE_SEQUENCES as usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TenantConfig {
@@ -102,6 +104,27 @@ struct Tenant {
     service_units: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RequestCompletionUpdate {
+    request_id: u64,
+    state: RequestState,
+    prompt_done: u32,
+    generated: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TenantServiceUpdate {
+    tenant_id: u32,
+    service_units: u64,
+}
+
+#[derive(Debug)]
+struct BatchCompletionPlan {
+    requests: [Option<RequestCompletionUpdate>; MAXIMUM_BATCH_ROWS],
+    tenant_service_units: [Option<TenantServiceUpdate>; MAXIMUM_BATCH_ROWS],
+    decode_burst: u16,
+}
+
 #[derive(Clone, Debug)]
 pub struct Scheduler {
     config: SchedulerConfig,
@@ -122,7 +145,7 @@ impl Scheduler {
     ) -> Result<Self, SchedulerError> {
         profile.verify().map_err(|_| SchedulerError::GraphProfile)?;
         if config.maximum_batch_sequences == 0
-            || config.maximum_batch_sequences > 64
+            || config.maximum_batch_sequences > MAX_ACTIVE_SEQUENCES
             || config.maximum_prefill_tokens == 0
             || config.maximum_decode_burst == 0
         {
@@ -301,11 +324,7 @@ impl Scheduler {
         require_explicit: bool,
     ) -> Result<(), SchedulerError> {
         let inflight = self.inflight.as_ref().ok_or(SchedulerError::NoInflight)?;
-        let completion_map: BTreeMap<_, _> = completions
-            .iter()
-            .map(|completion| (completion.request_id, *completion))
-            .collect();
-        if completion_map.len() != completions.len()
+        if inflight.rows.len() > MAXIMUM_BATCH_ROWS
             || (!success && !completions.is_empty())
             || (matches!(inflight.kind, BatchKind::Prefill) && !completions.is_empty())
             || (!completions.is_empty() && completions.len() != inflight.rows.len())
@@ -313,104 +332,155 @@ impl Scheduler {
                 && success
                 && !matches!(inflight.kind, BatchKind::Prefill)
                 && completions.len() != inflight.rows.len())
-            || completions.iter().any(|completion| {
-                !inflight
-                    .rows
-                    .iter()
-                    .any(|row| row.request_id == completion.request_id)
-            })
         {
             return Err(SchedulerError::Commit);
         }
-        if success && !matches!(inflight.kind, BatchKind::Prefill) {
-            let maximum_commit = match inflight.kind {
-                BatchKind::Decode => 1,
-                BatchKind::Verify { depth } => depth + 1,
-                BatchKind::Prefill => unreachable!(),
-            };
-            for row in &inflight.rows {
-                let completion =
-                    completion_map
-                        .get(&row.request_id)
-                        .copied()
-                        .unwrap_or(BatchCompletion {
-                            request_id: row.request_id,
-                            committed_tokens: 1,
-                            terminal: false,
-                        });
-                let request = self
-                    .requests
-                    .get(&row.request_id)
-                    .ok_or(SchedulerError::UnknownRequest)?;
-                if completion.committed_tokens == 0
-                    || completion.committed_tokens > maximum_commit
-                    || u32::from(completion.committed_tokens)
-                        > request.spec.maximum_new_tokens - request.generated
-                {
-                    return Err(SchedulerError::Commit);
-                }
+        let mut completion_by_row = [None; MAXIMUM_BATCH_ROWS];
+        for (row_index, row) in inflight.rows.iter().enumerate() {
+            if inflight.rows[..row_index]
+                .iter()
+                .any(|prior| prior.request_id == row.request_id)
+            {
+                return Err(SchedulerError::Commit);
+            }
+        }
+        for &completion in completions {
+            let row_index = inflight
+                .rows
+                .iter()
+                .position(|row| row.request_id == completion.request_id)
+                .ok_or(SchedulerError::Commit)?;
+            if completion_by_row[row_index].replace(completion).is_some() {
+                return Err(SchedulerError::Commit);
             }
         }
 
-        let batch = self.inflight.take().ok_or(SchedulerError::NoInflight)?;
-        for row in &batch.rows {
+        let mut plan = BatchCompletionPlan {
+            requests: [None; MAXIMUM_BATCH_ROWS],
+            tenant_service_units: [None; MAXIMUM_BATCH_ROWS],
+            decode_burst: match inflight.kind {
+                BatchKind::Prefill => 0,
+                BatchKind::Decode | BatchKind::Verify { .. } => self.decode_burst.saturating_add(1),
+            },
+        };
+        for (row_index, row) in inflight.rows.iter().enumerate() {
             let request = self
                 .requests
-                .get_mut(&row.request_id)
+                .get(&row.request_id)
                 .ok_or(SchedulerError::UnknownRequest)?;
+            let mut update = RequestCompletionUpdate {
+                request_id: row.request_id,
+                state: request.state,
+                prompt_done: request.prompt_done,
+                generated: request.generated,
+            };
             if !success {
-                request.state = RequestState::Failed;
+                update.state = RequestState::Failed;
+                plan.requests[row_index] = Some(update);
                 continue;
             }
             let tenant = self
                 .tenants
-                .get_mut(&request.spec.tenant)
+                .get(&request.spec.tenant)
                 .ok_or(SchedulerError::Tenant)?;
-            match batch.kind {
+            let tenant_update_index = plan
+                .tenant_service_units
+                .iter()
+                .position(|update| {
+                    update.is_some_and(|update| update.tenant_id == request.spec.tenant)
+                })
+                .or_else(|| plan.tenant_service_units.iter().position(Option::is_none))
+                .ok_or(SchedulerError::Overflow)?;
+            let service_units = plan.tenant_service_units[tenant_update_index]
+                .map_or(tenant.service_units, |update| update.service_units);
+            let service_delta;
+            match inflight.kind {
                 BatchKind::Prefill => {
-                    request.prompt_done = request
+                    if request.state != RequestState::WaitingPrefill || row.prompt_tokens == 0 {
+                        return Err(SchedulerError::Commit);
+                    }
+                    update.prompt_done = request
                         .prompt_done
                         .checked_add(row.prompt_tokens)
                         .ok_or(SchedulerError::Overflow)?;
-                    tenant.service_units = tenant
-                        .service_units
-                        .checked_add(u64::from(row.prompt_tokens))
-                        .ok_or(SchedulerError::Overflow)?;
-                    if request.prompt_done == request.spec.prompt_tokens {
-                        request.state = RequestState::Decoding;
+                    if update.prompt_done > request.spec.prompt_tokens {
+                        return Err(SchedulerError::Commit);
                     }
+                    update.state = if update.prompt_done == request.spec.prompt_tokens {
+                        RequestState::Decoding
+                    } else {
+                        RequestState::WaitingPrefill
+                    };
+                    service_delta = u64::from(row.prompt_tokens);
                 }
                 BatchKind::Decode | BatchKind::Verify { .. } => {
-                    let completion =
-                        completion_map
-                            .get(&row.request_id)
-                            .copied()
-                            .unwrap_or(BatchCompletion {
-                                request_id: row.request_id,
-                                committed_tokens: 1,
-                                terminal: false,
-                            });
+                    if request.state != RequestState::Decoding || row.prompt_tokens != 0 {
+                        return Err(SchedulerError::Commit);
+                    }
+                    let maximum_commit = match inflight.kind {
+                        BatchKind::Decode => 1,
+                        BatchKind::Verify { depth } => depth + 1,
+                        BatchKind::Prefill => unreachable!(),
+                    };
+                    let completion = completion_by_row[row_index].unwrap_or(BatchCompletion {
+                        request_id: row.request_id,
+                        committed_tokens: 1,
+                        terminal: false,
+                    });
+                    let remaining = request
+                        .spec
+                        .maximum_new_tokens
+                        .checked_sub(request.generated)
+                        .ok_or(SchedulerError::Commit)?;
+                    if completion.committed_tokens == 0
+                        || completion.committed_tokens > maximum_commit
+                        || u32::from(completion.committed_tokens) > remaining
+                    {
+                        return Err(SchedulerError::Commit);
+                    }
                     let commit = u32::from(completion.committed_tokens);
-                    request.generated = request
+                    update.generated = request
                         .generated
                         .checked_add(commit)
                         .ok_or(SchedulerError::Overflow)?;
-                    tenant.service_units = tenant
-                        .service_units
-                        .checked_add(u64::from(commit))
-                        .ok_or(SchedulerError::Overflow)?;
-                    if completion.terminal || request.generated == request.spec.maximum_new_tokens {
-                        request.state = RequestState::Finished;
-                    }
+                    update.state = if completion.terminal
+                        || update.generated == request.spec.maximum_new_tokens
+                    {
+                        RequestState::Finished
+                    } else {
+                        RequestState::Decoding
+                    };
+                    service_delta = u64::from(commit);
                 }
             }
+            plan.tenant_service_units[tenant_update_index] = Some(TenantServiceUpdate {
+                tenant_id: request.spec.tenant,
+                service_units: service_units
+                    .checked_add(service_delta)
+                    .ok_or(SchedulerError::Overflow)?,
+            });
+            plan.requests[row_index] = Some(update);
         }
-        match batch.kind {
-            BatchKind::Prefill => self.decode_burst = 0,
-            BatchKind::Decode | BatchKind::Verify { .. } => {
-                self.decode_burst = self.decode_burst.saturating_add(1);
-            }
+
+        self.inflight
+            .take()
+            .expect("inflight batch was preflighted under exclusive scheduler access");
+        for update in plan.requests.into_iter().flatten() {
+            let request = self
+                .requests
+                .get_mut(&update.request_id)
+                .expect("request was preflighted under exclusive scheduler access");
+            request.state = update.state;
+            request.prompt_done = update.prompt_done;
+            request.generated = update.generated;
         }
+        for update in plan.tenant_service_units.into_iter().flatten() {
+            self.tenants
+                .get_mut(&update.tenant_id)
+                .expect("tenant was preflighted under exclusive scheduler access")
+                .service_units = update.service_units;
+        }
+        self.decode_burst = plan.decode_burst;
         Ok(())
     }
 
@@ -1060,6 +1130,66 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn late_tenant_overflow_preserves_inflight_and_every_row() {
+        let mut scheduler = scheduler();
+        for id in [1, 2] {
+            scheduler
+                .admit(RequestSpec {
+                    id,
+                    tenant: 1,
+                    prompt_tokens: 1,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                })
+                .unwrap();
+        }
+        let batch = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(batch.rows.len(), 2);
+        scheduler.tenants.get_mut(&1).unwrap().service_units = u64::MAX - 1;
+        let before = [
+            scheduler.request_progress(1).unwrap(),
+            scheduler.request_progress(2).unwrap(),
+        ];
+
+        assert_eq!(
+            scheduler.complete_batch(true),
+            Err(SchedulerError::Overflow)
+        );
+        assert_eq!(scheduler.inflight.as_ref(), Some(&batch));
+        assert_eq!(
+            [
+                scheduler.request_progress(1).unwrap(),
+                scheduler.request_progress(2).unwrap(),
+            ],
+            before
+        );
+        assert_eq!(
+            scheduler.tenants.get(&1).unwrap().service_units,
+            u64::MAX - 1
+        );
+        assert_eq!(scheduler.decode_burst, 0);
+
+        scheduler.tenants.get_mut(&1).unwrap().service_units = 0;
+        scheduler.complete_batch(true).unwrap();
+        assert!(scheduler.inflight.is_none());
+        assert_eq!(scheduler.tenants.get(&1).unwrap().service_units, 2);
+        for id in [1, 2] {
+            assert_eq!(
+                scheduler.request_progress(id).unwrap(),
+                RequestProgress {
+                    state: RequestState::Decoding,
+                    prompt_tokens: 1,
+                    prompt_done: 1,
+                    maximum_new_tokens: 1,
+                    generated: 0,
+                    mtp_depth: 0,
+                }
+            );
+        }
     }
 
     #[test]
