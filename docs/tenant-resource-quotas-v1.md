@@ -150,7 +150,8 @@ The profile bounds:
 - aggregate requested-context claims;
 - restore operations, HBM restore payload bytes, and aligned tier-I/O bytes;
 - pinned durable logical bytes and publication staging bytes;
-- target and draft committed physical pages per owner rank;
+- committed logical positions plus reachable target/draft physical pages per
+  owner rank;
 - target and draft transient physical pages per owner rank;
 - active shared-prefix references; and
 - completion-event slots and buffered response bytes.
@@ -229,13 +230,13 @@ to 2,019,328 and 2,052,096 bytes respectively. HBM payload counters use
 logical bytes. NVMe tier-I/O counters use the actual aligned transferred
 bytes. Evidence reports both; neither may be relabeled as the other.
 
-The capacity profile has, per owner rank:
+The capacity profile budgets, per owner rank:
 
 ```text
-4,096 committed pages
-   64 page-growth slack pages
-    7 MTP tentative pages
-4,167 physical arena pages
+262,144 admitted committed token slots = 4,096 full pages
+  4,096 page-slack token slots       =    64 full pages
+    448 MTP tentative token slots    =     7 full pages
+266,688 physical token slots         = 4,167 arena pages
 ```
 
 Thus one fully MTP-capable 1,048,576-token sequence owns 16,384 committed
@@ -247,12 +248,26 @@ draft sidecar             524,288,000
 total                   33,529,266,176
 ```
 
-The committed limit remains 4,096 pages per rank even though the arena has
-4,167. Tenant data may not consume the 64-page growth and 7-page tentative
-escrows as steady-state committed capacity. During a step, actual committed
-plus canonical batch reservations may use the arena up to 4,167 pages, but
-commit is allowed only when the post-commit committed count remains within
-4,096.
+The three terms are capacity purposes, not three hard-partitioned allocator
+pools. Multiple sequences can require more than 4,096 reachable physical
+pages on one owner even below 1,048,576 aggregate committed tokens because
+every sequence begins at page ordinal zero and retains a partial tail. The
+64-page term exists for that alignment, tail-fragmentation, and page-growth
+case. The seven-page term covers the admitted verifier-row tentative
+positions.
+
+The ledger therefore enforces both:
+
+- the configured logical committed-position ceiling; and
+- exact per-owner reachable pages plus the current canonical batch
+  reservation at or below 4,167.
+
+It does not impose a false 4,096 reachable-page ceiling on concurrent
+sessions. Conversely, it never advertises the 4,544 slack/tentative token
+slots per rank as another 18,176 tokens of user context. Whether one physical
+page is serving committed tail data or a tentative horizon is tracked by the
+page transaction, and a batch that cannot acquire its exact per-owner horizon
+does not launch.
 
 Counters are per rank, not only aggregate. Four free pages on rank zero do
 not compensate for an exhausted owner rank.
@@ -386,7 +401,7 @@ page-aligned batch delta. The ledger reserves, for every owner:
 - newly touched draft pages;
 - target and draft tentative positions;
 - per-tenant future logical resident references; and
-- the post-commit committed-page counts.
+- the post-commit logical positions and reachable-page counts.
 
 All batch rows and ranks succeed or none mutate. The canonical quota
 reservation generation and digest become inputs to the page transaction and
@@ -400,9 +415,10 @@ requested-context claim.
 ### Commit and rollback
 
 Commit converts exactly the pages made reachable by consensus output into
-committed global physical and tenant logical charges. Unused tentative pages
-return to the escrow before the next step. The requested-context and band
-claims do not shrink as tokens commit.
+global physical and tenant logical charges and advances exact committed
+logical positions. Unused tentative pages return to free arena capacity
+before the next step. The requested-context and band claims do not shrink as
+tokens commit.
 
 Rollback restores the exact pre-step charges and page identities. It is
 idempotent by `(request_id, step_id, reservation_generation)`. A retry uses
@@ -569,7 +585,8 @@ The implementation gate must cover at least:
 21. suspend/resume with shared pages and an unsealed private tail;
 22. DRAM/NVMe pin pressure without false HBM capacity;
 23. one 1,048,576-token MTP-capable sequence using exactly 4,096 pages/rank;
-24. refusal to use the 71-page/rank escrow as committed tenant capacity;
+24. adversarial multi-sequence page-ordinal skew using page slack without
+    exceeding 4,167 pages/rank or advertising it as user context;
 25. two tenants whose logical references exceed unique physical pages;
 26. overflow/underflow/generation mismatch as fatal;
 27. deterministic weighted selection across repeated runs; and
