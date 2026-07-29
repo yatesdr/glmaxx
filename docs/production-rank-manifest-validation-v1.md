@@ -2,8 +2,9 @@
 
 Date: 2026-07-29
 
-Status: CPU/reference implementation passed; adversarial implementation review,
-full-rank evidence, CUDA upload, and checkpoint startup remain open.
+Status: superseded before external review by v2 after a continuation audit
+added engine-owned complete tensor-inventory and source-map identities. See
+`docs/production-rank-manifest-validation-v2.md`.
 
 ## Candidate
 

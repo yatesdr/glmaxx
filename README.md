@@ -68,8 +68,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
 - [Strict safetensors checkpoint ingest contract](docs/checkpoint-ingest.md)
 - [Bounded native-rank reader CPU proof](docs/native-rank-reader-proof-v1.md)
-- [Strict production rank-manifest CPU proof](docs/production-rank-manifest-validation-v1.md)
-- [Production rank-manifest adversarial handoff](docs/fable-production-rank-manifest-validation-v1-handoff.md)
+- [Strict production rank-manifest CPU proof](docs/production-rank-manifest-validation-v2.md)
+- [Production rank-manifest adversarial handoff](docs/fable-production-rank-manifest-validation-v2-handoff.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
@@ -107,7 +107,7 @@ kernel, and engine work stays here.
 
 The current local gate passes 225 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
-the pinned external-tokenizer proof. It also verifies all 23 candidate-based
+the pinned external-tokenizer proof. It also verifies all 24 candidate-based
 Fable handoffs against their exact committed inputs and can classify an
 explicit review artifact by exact acceptance-token presence. The CPU/reference
 workspace includes

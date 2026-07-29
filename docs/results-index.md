@@ -3,11 +3,11 @@
 Date: 2026-07-29
 
 Current implementation baseline:
-`46bff28aaf950ea15fdfc69ac074412cbd46c9c4`
+`4bf7bb5e817e01cc299058b56a488b35011fd79d`
 
-The complete local gate most recently ran at repository commit
-`46bff28aaf950ea15fdfc69ac074412cbd46c9c4`. Later commits may add proof and
-handoff documents but do not change the implementation candidate.
+The complete local gate most recently ran against implementation commit
+`4bf7bb5e817e01cc299058b56a488b35011fd79d`. Subsequent proof and handoff
+documents do not change the implementation candidate.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -15,11 +15,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The complete local gate passed for `46bff28`:
+The complete local gate passed for `4bf7bb5`:
 
 - `scripts/local-checks.sh`: 225 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  all 23 candidate-based review-handoff hash proofs, and the external
+  all 24 candidate-based review-handoff hash proofs, and the external
   pinned-tokenizer proof;
 - platform: local CPU development host;
 - CUDA compiler or GPU context: not used;
@@ -53,11 +53,13 @@ actual full-rank evidence, CUDA upload, device residency, and checkpoint
 startup.
 
 The strict production-manifest extension is pinned in
-`docs/production-rank-manifest-validation-v1.md`. It binds the reviewed
+`docs/production-rank-manifest-validation-v2.md`. It binds the reviewed
 capacity-EXL3 manifest to native headers, descriptors, source provenance,
-rank-specific tensor contracts, and compiled operation identity. Its
+fixed rank-specific complete tensor contracts, the complete 92-file observed
+source map, and compiled operation/weight-policy identity. Its
 implementation review is requested in
-`docs/fable-production-rank-manifest-validation-v1-handoff.md`; no acceptance
+`docs/fable-production-rank-manifest-validation-v2-handoff.md`; v1 was
+superseded before review, and no acceptance
 artifact or token is present.
 
 ## Historical cn4 preparation evidence
@@ -126,7 +128,8 @@ verdicts:
 | direct DRAM/NVMe tier I/O | `69895e0` | `docs/fable-direct-tier-io-v1-handoff.md` |
 | quality, KLD, task, retrieval, and MTP numerical acceptance | `70222ab` | `docs/fable-quality-acceptance-v1-handoff.md` |
 | quarantined checkpoint load and four-rank adoption | `4bb0708` (r1 `737603b` superseded) | `docs/fable-checkpoint-load-transaction-v1-r2-handoff.md` |
-| strict production rank-manifest validation | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
+| strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
+| strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token

@@ -2,8 +2,12 @@
 
 Date: 2026-07-29
 
-Status: adversarial CPU implementation review requested; GPU authorization
-conveyed by this handoff: none
+Status: superseded before review by the v2 handoff after Sol found that this
+candidate authenticated internal manifest/descriptor agreement but did not
+authenticate the complete tensor inventory against fixed engine-owned
+digests. Do not issue the v1 token.
+
+GPU authorization conveyed by this handoff: none
 
 Review candidate commit:
 `46bff28aaf950ea15fdfc69ac074412cbd46c9c4`
@@ -98,4 +102,3 @@ Acceptance of this implementation does not accept the separately pending
 manifest-ABI r2 gate or checkpoint-load transaction r2 gate. It does not
 authorize cn4, a full conversion, CUDA upload, checkpoint startup, quality, or
 performance claims.
-
