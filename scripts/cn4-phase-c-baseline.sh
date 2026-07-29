@@ -50,6 +50,10 @@ case "${review_artifact}" in
     ;;
 esac
 review_relative="${review_artifact#"${repo_dir}/"}"
+if [[ "${review_relative}" != "fable-manifest-abi-v022.md" ]]; then
+  echo "Review artifact must be the dedicated root fable-manifest-abi-v022.md result, not a handoff or disposition" >&2
+  exit 65
+fi
 if ! git ls-files --error-unmatch "${review_relative}" >/dev/null 2>&1 ||
    ! grep -Fxq "manifest-abi-v0.2.2-accepted" "${review_artifact}"; then
   echo "Review artifact must be tracked and contain the exact acceptance token" >&2
@@ -65,9 +69,36 @@ fi
 
 eager_summary="${GLMAXX_PHASE_B_EVIDENCE}/correctness/summary.json"
 graph_summary="${GLMAXX_PHASE_B_EVIDENCE}/graph-correctness/summary.json"
-for summary in "${eager_summary}" "${graph_summary}"; do
+dense_summary="${GLMAXX_PHASE_B_EVIDENCE}/dense-control-correctness/summary.json"
+grouped_summary="${GLMAXX_PHASE_B_EVIDENCE}/grouped-control-correctness/summary.json"
+for summary in \
+  "${eager_summary}" \
+  "${graph_summary}" \
+  "${dense_summary}" \
+  "${grouped_summary}"; do
   if [[ ! -f "${summary}" ]]; then
     echo "Required Phase-B summary is missing: ${summary}" >&2
+    exit 65
+  fi
+done
+for expected in \
+  '"cases": 2' \
+  '"repeat_count": 20' \
+  '"failed_elements": 0' \
+  '"bitwise_deterministic_cases": 2'; do
+  if ! grep -Fq "${expected}" "${dense_summary}"; then
+    echo "Phase-B dense-control summary does not satisfy: ${expected}" >&2
+    exit 65
+  fi
+done
+for expected in \
+  '"positive_cases": 14' \
+  '"negative_route_cases": 2' \
+  '"repeat_count": 20' \
+  '"failed_elements": 0' \
+  '"bitwise_deterministic_cases": 2'; do
+  if ! grep -Fq "${expected}" "${grouped_summary}"; then
+    echo "Phase-B grouped-control summary does not satisfy: ${expected}" >&2
     exit 65
   fi
 done

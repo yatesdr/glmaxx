@@ -20,13 +20,14 @@ physical/cache ABI amendment. Separate operator authorization is also
 required. The kernel is not yet qualified as functional on SM120, and it is
 not a performance candidate yet. The authorized cn4 preparation pass compiled
 native `sm_120f` cubins with pinned CUDA 13.3 and CUTLASS 4.6.1, proved the
-CUTLASS layout, linked the Rust/native ABI, and ran all 117 Rust tests without
+CUTLASS layout, linked the Rust/native ABI, and ran all 119 Rust tests without
 creating a CUDA context. The compile-only dense control contains 64 native
-SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions. The GLMAXX-owned
-packed-byte control and its Rust M1/M256 runner also compile and link; the
-control materializes gate/up only as a named development boundary. There is
-still no device launch, counter, or timing evidence. The compact results are
-recorded in `docs/cn4-graph-preparation-result-20260729.md`.
+SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions, and the expert-grouped
+control contains another 64. The GLMAXX-owned packed-byte controls and their
+Rust M1/M256 runners compile and link; both controls materialize gate/up only
+as named development boundaries. There is still no device launch, counter,
+or timing evidence. The latest compact result is recorded in
+`docs/cn4-grouped-control-preparation-20260729.md`.
 
 The first cn4 session must establish correctness before replacing the
 CUDA-core dot product with the CUTLASS block-scaled MMA path. A source file
@@ -153,8 +154,8 @@ The external evidence directory must contain:
 - complete Rust test output;
 - CMake configure/build output and compiler command lines;
 - the 393,216-comparison CUTLASS layout-probe result;
-- a shared-library SASS record proving exactly 64 expected SM120 NVFP4
-  `OMMA.SF` instructions and the exported dense-control symbol;
+- a shared-library SASS record proving exactly 128 expected SM120 NVFP4
+  `OMMA.SF` instructions and the exported dense/grouped-control symbols;
 - one JSON correctness report for each of the 135 positive cases, a summary
   proving all nine negative route cases were rejected, two 20-repeat eager
   determinism gates, and SHA-256 for every report;
@@ -164,6 +165,9 @@ The external evidence directory must contain:
 - M1 and M256 CUTLASS packed-byte control reports, each proving numerical
   agreement and bitwise identity across 20 eager repeats, plus a summary and
   SHA-256 for every report;
+- fourteen positive expert-grouped CUTLASS reports over M1/M256 routing,
+  two negative route rejections, 20-repeat determinism for the all-expert
+  cases, a summary, and SHA-256 for every report;
 - later, separate kernel and inclusive timing, control results, profiler
   reports, and a provenance/result manifest.
 

@@ -2,10 +2,12 @@
 
 Date: 2026-07-29
 
-Status: GLMAXX-owned packed-byte dense control compiled and linked without a
-device launch. The retained CUDA-core control and this materialized gate/up
-control must pass the reviewed SM120 correctness gates before the fused
-candidate can replace either.
+Status: GLMAXX-owned packed-byte dense and expert-grouped controls compile and
+link without a device launch. Expert-local SFA allocation, grouped metadata,
+the native launcher, and the Rust correctness runner are implemented. The
+retained CUDA-core control and both materialized gate/up controls must pass
+the reviewed SM120 correctness gates before the fused candidate can replace
+them.
 
 ## Pinned implementation anchors
 
@@ -109,9 +111,13 @@ and expert-local SFA workspace.
 3. Prove the dense control against the CPU oracle at M1 and M256; retain its
    materialized accumulator only as evidence.
 4. Add expert-local SFA byte arithmetic, prefix sums, bounds tests, and a
-   quantization writer; prove every written offset with CUTLASS.
+   quantization writer; prove every written offset with CUTLASS. Complete
+   compile-only: Rust/native workspace formulas agree, SFA slabs are bounded,
+   and the native writer consumes the exact per-expert offsets.
 5. Add a grouped materialized control and test empty, tail, one-hot,
-   all-expert, and Zipf routing.
+   all-expert, and Zipf routing. Complete through compile/link: the grouped
+   pointer-array kernel and a 14-positive/2-negative Rust runner are built;
+   device correctness remains review-gated.
 6. Replace the materialized epilogue with paired gate/up FP32 fragments and
    BF16 SwiGLU store.
 7. Add the decode persistent queue, then tune prefill independently.

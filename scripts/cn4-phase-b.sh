@@ -62,6 +62,10 @@ case "${review_artifact}" in
     ;;
 esac
 review_relative="${review_artifact#"${repo_dir}/"}"
+if [[ "${review_relative}" != "fable-manifest-abi-v022.md" ]]; then
+  echo "Review artifact must be the dedicated root fable-manifest-abi-v022.md result, not a handoff or disposition" >&2
+  exit 65
+fi
 if ! git ls-files --error-unmatch "${review_relative}" >/dev/null 2>&1; then
   echo "Review artifact must be tracked by Git" >&2
   exit 65
