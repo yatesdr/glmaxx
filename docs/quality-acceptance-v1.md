@@ -265,12 +265,17 @@ It must also satisfy the control-relative gates below.
 The comparison set contains:
 
 - pinned BF16 reference logits;
-- every compressed control that fits the same four-card target with the same
-  protected tensors, cache posture, context capacity, and MTP0 state; and
+- every preregistered compressed control that fits the same four-card target
+  with the same cache posture, context capacity, and MTP0 state; and
 - the candidate serving policy.
 
 An all-NVFP4 profile that cannot meet the capacity contract is a kernel
 control, not a quality noninferiority control.
+
+Controls may have different EXL3, NVFP4, FP8, 6-bit, or BF16 membership
+because choosing that membership is the purpose of this gate. Every
+difference is explicit in the immutable weight-policy digest and physical
+budget; a result may not relabel a precision change as a kernel-only speedup.
 
 The `quality_control` is the capacity-feasible control with the lowest mean
 KLD. Ties within `1e-6` are resolved by p99 KLD, then task aggregate, then
