@@ -242,16 +242,25 @@ impl ResidencyManager {
     }
 
     pub fn register_nvme(&mut self, record: TierRecord) -> Result<(), ResidencyError> {
-        record.validate().map_err(|_| ResidencyError::Record)?;
-        if record.tier != Tier::Nvme {
-            return Err(ResidencyError::Record);
-        }
-        if self
-            .entries
-            .get(&record.page_key)
-            .is_some_and(|entry| entry.record.generation >= record.generation)
-        {
-            return Err(ResidencyError::Stale);
+        self.validate_nvme_registration(&record)?;
+        let mut next_hbm_bytes = self.hbm_bytes;
+        let mut next_dram_bytes = self.dram_bytes;
+        if let Some(existing) = self.entries.get(&record.page_key) {
+            let bytes = entry_bytes(&existing.record)?;
+            match existing.residency {
+                Residency::Hbm => {
+                    next_hbm_bytes = next_hbm_bytes
+                        .checked_sub(bytes)
+                        .ok_or(ResidencyError::Overflow)?;
+                }
+                Residency::Dram => {
+                    next_dram_bytes = next_dram_bytes
+                        .checked_sub(bytes)
+                        .ok_or(ResidencyError::Overflow)?;
+                }
+                Residency::Nvme => {}
+                Residency::Restoring => return Err(ResidencyError::State),
+            }
         }
         self.entries.insert(
             record.page_key,
@@ -263,6 +272,28 @@ impl ResidencyManager {
                 last_touch: 0,
             },
         );
+        self.hbm_bytes = next_hbm_bytes;
+        self.dram_bytes = next_dram_bytes;
+        Ok(())
+    }
+
+    pub fn validate_nvme_registration(&self, record: &TierRecord) -> Result<(), ResidencyError> {
+        record.validate().map_err(|_| ResidencyError::Record)?;
+        if record.tier != Tier::Nvme {
+            return Err(ResidencyError::Record);
+        }
+        if let Some(entry) = self.entries.get(&record.page_key) {
+            if entry.record.generation >= record.generation {
+                return Err(ResidencyError::Stale);
+            }
+            if entry.pin_count != 0 {
+                return Err(ResidencyError::Pinned);
+            }
+            if entry.residency == Residency::Restoring {
+                return Err(ResidencyError::State);
+            }
+            entry_bytes(&entry.record)?;
+        }
         Ok(())
     }
 
@@ -639,6 +670,53 @@ mod tests {
             .unwrap();
         assert_eq!(manager.location(second.page_key), Some(Residency::Nvme));
         assert_eq!(manager.location(third.page_key), Some(Residency::Hbm));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn newer_registration_preserves_pins_and_releases_resident_accounting() {
+        let root = temporary_store("residency-generation");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let first = store.publish(page(0x41)).unwrap();
+        let page_bytes = entry_bytes(&first).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: page_bytes,
+            dram_bytes: page_bytes,
+        })
+        .unwrap();
+        manager.register_nvme(first.clone()).unwrap();
+        manager
+            .begin_restore(1, first.page_key, 0, owner_rank(0))
+            .unwrap();
+        manager
+            .complete_restore(RestoreResult {
+                request_id: 1,
+                page_ordinal: 0,
+                page: store.restore(first.page_key).unwrap().unwrap(),
+            })
+            .unwrap();
+        manager.pin_hbm(first.page_key).unwrap();
+
+        let mut newer = first.clone();
+        newer.generation = 2;
+        assert_eq!(
+            manager.validate_nvme_registration(&newer),
+            Err(ResidencyError::Pinned)
+        );
+        assert_eq!(
+            manager.register_nvme(newer.clone()),
+            Err(ResidencyError::Pinned)
+        );
+        assert_eq!(manager.location(first.page_key), Some(Residency::Hbm));
+        assert_eq!(manager.hbm_bytes(), page_bytes);
+
+        manager.unpin(first.page_key).unwrap();
+        manager.register_nvme(newer).unwrap();
+        assert_eq!(manager.location(first.page_key), Some(Residency::Nvme));
+        assert_eq!(manager.hbm_bytes(), 0);
+        assert_eq!(manager.dram_bytes(), 0);
+        assert_eq!(manager.register_nvme(first), Err(ResidencyError::Stale));
+        assert_eq!(manager.location([0x41; 32]), Some(Residency::Nvme));
         fs::remove_dir_all(root).unwrap();
     }
 }

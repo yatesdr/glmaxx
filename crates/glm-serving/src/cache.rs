@@ -9,6 +9,23 @@ use glm_cache::{
 pub struct RestoredPrefix {
     pub matched_tokens: u32,
     pub page_keys: Vec<PrefixPageKey>,
+    pub page_has_draft: Vec<bool>,
+}
+
+impl RestoredPrefix {
+    pub fn validate(&self) -> Result<(), PrefixRestoreError> {
+        let page_tokens =
+            u32::try_from(glm_cache::PAGE_TOKENS).map_err(|_| PrefixRestoreError::Overflow)?;
+        let expected_pages = usize::try_from(self.matched_tokens / page_tokens)
+            .map_err(|_| PrefixRestoreError::Overflow)?;
+        if !self.matched_tokens.is_multiple_of(page_tokens)
+            || expected_pages != self.page_keys.len()
+            || self.page_has_draft.len() != self.page_keys.len()
+        {
+            return Err(PrefixRestoreError::Record);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +43,7 @@ enum PendingPageState {
 struct PendingPage {
     key: PrefixPageKey,
     rank: u8,
+    has_draft: bool,
     state: PendingPageState,
 }
 
@@ -70,7 +88,8 @@ impl PrefixRestoreCoordinator {
         tokens: &[u32],
         records: Vec<TierRecord>,
     ) -> Result<Vec<PrefixPageKey>, PrefixRestoreError> {
-        let keys = self.index.derive_keys(tokens);
+        let mut candidate_index = self.index.clone();
+        let keys = candidate_index.insert(tokens, records.clone())?;
         if keys.len() != records.len()
             || keys
                 .iter()
@@ -81,9 +100,14 @@ impl PrefixRestoreCoordinator {
         }
         for (ordinal, record) in records.iter().enumerate() {
             let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
-            self.ranks[usize::from(owner_rank(ordinal))].register_nvme(record.clone())?;
+            self.ranks[usize::from(owner_rank(ordinal))].validate_nvme_registration(record)?;
         }
-        self.index.insert(tokens, records).map_err(Into::into)
+        for (ordinal, record) in records.into_iter().enumerate() {
+            let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
+            self.ranks[usize::from(owner_rank(ordinal))].register_nvme(record)?;
+        }
+        self.index = candidate_index;
+        Ok(keys)
     }
 
     pub fn restore_longest(
@@ -112,13 +136,26 @@ impl PrefixRestoreCoordinator {
         request_id: u64,
         tokens: &[u32],
     ) -> Result<PrefixRestoreStatus, PrefixRestoreError> {
+        self.begin_restore_longest_with_capability(request_id, tokens, false)
+    }
+
+    pub fn begin_restore_longest_with_capability(
+        &mut self,
+        request_id: u64,
+        tokens: &[u32],
+        require_draft: bool,
+    ) -> Result<PrefixRestoreStatus, PrefixRestoreError> {
         if request_id == 0 || self.pending.contains_key(&request_id) {
             return Err(PrefixRestoreError::Busy);
         }
-        let Some(matched) = self.index.longest_match(tokens) else {
+        let Some(matched) = self
+            .index
+            .longest_match_with_capability(tokens, require_draft)
+        else {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens: 0,
                 page_keys: Vec::new(),
+                page_has_draft: Vec::new(),
             }));
         };
         let matched_tokens =
@@ -130,6 +167,11 @@ impl PrefixRestoreCoordinator {
         for (ordinal, &key) in matched.page_keys.iter().enumerate() {
             let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
             let rank = owner_rank(ordinal);
+            let has_draft = self
+                .index
+                .record(key)
+                .ok_or(PrefixRestoreError::Record)?
+                .mtp;
             let manager = &mut self.ranks[usize::from(rank)];
             let state = match manager.location(key.0) {
                 Some(Residency::Hbm) => {
@@ -176,7 +218,12 @@ impl PrefixRestoreCoordinator {
                     return Err(PrefixRestoreError::Record);
                 }
             };
-            pending.pages.push(PendingPage { key, rank, state });
+            pending.pages.push(PendingPage {
+                key,
+                rank,
+                has_draft,
+                state,
+            });
         }
         if pending
             .pages
@@ -186,6 +233,7 @@ impl PrefixRestoreCoordinator {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens,
                 page_keys: pending.pages.iter().map(|page| page.key).collect(),
+                page_has_draft: pending.pages.iter().map(|page| page.has_draft).collect(),
             }));
         }
         self.pending.insert(request_id, pending);
@@ -234,6 +282,7 @@ impl PrefixRestoreCoordinator {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens: pending.matched_tokens,
                 page_keys: pending.pages.iter().map(|page| page.key).collect(),
+                page_has_draft: pending.pages.iter().map(|page| page.has_draft).collect(),
             }));
         }
         self.pending.insert(request_id, pending);
@@ -349,6 +398,29 @@ mod tests {
     }
 
     #[test]
+    fn restored_prefix_capability_shape_fails_closed() {
+        let key = PrefixPageKey([1; 32]);
+        assert!(matches!(
+            RestoredPrefix {
+                matched_tokens: 64,
+                page_keys: vec![key],
+                page_has_draft: Vec::new(),
+            }
+            .validate(),
+            Err(PrefixRestoreError::Record)
+        ));
+        assert!(matches!(
+            RestoredPrefix {
+                matched_tokens: 63,
+                page_keys: vec![key],
+                page_has_draft: vec![true],
+            }
+            .validate(),
+            Err(PrefixRestoreError::Record)
+        ));
+    }
+
+    #[test]
     fn multi_page_restore_is_submitted_without_blocking_admission() {
         let root = temporary_store();
         let namespace = PrefixNamespace::new(NamespaceInputs {
@@ -373,17 +445,21 @@ mod tests {
                         namespace: namespace.0,
                         page_key: key.0,
                         generation: 1,
-                        mtp: false,
-                        pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
-                            .into_iter()
-                            .map(|piece| PagePieceBytes {
-                                piece,
-                                bytes: vec![
-                                    u8::try_from(page + 1).unwrap();
-                                    piece.expected_bytes() as usize
-                                ],
-                            })
-                            .collect(),
+                        mtp: true,
+                        pieces: [
+                            TierPiece::TargetKv,
+                            TierPiece::TargetIndexer,
+                            TierPiece::DraftSidecar,
+                        ]
+                        .into_iter()
+                        .map(|piece| PagePieceBytes {
+                            piece,
+                            bytes: vec![
+                                u8::try_from(page + 1).unwrap();
+                                piece.expected_bytes() as usize
+                            ],
+                        })
+                        .collect(),
                     })
                     .unwrap(),
             );
@@ -405,7 +481,9 @@ mod tests {
             2,
         )
         .unwrap();
-        coordinator.register_prefix(&tokens, records).unwrap();
+        coordinator
+            .register_prefix(&tokens, records.clone())
+            .unwrap();
         assert_eq!(
             coordinator.begin_restore_longest(8, &tokens).unwrap(),
             PrefixRestoreStatus::Pending
@@ -448,6 +526,8 @@ mod tests {
         };
         assert_eq!(restored.matched_tokens, 128);
         assert_eq!(restored.page_keys, keys);
+        assert_eq!(restored.page_has_draft, [true, true]);
+        restored.validate().unwrap();
         assert_eq!(
             coordinator
                 .services
@@ -463,6 +543,18 @@ mod tests {
             );
         }
         coordinator.release(&keys).unwrap();
+        coordinator.ranks[1].pin_hbm(keys[1].0).unwrap();
+        let mut newer_records = records;
+        for record in &mut newer_records {
+            record.generation = 2;
+        }
+        assert!(matches!(
+            coordinator.register_prefix(&tokens, newer_records),
+            Err(PrefixRestoreError::Residency(ResidencyError::Pinned))
+        ));
+        assert_eq!(coordinator.location(0, keys[0]), Some(Residency::Hbm));
+        assert_eq!(coordinator.location(1, keys[1]), Some(Residency::Hbm));
+        coordinator.ranks[1].unpin(keys[1].0).unwrap();
         assert!(matches!(
             coordinator.poll_restore(9),
             Err(PrefixRestoreError::UnknownRequest)

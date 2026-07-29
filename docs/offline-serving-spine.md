@@ -58,6 +58,18 @@ includes restore-pending and prefill-active requests. Fully restored prompts
 release that reservation at admission; cold/partial prompts release it after
 their final prefill chunk.
 
+Every restored page now carries a capability bit derived from its validated
+`TierRecord`: target-only or target plus the combined draft sidecar. The
+capability vector is shape-checked against the restored full-page count and
+retained with the active prefix lease. A newer durable generation cannot
+replace a pinned HBM entry; unpinned replacement releases prior HBM/DRAM byte
+accounting before becoming NVMe-resident. Multi-page registration preflights
+the complete prefix, so a pinned or stale late page cannot partially replace
+earlier pages. An MTP request never attaches a target-only restored page.
+The index selects only the longest contiguous all-draft-capable subprefix; if
+none exists, admission uses a cold prefill that recomputes the complete draft
+sidecar.
+
 ## Durable page store
 
 `glm-cache::FileTierStore` writes exact target KV/indexer and optional MTP

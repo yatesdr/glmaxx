@@ -8,7 +8,6 @@ use std::{
     time::Duration,
 };
 
-use glm_cache::PrefixPageKey;
 use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
 #[cfg(test)]
 use glm_scheduler::SamplingCollective;
@@ -97,7 +96,7 @@ pub struct ServingCoordinator {
     events: VecDeque<RequestEvent>,
     terminal_events: BTreeSet<u64>,
     prefix_cache: Option<PrefixRestoreCoordinator>,
-    prefix_leases: BTreeMap<u64, Vec<PrefixPageKey>>,
+    prefix_leases: BTreeMap<u64, RestoredPrefix>,
     pending_admissions: BTreeMap<u64, PendingAdmission>,
     request_tokens: BTreeMap<u64, Box<[u32]>>,
 }
@@ -204,7 +203,7 @@ impl ServingCoordinator {
             .prefix_cache
             .as_mut()
             .ok_or(ServingError::CacheUnavailable)?
-            .begin_restore_longest(spec.id, tokens)?;
+            .begin_restore_longest_with_capability(spec.id, tokens, spec.mtp_depth != 0)?;
         self.retained_prompt_bytes = self
             .retained_prompt_bytes
             .checked_add(prompt_bytes)
@@ -260,29 +259,48 @@ impl ServingCoordinator {
         &mut self,
         spec: RequestSpec,
         tokens: Box<[u32]>,
-        restored: RestoredPrefix,
+        mut restored: RestoredPrefix,
     ) -> Result<AdmissionStatus, ServingError> {
-        let page_keys = restored.page_keys;
+        if let Err(error) = restored.validate() {
+            self.prefix_cache
+                .as_mut()
+                .ok_or(ServingError::CacheUnavailable)?
+                .release(&restored.page_keys)?;
+            self.release_prompt_reservation(tokens.len())?;
+            return Err(error.into());
+        }
+        if spec.mtp_depth != 0 && restored.page_has_draft.contains(&false) {
+            self.prefix_cache
+                .as_mut()
+                .ok_or(ServingError::CacheUnavailable)?
+                .release(&restored.page_keys)?;
+            restored = RestoredPrefix {
+                matched_tokens: 0,
+                page_keys: Vec::new(),
+                page_has_draft: Vec::new(),
+            };
+        }
+        let matched_tokens = restored.matched_tokens;
         let result = self.admit_prevalidated(ServingRequest {
             spec,
-            cached_prompt_tokens: restored.matched_tokens,
+            cached_prompt_tokens: matched_tokens,
         });
         if let Err(error) = result {
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
-                .release(&page_keys)?;
+                .release(&restored.page_keys)?;
             self.release_prompt_reservation(tokens.len())?;
             return Err(error);
         }
-        self.prefix_leases.insert(spec.id, page_keys);
-        if restored.matched_tokens == spec.prompt_tokens {
+        self.prefix_leases.insert(spec.id, restored);
+        if matched_tokens == spec.prompt_tokens {
             self.release_prompt_reservation(tokens.len())?;
         } else {
             self.request_tokens.insert(spec.id, tokens);
         }
         Ok(AdmissionStatus::Admitted {
-            cached_prompt_tokens: restored.matched_tokens,
+            cached_prompt_tokens: matched_tokens,
         })
     }
 
@@ -528,13 +546,13 @@ impl ServingCoordinator {
 
     fn release_request_prefix(&mut self, request_id: u64) -> Result<(), ServingError> {
         self.release_request_tokens(request_id)?;
-        let Some(page_keys) = self.prefix_leases.remove(&request_id) else {
+        let Some(restored) = self.prefix_leases.remove(&request_id) else {
             return Ok(());
         };
         self.prefix_cache
             .as_mut()
             .ok_or(ServingError::CacheUnavailable)?
-            .release(&page_keys)?;
+            .release(&restored.page_keys)?;
         Ok(())
     }
 
@@ -1119,6 +1137,40 @@ mod tests {
             request_id: 77,
             reason: RequestFinishReason::Length,
         }));
+
+        assert_eq!(
+            serving
+                .begin_admit_tokens(
+                    RequestSpec {
+                        id: 78,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 1,
+                        mtp_depth: 6,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    &tokens,
+                )
+                .unwrap(),
+            AdmissionStatus::Admitted {
+                cached_prompt_tokens: 0,
+            }
+        );
+        assert_eq!(serving.retained_prompt_bytes(), 256);
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Admitted {
+                request_id: 78,
+                cached_prompt_tokens: 0,
+            }]
+        );
+        serving.cancel(78).unwrap();
+        assert!(!serving.tick().unwrap());
+        assert_eq!(serving.retained_prompt_bytes(), 0);
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Cancelled { request_id: 78 }]
+        );
         drop(serving);
         fs::remove_dir_all(root).unwrap();
     }

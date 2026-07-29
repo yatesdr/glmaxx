@@ -161,6 +161,15 @@ impl PrefixIndex {
 
     #[must_use]
     pub fn longest_match(&self, tokens: &[u32]) -> Option<PrefixMatch> {
+        self.longest_match_with_capability(tokens, false)
+    }
+
+    #[must_use]
+    pub fn longest_match_with_capability(
+        &self,
+        tokens: &[u32],
+        require_draft: bool,
+    ) -> Option<PrefixMatch> {
         let mut parent = None;
         let mut keys = Vec::new();
         let mut terminal = None;
@@ -169,7 +178,7 @@ impl PrefixIndex {
             let Some(page) = self.pages.get(&key) else {
                 break;
             };
-            if page.parent != parent {
+            if page.parent != parent || (require_draft && !page.record.mtp) {
                 break;
             }
             keys.push(key);
@@ -284,6 +293,33 @@ mod tests {
         assert_eq!(matched.matched_tokens, 128);
         assert_eq!(matched.page_keys, keys);
         assert_eq!(matched.terminal_generation, 2);
+    }
+
+    #[test]
+    fn draft_capability_stops_at_the_first_target_only_page() {
+        let namespace = namespace();
+        let mut index = PrefixIndex::new(namespace);
+        let tokens: Vec<u32> = (0..128).collect();
+        let keys = index.derive_keys(&tokens);
+        let mut first = record(namespace, keys[0], 1);
+        first.mtp = true;
+        first.pieces.push(TierPieceRecord {
+            piece: TierPiece::DraftSidecar,
+            byte_length: TierPiece::DraftSidecar.expected_bytes(),
+            storage_offset: 4 * 1024 * 1024,
+            sha256: [3; 32],
+        });
+        index
+            .insert(&tokens, vec![first, record(namespace, keys[1], 1)])
+            .unwrap();
+        assert_eq!(
+            index
+                .longest_match_with_capability(&tokens, true)
+                .unwrap()
+                .page_keys,
+            [keys[0]]
+        );
+        assert_eq!(index.longest_match(&tokens).unwrap().page_keys, keys);
     }
 
     #[test]
