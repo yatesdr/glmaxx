@@ -65,10 +65,43 @@ DCP owners. It produces:
 - the new sequence-table generation; and
 - a canonical reservation digest.
 
-The reservation and generation become part of the canonical `StepInput`.
-Each rank receives only its owner-local page spans but acknowledges the same
-global input hash and generation before launch. A missing, excess, stale, or
-wrong-owner span is fatal before any collective.
+## Rank page-table delta
+
+Rank execution needs the complete context-page mapping for attention, not
+only the pages written by the current step. Each persistent rank therefore
+owns a device-resident sequence page table and applies one canonical
+`PageTableDelta` before launch.
+
+The delta contains:
+
+```text
+schema                         glmaxx.page-table-delta.v1
+generation_before              u64
+generation_after               u64
+sequence updates               0..64
+owner-local page entries       bounded by the active arena
+removed sequence IDs           0..64
+canonical global digest        SHA-256
+```
+
+Each sequence update carries its request ID, committed position, MTP posture,
+and complete ordered `(page ordinal, owner rank, target local page ID,
+optional draft local page ID, state, valid-token count)` mapping whenever it
+is first attached. Later updates may carry a consecutive changed suffix only
+when both host and device prove the same prior generation and sequence length.
+Otherwise the complete mapping is resent.
+
+All four ranks hash the same global delta. A rank uploads only its owner-local
+entries plus the rank-invariant sequence metadata, but acknowledges the
+global digest after its stream dependency makes the upload visible. The graph
+launch depends on that acknowledgment.
+
+The reservation generation and global delta digest become part of canonical
+step execution input. This requires adding an explicit
+`page_table_delta_digest` field to the pending `StepInput.v1` candidate, or a
+reviewed equivalent binding; the current candidate cannot be promoted
+unchanged. A missing, excess, stale, or wrong-owner span is fatal before any
+collective.
 
 ## Commit and rollback
 
@@ -95,6 +128,12 @@ step commits or rolls back. Terminal cleanup removes the active sequence
 before releasing the corresponding residency pins. Shared sealed pages remain
 reachable by other sequences; private tails return both target and draft
 slots.
+
+Freed physical IDs are quarantined until every rank acknowledges the removal
+generation. If no compute step is ready to carry that delta, the coordinator
+submits a `CACHE_ONLY` page-table update with no CUDA graph or collective.
+An ID may not be reused while any rank could still resolve it to the prior
+sequence.
 
 ## Fixed-capacity hot-path API
 
@@ -151,4 +190,3 @@ Before a CUDA executor consumes this boundary, tests cover:
 - session fork copy-on-write isolation;
 - exact 1,048,576-token admission with the 4,167-page serving arena; and
 - generation/digest disagreement across ranks.
-
