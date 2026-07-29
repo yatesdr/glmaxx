@@ -19,7 +19,10 @@ independent reviewer accepts the generated operation manifest and the v0.2.2
 physical/cache ABI amendment. Separate operator authorization is also
 required. The kernel is not yet qualified as functional on SM120, and it is
 not a performance candidate yet. No CUDA compiler or GPU was available during
-Phase A, so there is no CUDA compile, launch, counter, or timing evidence.
+Phase A. A later cn0 non-acceptance pass compiled `sm_120f` cubins with CUDA
+12.9, proved the CUTLASS layout, and linked the Rust/native ABI, but did not
+touch the occupied SM86 GPU. There is still no device launch, counter, or
+timing evidence.
 
 The first cn4 session must establish correctness before replacing the
 CUDA-core dot product with the CUTLASS block-scaled MMA path. A source file

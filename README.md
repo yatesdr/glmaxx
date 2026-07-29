@@ -60,6 +60,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Frozen first NVFP4 physical ABI](docs/nvfp4-physical-abi.md)
 - [cn4 kernel readiness and punchlist](docs/cn4-kernel-readiness.md)
 - [Phase A CPU preparation proof](docs/phase-a-proof.md)
+- [cn0 SM86 non-acceptance compile/link bring-up](docs/cn0-sm86-bringup.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Draft roadmap](docs/roadmap.md)
@@ -82,7 +83,10 @@ committed recipe and digest. CUDA C++ is restricted to the device kernel and
 thin native bridge; format, orchestration, validation, evidence generation,
 and ownership are Rust.
 
-No GPU claim has been made. CUDA compilation and SM120 correctness remain
+No GPU claim has been made. A later non-acceptance cn0 pass compiled the
+`sm_120f` cubins with CUDA 12.9, proved the CUTLASS scale layout, linked the
+Rust/native ABI, and exercised the no-device error path without touching the
+occupied A6000. Pinned CUDA 13.3 compilation and SM120 correctness remain
 blocked on independent review of the generated manifest/v0.2.2 amendment and
 a separately authorized cn4 session. The first performance task is to replace
 the retained CUDA-core control with CUTLASS block-scaled MMA.
