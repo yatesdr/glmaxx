@@ -50,6 +50,7 @@ pub struct FileTierStore {
     published: BTreeMap<[u8; 32], TierRecord>,
     next_transaction: u64,
     next_data_offset: u64,
+    write_poisoned: bool,
 }
 
 impl FileTierStore {
@@ -95,6 +96,7 @@ impl FileTierStore {
             published,
             next_transaction,
             next_data_offset,
+            write_poisoned: false,
         })
     }
 
@@ -145,6 +147,9 @@ impl FileTierStore {
         mut request: DurablePageRequest,
         failpoint: Option<WriteFailpoint>,
     ) -> Result<TierRecord, StoreError> {
+        if self.write_poisoned {
+            return Err(StoreError::WritePoisoned);
+        }
         if self
             .published
             .get(&request.page_key)
@@ -191,8 +196,22 @@ impl FileTierStore {
         };
         record.validate()?;
 
+        let result = self.publish_prevalidated(request, record, next_offset, failpoint);
+        if result.is_err() {
+            self.write_poisoned = true;
+        }
+        result
+    }
+
+    fn publish_prevalidated(
+        &mut self,
+        request: DurablePageRequest,
+        record: TierRecord,
+        next_offset: u64,
+        failpoint: Option<WriteFailpoint>,
+    ) -> Result<TierRecord, StoreError> {
         let transaction = self.next_transaction;
-        self.next_transaction = self
+        let next_transaction = self
             .next_transaction
             .checked_add(1)
             .ok_or(StoreError::Overflow)?;
@@ -200,6 +219,7 @@ impl FileTierStore {
         if in_memory_transaction != transaction {
             return Err(StoreError::JournalSequence);
         }
+        self.next_transaction = next_transaction;
         let begin = JournalEvent::Begin {
             transaction,
             record: record.clone(),
@@ -495,6 +515,7 @@ pub enum StoreError {
     JournalChecksum,
     Overflow,
     InjectedCrash,
+    WritePoisoned,
 }
 
 impl fmt::Display for StoreError {
@@ -601,6 +622,10 @@ mod tests {
                 store.publish_inner(request(0x30 + ordinal as u8, 1, false), Some(failpoint)),
                 Err(StoreError::InjectedCrash)
             ));
+            assert!(matches!(
+                store.publish(request(0x40 + ordinal as u8, 1, false)),
+                Err(StoreError::WritePoisoned)
+            ));
             drop(store);
             let mut reopened = FileTierStore::open(&root).unwrap();
             assert!(
@@ -611,6 +636,59 @@ mod tests {
             );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn failed_publication_poison_writes_until_replay_but_not_preflight_errors() {
+        let root = temporary_store("poisoned-writer");
+        let mut store = FileTierStore::open(&root).unwrap();
+
+        assert!(matches!(
+            store.publish_inner(
+                DurablePageRequest {
+                    pieces: Vec::new(),
+                    ..request(0x20, 1, false)
+                },
+                None
+            ),
+            Err(StoreError::Pieces)
+        ));
+        store.publish(request(0x20, 1, false)).unwrap();
+        assert!(matches!(
+            store.publish(request(0x20, 1, false)),
+            Err(StoreError::StaleGeneration)
+        ));
+        store.publish(request(0x20, 2, false)).unwrap();
+
+        assert!(matches!(
+            store.publish_inner(
+                request(0x21, 1, false),
+                Some(WriteFailpoint::FirstPieceJournaled)
+            ),
+            Err(StoreError::InjectedCrash)
+        ));
+        let journal_bytes_after_failure = store.journal_file.metadata().unwrap().len();
+        let data_bytes_after_failure = store.data.metadata().unwrap().len();
+        assert!(matches!(
+            store.publish(request(0x22, 1, false)),
+            Err(StoreError::WritePoisoned)
+        ));
+        assert_eq!(
+            store.journal_file.metadata().unwrap().len(),
+            journal_bytes_after_failure
+        );
+        assert_eq!(
+            store.data.metadata().unwrap().len(),
+            data_bytes_after_failure
+        );
+        assert!(store.restore([0x20; 32]).unwrap().is_some());
+        drop(store);
+
+        let mut reopened = FileTierStore::open(&root).unwrap();
+        assert!(reopened.restore([0x21; 32]).unwrap().is_none());
+        reopened.publish(request(0x22, 1, false)).unwrap();
+        assert!(reopened.restore([0x22; 32]).unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
