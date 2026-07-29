@@ -68,6 +68,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
 - [Strict safetensors checkpoint ingest contract](docs/checkpoint-ingest.md)
 - [Bounded native-rank reader CPU proof](docs/native-rank-reader-proof-v1.md)
+- [Strict production rank-manifest CPU proof](docs/production-rank-manifest-validation-v1.md)
+- [Production rank-manifest adversarial handoff](docs/fable-production-rank-manifest-validation-v1-handoff.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
@@ -103,14 +105,15 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 221 Rust tests plus formatting, Clippy with
+The current local gate passes 225 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
-the pinned external-tokenizer proof. It also verifies all 21 candidate-based
+the pinned external-tokenizer proof. It also verifies all 23 candidate-based
 Fable handoffs against their exact committed inputs and can classify an
 explicit review artifact by exact acceptance-token presence. The CPU/reference
 workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
-bounded file-backed four-rank verification, hybrid policy machinery, TP4
+bounded file-backed four-rank verification, typed production-manifest
+validation, hybrid policy machinery, TP4
 startup and step consensus, bounded continuous batching, distributed-sampling
 oracles, transactional prefix storage, HBM/DRAM/NVMe residency simulation,
 active page tables, persistent worker interfaces, request streaming, and

@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `ee9d16bc1d20d90aefaf1e45d0d5ecfbd8a99a23`
+Baseline audited: `46bff28aaf950ea15fdfc69ac074412cbd46c9c4`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -33,7 +33,7 @@ State meanings:
 | C08 | OPEN | Complete GLM target layer implements attention/indexer, norms, residuals, routing, experts, and exact TP/DCP reductions | CPU sparse MoE references exist; no complete CUDA layer | One-layer TP4 replay after C06/C07 |
 | C09 | REVIEW | Distributed greedy, bounded top-k/top-p, mass, residual, and bonus sampling execute without full-vocabulary gather | Contract candidate `7c71818` freezes vocabulary padding, filters, SplitMix counter draws, MTP proposal/accept/residual/bonus schedule, composite routes, and `StepOutput.v2`; implementation is intentionally absent | Fable review of `docs/fable-distributed-sampling-abi-v1-handoff.md`, then CPU proof |
 | C10 | OPEN | Real recurrent GLM draft layer supports MTP0–6 proposal, verification, commit/rollback, accepted EOS, residual, and bonus semantics | CPU transition/output metadata exists; no real draft execution | C02/C03, real draft-layer runner, then matched MTP0 equivalence |
-| C11 | OPEN | Strict four-rank checkpoint loader maps a fit-capable rank set into immutable device arenas and reaches healthy startup | File-backed one-pass rank verification passes at `ee9d16b`; corrected two-phase load candidate `4bb0708` separates rank-specific contracts from common tensor semantics and awaits r2 review; no CUDA sink, full-rank proof, or device residency | Fable r2 load-transaction review, CPU/mock proof, then CUDA sink and small-checkpoint smoke |
+| C11 | OPEN | Strict four-rank checkpoint loader maps a fit-capable rank set into immutable device arenas and reaches healthy startup | File-backed one-pass verification plus typed production-manifest/descriptor binding pass locally at `46bff28`; corrected two-phase load candidate `4bb0708` and manifest-reader implementation both await review; no transaction implementation, CUDA sink, full-rank proof, or device residency | Fable load-transaction r2 and manifest-reader reviews, CPU/mock transaction proof, then CUDA sink and small-checkpoint smoke |
 | C12 | OPEN | API backend serves checkpoint outputs rather than CPU worker tokens | Bounded adapter at `4cf3a62`; CPU-only and greedy-only | Connect only after C02/C03/C05/C09 |
 
 ## P0 — quality
@@ -85,7 +85,7 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Full gate at `3bf62e5`: 221 Rust tests and 21 candidate-based handoffs verified | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Full gate for implementation `46bff28`: 225 Rust tests and 23 candidate-based handoffs verified | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
 | D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier at `59e11e5` proves candidate hashes for all 20 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
