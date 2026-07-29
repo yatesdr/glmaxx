@@ -85,7 +85,7 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Full gate at `ee9d16b`: 221 Rust tests and 20 candidate-based handoffs verified | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Full gate at `3bf62e5`: 221 Rust tests and 21 candidate-based handoffs verified | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
 | D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier at `59e11e5` proves candidate hashes for all 20 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |

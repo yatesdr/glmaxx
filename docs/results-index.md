@@ -6,7 +6,9 @@ Current implementation baseline:
 `ee9d16bc1d20d90aefaf1e45d0d5ecfbd8a99a23`
 
 The complete local gate most recently ran at repository commit
-`ee9d16bc1d20d90aefaf1e45d0d5ecfbd8a99a23`.
+`3bf62e5a50e87c8f84e44170fb6d66b676830493`. The newest implementation
+change is `ee9d16b`; later commits add the checkpoint-load transaction design
+candidate and its hash-pinned handoff.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -14,11 +16,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The complete local gate passed at `ee9d16b`:
+The complete local gate passed at `3bf62e5`:
 
 - `scripts/local-checks.sh`: 221 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  all 20 candidate-based review-handoff hash proofs, and the external
+  all 21 candidate-based review-handoff hash proofs, and the external
   pinned-tokenizer proof;
 - platform: local CPU development host;
 - CUDA compiler or GPU context: not used;

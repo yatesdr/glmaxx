@@ -105,7 +105,7 @@ kernel, and engine work stays here.
 
 The current local gate passes 221 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
-the pinned external-tokenizer proof. It also verifies all 20 candidate-based
+the pinned external-tokenizer proof. It also verifies all 21 candidate-based
 Fable handoffs against their exact committed inputs and can classify an
 explicit review artifact by exact acceptance-token presence. The CPU/reference
 workspace includes
