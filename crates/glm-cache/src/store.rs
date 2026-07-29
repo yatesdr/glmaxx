@@ -701,6 +701,11 @@ mod tests {
         second.publish(request(0x1a, 1, false)).unwrap();
         assert!(second.restore([0x19; 32]).unwrap().is_some());
         assert!(second.restore([0x1a; 32]).unwrap().is_some());
+        assert!(
+            readers
+                .iter_mut()
+                .all(|reader| reader.restore([0x1a; 32]).unwrap().is_none())
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
