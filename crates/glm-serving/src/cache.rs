@@ -992,12 +992,9 @@ mod tests {
             coordinator.release(&[bogus_first, keys[1]]),
             Err(PrefixRestoreError::Residency(ResidencyError::Missing))
         ));
-        let mut newer_second = records[1].clone();
-        newer_second.generation = 2;
-        assert_eq!(
-            coordinator.ranks[1].validate_nvme_registration(&newer_second),
-            Err(ResidencyError::Pinned)
-        );
+        coordinator.ranks[1]
+            .validate_unpin_count(keys[1].0, 1)
+            .unwrap();
         coordinator.release(&keys).unwrap();
         coordinator.ranks[1].pin_hbm(keys[1].0).unwrap();
         let mut newer_records = records;

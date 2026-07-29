@@ -11,7 +11,9 @@ use std::{
     time::Duration,
 };
 
-use crate::{FileTierReader, RestoredPage, StoreError, Tier, TierRecord, owner_rank};
+use crate::{
+    FileTierReader, RestoredPage, StoreError, Tier, TierRecord, TierRecordRelation, owner_rank,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RestoreRequest {
@@ -246,6 +248,13 @@ pub struct NvmeRegistrationPlan {
     dram_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NvmeRegistrationAction {
+    Insert,
+    Replace,
+    Retain,
+}
+
 impl ResidencyManager {
     pub fn new(config: ResidencyConfig) -> Result<Self, ResidencyError> {
         if config.hbm_bytes == 0 {
@@ -273,31 +282,40 @@ impl ResidencyManager {
         let mut next_hbm_bytes = self.hbm_bytes;
         let mut next_dram_bytes = self.dram_bytes;
         let mut page_keys = BTreeSet::new();
-        for record in &records {
+        let mut planned_records = Vec::with_capacity(records.len());
+        for record in records {
             if !page_keys.insert(record.page_key) {
                 return Err(ResidencyError::Record);
             }
-            self.validate_nvme_registration(record)?;
-            if let Some(existing) = self.entries.get(&record.page_key) {
-                let bytes = entry_bytes(&existing.record)?;
-                match existing.residency {
-                    Residency::Hbm => {
-                        next_hbm_bytes = next_hbm_bytes
-                            .checked_sub(bytes)
-                            .ok_or(ResidencyError::Overflow)?;
+            match self.nvme_registration_action(&record)? {
+                NvmeRegistrationAction::Retain => continue,
+                NvmeRegistrationAction::Insert => {}
+                NvmeRegistrationAction::Replace => {
+                    let existing = self
+                        .entries
+                        .get(&record.page_key)
+                        .ok_or(ResidencyError::Missing)?;
+                    let bytes = entry_bytes(&existing.record)?;
+                    match existing.residency {
+                        Residency::Hbm => {
+                            next_hbm_bytes = next_hbm_bytes
+                                .checked_sub(bytes)
+                                .ok_or(ResidencyError::Overflow)?;
+                        }
+                        Residency::Dram => {
+                            next_dram_bytes = next_dram_bytes
+                                .checked_sub(bytes)
+                                .ok_or(ResidencyError::Overflow)?;
+                        }
+                        Residency::Nvme => {}
+                        Residency::Restoring => return Err(ResidencyError::State),
                     }
-                    Residency::Dram => {
-                        next_dram_bytes = next_dram_bytes
-                            .checked_sub(bytes)
-                            .ok_or(ResidencyError::Overflow)?;
-                    }
-                    Residency::Nvme => {}
-                    Residency::Restoring => return Err(ResidencyError::State),
                 }
             }
+            planned_records.push(record);
         }
         Ok(NvmeRegistrationPlan {
-            records,
+            records: planned_records,
             hbm_bytes: next_hbm_bytes,
             dram_bytes: next_dram_bytes,
         })
@@ -322,23 +340,42 @@ impl ResidencyManager {
     }
 
     pub fn validate_nvme_registration(&self, record: &TierRecord) -> Result<(), ResidencyError> {
+        self.nvme_registration_action(record).map(|_| ())
+    }
+
+    fn nvme_registration_action(
+        &self,
+        record: &TierRecord,
+    ) -> Result<NvmeRegistrationAction, ResidencyError> {
         record.validate().map_err(|_| ResidencyError::Record)?;
         if record.tier != Tier::Nvme {
             return Err(ResidencyError::Record);
         }
-        if let Some(entry) = self.entries.get(&record.page_key) {
-            if entry.record.generation >= record.generation {
-                return Err(ResidencyError::Stale);
+        let Some(entry) = self.entries.get(&record.page_key) else {
+            return Ok(NvmeRegistrationAction::Insert);
+        };
+        let relation = entry
+            .record
+            .relation_to(record)
+            .map_err(|_| ResidencyError::Record)?;
+        match relation {
+            TierRecordRelation::ExactDedup | TierRecordRelation::RetainMtp => {
+                Ok(NvmeRegistrationAction::Retain)
             }
-            if entry.pin_count != 0 {
-                return Err(ResidencyError::Pinned);
+            TierRecordRelation::MtpUpgrade => {
+                if record.generation <= entry.record.generation {
+                    return Err(ResidencyError::Stale);
+                }
+                if entry.pin_count != 0 {
+                    return Err(ResidencyError::Pinned);
+                }
+                if entry.residency == Residency::Restoring {
+                    return Err(ResidencyError::State);
+                }
+                entry_bytes(&entry.record)?;
+                Ok(NvmeRegistrationAction::Replace)
             }
-            if entry.residency == Residency::Restoring {
-                return Err(ResidencyError::State);
-            }
-            entry_bytes(&entry.record)?;
         }
-        Ok(())
     }
 
     pub fn begin_restore(
@@ -833,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_registration_preserves_pins_and_releases_resident_accounting() {
+    fn registration_deduplicates_and_only_mtp_upgrade_releases_resident_accounting() {
         let root = temporary_store("residency-generation");
         let mut store = FileTierStore::open(&root).unwrap();
         let first = store.publish(page(0x41)).unwrap();
@@ -856,26 +893,85 @@ mod tests {
             .unwrap();
         manager.pin_hbm(first.page_key).unwrap();
 
-        let mut newer = first.clone();
-        newer.generation = 2;
+        let mut upgrade_request = mtp_page(0x41);
+        upgrade_request.generation = 2;
+        let upgrade = store.publish(upgrade_request).unwrap();
+        let mut exact = first.clone();
+        exact.generation = 9;
+        manager.validate_nvme_registration(&exact).unwrap();
+        manager.register_nvme(exact).unwrap();
+        assert_eq!(manager.location(first.page_key), Some(Residency::Hbm));
+        assert_eq!(manager.hbm_bytes(), page_bytes);
+        assert_eq!(manager.record(first.page_key), Some(&first));
+
         assert_eq!(
-            manager.validate_nvme_registration(&newer),
+            manager.validate_nvme_registration(&upgrade),
             Err(ResidencyError::Pinned)
         );
         assert_eq!(
-            manager.register_nvme(newer.clone()),
+            manager.register_nvme(upgrade.clone()),
             Err(ResidencyError::Pinned)
         );
         assert_eq!(manager.location(first.page_key), Some(Residency::Hbm));
         assert_eq!(manager.hbm_bytes(), page_bytes);
 
         manager.unpin(first.page_key).unwrap();
-        manager.register_nvme(newer).unwrap();
+        manager.register_nvme(upgrade.clone()).unwrap();
         assert_eq!(manager.location(first.page_key), Some(Residency::Nvme));
         assert_eq!(manager.hbm_bytes(), 0);
         assert_eq!(manager.dram_bytes(), 0);
-        assert_eq!(manager.register_nvme(first), Err(ResidencyError::Stale));
+        assert_eq!(manager.record(first.page_key), Some(&upgrade));
+
+        let mut newer_target = first;
+        newer_target.generation = 99;
+        manager.register_nvme(newer_target).unwrap();
+        assert_eq!(manager.record(upgrade.page_key), Some(&upgrade));
         assert_eq!(manager.location([0x41; 32]), Some(Residency::Nvme));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_registration_rejects_same_key_content_collision_and_stale_upgrade() {
+        let root = temporary_store("residency-content");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let first = store.publish(page(0x42)).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: entry_bytes(&first).unwrap(),
+            dram_bytes: 0,
+        })
+        .unwrap();
+        manager.register_nvme(first.clone()).unwrap();
+
+        let mut conflicting = first.clone();
+        conflicting.generation = 2;
+        conflicting.pieces[0].sha256[0] ^= 1;
+        assert_eq!(
+            manager.validate_nvme_registration(&conflicting),
+            Err(ResidencyError::Record)
+        );
+        assert_eq!(
+            manager.register_nvme(conflicting),
+            Err(ResidencyError::Record)
+        );
+        assert_eq!(manager.record(first.page_key), Some(&first));
+
+        let mut stale_upgrade = first.clone();
+        stale_upgrade.mtp = true;
+        stale_upgrade.pieces.push(crate::TierPieceRecord {
+            piece: TierPiece::DraftSidecar,
+            byte_length: TierPiece::DraftSidecar.expected_bytes(),
+            storage_offset: 4 * 1024 * 1024,
+            sha256: [0x42; 32],
+        });
+        assert_eq!(
+            manager.validate_nvme_registration(&stale_upgrade),
+            Err(ResidencyError::Stale)
+        );
+        assert_eq!(
+            manager.register_nvme(stale_upgrade),
+            Err(ResidencyError::Stale)
+        );
+        assert_eq!(manager.record(first.page_key), Some(&first));
         fs::remove_dir_all(root).unwrap();
     }
 
