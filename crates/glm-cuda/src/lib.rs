@@ -15,4 +15,6 @@ pub use ownership::{CudaDriver, DeviceBuffer, LaunchTicket};
 mod ffi;
 
 #[cfg(feature = "cuda-ffi")]
-pub use ffi::{NativeFc1Fixture, NativeKernelDriver, run_single_expert, validate_native_abi};
+pub use ffi::{
+    GraphReplay, NativeFc1Fixture, NativeKernelDriver, run_single_expert, validate_native_abi,
+};

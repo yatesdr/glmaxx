@@ -13,6 +13,13 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_routed_fc1_graph_instantiate(
+        descriptor: *const Fc1Descriptor,
+        stream: *mut c_void,
+        graph_exec: *mut u64,
+    ) -> i32;
+    fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
+    fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
@@ -170,6 +177,60 @@ impl Drop for NativeStream {
     }
 }
 
+struct NativeGraph(u64);
+
+impl Drop for NativeGraph {
+    fn drop(&mut self) {
+        // SAFETY: this object owns the executable graph and drops once.
+        let _ = unsafe { glmaxx_graph_exec_destroy(self.0) };
+    }
+}
+
+struct NativeFc1Case {
+    _input: NativeBuffer,
+    _route_expert: NativeBuffer,
+    _route_token: NativeBuffer,
+    _route_slot: NativeBuffer,
+    _route_weight: NativeBuffer,
+    _offsets: NativeBuffer,
+    _compacted: NativeBuffer,
+    _activation_values: NativeBuffer,
+    _activation_scales: NativeBuffer,
+    _activation_globals: NativeBuffer,
+    _gate_up: NativeBuffer,
+    output: NativeBuffer,
+    descriptor: Fc1Descriptor,
+}
+
+impl NativeFc1Case {
+    fn download(&self, stream: u64) -> Result<Vec<u16>, KernelError> {
+        let output_words = u64::from(self.descriptor.assignments)
+            .checked_mul(u64::from(LOCAL_INTERMEDIATE))
+            .ok_or(KernelError::Overflow)?;
+        let output_bytes = output_words.checked_mul(2).ok_or(KernelError::Overflow)?;
+        let mut host_output =
+            vec![0_u16; usize::try_from(output_words).map_err(|_| KernelError::Overflow)?];
+        // SAFETY: the source and destination cover exactly the output allocation.
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                host_output.as_mut_ptr().cast(),
+                self.output.pointer,
+                output_bytes,
+                stream,
+            )
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(stream) })?;
+        Ok(host_output)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphReplay {
+    pub output_bf16: Vec<u16>,
+    pub repeat_count: u32,
+    pub bitwise_deterministic: bool,
+}
+
 pub struct NativeFc1Fixture {
     stream: NativeStream,
     weight_values: NativeBuffer,
@@ -266,6 +327,81 @@ impl NativeFc1Fixture {
         route_tokens: &[u32],
         route_slots: &[u8],
     ) -> Result<Vec<u16>, KernelError> {
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        self.run_validated(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )
+    }
+
+    pub fn run_graph_repeated(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        repeat_count: u32,
+    ) -> Result<GraphReplay, KernelError> {
+        if repeat_count == 0 || repeat_count > 100 {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        let mut graph_exec = 0_u64;
+        // SAFETY: the descriptor and every referenced allocation remain live
+        // for graph instantiation and every replay below.
+        check(unsafe {
+            glmaxx_nvfp4_routed_fc1_graph_instantiate(
+                std::ptr::from_ref(&execution.descriptor),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut graph_exec),
+            )
+        })?;
+        if graph_exec == 0 {
+            return Err(KernelError::Driver(-1));
+        }
+        let graph = NativeGraph(graph_exec);
+        let mut first_output = None;
+        let mut bitwise_deterministic = true;
+        for _ in 0..repeat_count {
+            // SAFETY: graph and stream are caller-owned and live.
+            check(unsafe { glmaxx_graph_exec_launch(graph.0, self.stream.0) })?;
+            let output = execution.download(self.stream.0)?;
+            if let Some(first) = &first_output {
+                bitwise_deterministic &= first == &output;
+            } else {
+                first_output = Some(output);
+            }
+        }
+        Ok(GraphReplay {
+            output_bf16: first_output.ok_or(KernelError::Shape)?,
+            repeat_count,
+            bitwise_deterministic,
+        })
+    }
+
+    fn validate_case(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+    ) -> Result<[u32; 257], KernelError> {
         let assignments = u32::try_from(route_experts.len()).map_err(|_| KernelError::Overflow)?;
         if rows == 0
             || rows > 65_536
@@ -316,14 +452,7 @@ impl NativeFc1Fixture {
                 .checked_add(counts[expert - 1])
                 .ok_or(KernelError::Overflow)?;
         }
-        self.run_validated(
-            input_bf16,
-            rows,
-            route_experts,
-            route_tokens,
-            route_slots,
-            &counts,
-        )
+        Ok(counts)
     }
 
     fn run_validated(
@@ -335,6 +464,38 @@ impl NativeFc1Fixture {
         route_slots: &[u8],
         expert_offsets: &[u32; 257],
     ) -> Result<Vec<u16>, KernelError> {
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            expert_offsets,
+        )?;
+        let mut async_error = 0_i32;
+        // SAFETY: all device allocations remain alive through synchronization.
+        check(unsafe {
+            glmaxx_nvfp4_routed_fc1_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        })?;
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
+    }
+
+    fn prepare_case(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        expert_offsets: &[u32; 257],
+    ) -> Result<NativeFc1Case, KernelError> {
         let assignments = u32::try_from(route_experts.len()).map_err(|_| KernelError::Overflow)?;
         validate_native_library(assignments)?;
         let input = NativeBuffer::upload(words_as_bytes(input_bf16), self.stream.0)?;
@@ -381,30 +542,24 @@ impl NativeFc1Fixture {
         descriptor.workspace_bytes = workspace_bytes(assignments)?;
         descriptor.sequence = 1;
         validate_descriptor(&descriptor)?;
-        let mut async_error = 0_i32;
-        // SAFETY: all device allocations remain alive through synchronization.
-        check(unsafe {
-            glmaxx_nvfp4_routed_fc1_launch(
-                std::ptr::from_ref(&descriptor),
-                self.stream.0 as *mut c_void,
-                std::ptr::from_mut(&mut async_error),
-            )
-        })?;
-        if async_error != 0 {
-            return Err(KernelError::Async(async_error));
-        }
-        let mut host_output = vec![0_u16; assignments as usize * LOCAL_INTERMEDIATE as usize];
-        // SAFETY: the source and destination cover exactly the output allocation.
-        check(unsafe {
-            glmaxx_memcpy_d2h(
-                host_output.as_mut_ptr().cast(),
-                output.pointer,
-                u64::from(assignments) * u64::from(LOCAL_INTERMEDIATE) * 2,
-                self.stream.0,
-            )
-        })?;
+        // Ensure all H2D inputs are complete before returning a replayable case
+        // or beginning stream capture.
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
-        Ok(host_output)
+        Ok(NativeFc1Case {
+            _input: input,
+            _route_expert: route_expert,
+            _route_token: route_token,
+            _route_slot: route_slot,
+            _route_weight: route_weight,
+            _offsets: offsets,
+            _compacted: compacted,
+            _activation_values: activation_values,
+            _activation_scales: activation_scales,
+            _activation_globals: activation_globals,
+            _gate_up: gate_up,
+            output,
+            descriptor,
+        })
     }
 }
 

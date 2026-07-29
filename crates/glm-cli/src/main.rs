@@ -116,9 +116,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("gpu-matrix requires an external evidence directory")?;
             gpu_matrix(Path::new(path))?;
         }
+        #[cfg(feature = "cuda-ffi")]
+        Some("gpu-graph") => {
+            let path = arguments
+                .get(2)
+                .ok_or("gpu-graph requires an external evidence directory")?;
+            gpu_graph(Path::new(path))?;
+        }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir>"
                     .into(),
             );
         }
@@ -572,6 +579,34 @@ struct GpuMatrixSummary {
 
 #[cfg(feature = "cuda-ffi")]
 #[derive(Serialize)]
+struct GpuGraphSummary {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    graph_cases: usize,
+    graph_repeat_count: u32,
+    failed_elements: usize,
+    bitwise_deterministic_cases: usize,
+    evidence_directory: String,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuGraphCaseReport {
+    schema: &'static str,
+    rows: usize,
+    assignments: usize,
+    packed_weight_sha256: String,
+    output_sha256: String,
+    tolerance: &'static str,
+    maximum_absolute_error: Option<f32>,
+    maximum_relative_error: Option<f32>,
+    graph_repeat_count: u32,
+    graph_bitwise_deterministic: bool,
+    failures: Vec<GpuFailure>,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
 struct GpuCaseReport {
     schema: &'static str,
     suite: &'static str,
@@ -725,6 +760,144 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
         || failed_elements != 0
     {
         return Err("SM120 correctness matrix did not satisfy the frozen gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_graph(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_directory.is_dir() {
+        return Err("gpu-graph evidence directory must already exist".into());
+    }
+    if evidence_directory.read_dir()?.next().is_some() {
+        return Err("gpu-graph evidence directory must be empty".into());
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if evidence_directory.canonicalize()?.starts_with(repository) {
+        return Err("raw GPU evidence must be outside the Git repository".into());
+    }
+
+    const GRAPH_ROWS: [usize; 2] = [1, 256];
+    const REPEAT_COUNT: u32 = 20;
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let fixture =
+        generate_numerical_fixture(NumericalCase::DeterministicRandom, GRAPH_ROWS[1], n, k)?;
+    let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+    let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
+    let mut failed_elements = 0_usize;
+    let mut bitwise_deterministic_cases = 0_usize;
+
+    for rows in GRAPH_ROWS {
+        let activation = &fixture.activations[..rows * k];
+        let activation_bf16 = to_bf16_bits(activation);
+        let reference = routed_fc1_oracle(activation, rows, k, &packed)?;
+        let routes = generate_routes(RoutingCase::OneHotExpert0, rows)?;
+        let compacted = compact_routes(&routes, rows)?;
+        let route_experts: Vec<u16> = compacted.iter().map(|route| route.expert).collect();
+        let route_tokens: Vec<u32> = compacted.iter().map(|route| route.token).collect();
+        let route_slots: Vec<u8> = compacted.iter().map(|route| route.slot).collect();
+        let replay = device.run_graph_repeated(
+            &activation_bf16,
+            u32::try_from(rows)?,
+            &route_experts,
+            &route_tokens,
+            &route_slots,
+            REPEAT_COUNT,
+        )?;
+        if replay.bitwise_deterministic {
+            bitwise_deterministic_cases += 1;
+        }
+
+        let local_intermediate = constants.local_intermediate as usize;
+        let mut maximum_absolute = 0.0_f32;
+        let mut maximum_relative = 0.0_f32;
+        let mut finite_errors = true;
+        let mut failures = Vec::new();
+        for (assignment, route) in compacted.iter().enumerate() {
+            let token = usize::try_from(route.token)?;
+            for column in 0..local_intermediate {
+                let reference_value = reference[token * local_intermediate + column];
+                let actual_bits = replay.output_bf16[assignment * local_intermediate + column];
+                let actual = f32::from_bits(u32::from(actual_bits) << 16);
+                let absolute = (reference_value - actual).abs();
+                let relative = absolute / reference_value.abs().max(1.0e-6);
+                if absolute.is_finite() && relative.is_finite() {
+                    maximum_absolute = maximum_absolute.max(absolute);
+                    maximum_relative = maximum_relative.max(relative);
+                } else {
+                    finite_errors = false;
+                }
+                let reason = if !reference_value.is_finite() {
+                    Some("non-finite CPU reference")
+                } else if !actual.is_finite() {
+                    Some("non-finite GPU output")
+                } else if absolute > 0.5 + 0.02 * reference_value.abs() {
+                    Some("element tolerance exceeded")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    failures.push(GpuFailure {
+                        assignment,
+                        column,
+                        reference_f32_bits: reference_value.to_bits(),
+                        actual_bf16_bits: actual_bits,
+                        reason,
+                    });
+                }
+            }
+        }
+        if !replay.bitwise_deterministic {
+            failures.push(GpuFailure {
+                assignment: usize::MAX,
+                column: usize::MAX,
+                reference_f32_bits: 0,
+                actual_bf16_bits: 0,
+                reason: "CUDA graph replay output was not bitwise deterministic",
+            });
+        }
+        failed_elements = failed_elements
+            .checked_add(failures.len())
+            .ok_or("failure count overflow")?;
+        let report = GpuGraphCaseReport {
+            schema: "glmaxx.sm120-fc1-graph-case-result.v1",
+            rows,
+            assignments: compacted.len(),
+            packed_weight_sha256: packed_hash(&packed),
+            output_sha256: u16_hash(&replay.output_bf16),
+            tolerance: "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.02 * abs(cpu)",
+            maximum_absolute_error: finite_errors.then_some(maximum_absolute),
+            maximum_relative_error: finite_errors.then_some(maximum_relative),
+            graph_repeat_count: replay.repeat_count,
+            graph_bitwise_deterministic: replay.bitwise_deterministic,
+            failures,
+        };
+        fs::write(
+            evidence_directory.join(format!("graph-m{rows:03}.json")),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+    }
+
+    let summary = GpuGraphSummary {
+        schema: "glmaxx.sm120-fc1-graph-result.v1",
+        kernel_abi: KERNEL_ABI,
+        graph_cases: GRAPH_ROWS.len(),
+        graph_repeat_count: REPEAT_COUNT,
+        failed_elements,
+        bitwise_deterministic_cases,
+        evidence_directory: evidence_directory.display().to_string(),
+    };
+    let summary_bytes = serde_json::to_vec_pretty(&summary)?;
+    fs::write(evidence_directory.join("summary.json"), &summary_bytes)?;
+    println!("{}", String::from_utf8(summary_bytes)?);
+    if failed_elements != 0 || bitwise_deterministic_cases != GRAPH_ROWS.len() {
+        return Err("SM120 CUDA graph correctness gate failed".into());
     }
     Ok(())
 }

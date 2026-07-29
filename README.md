@@ -89,13 +89,14 @@ committed recipe and digest. CUDA C++ is restricted to the device kernel and
 thin native bridge; format, orchestration, validation, evidence generation,
 and ownership are Rust.
 
-No GPU claim has been made. A later non-acceptance cn0 pass compiled the
-`sm_120f` cubins with CUDA 12.9, proved the CUTLASS scale layout, linked the
-Rust/native ABI, and exercised the no-device error path without touching the
-occupied A6000. Pinned CUDA 13.3 compilation and SM120 correctness remain
-blocked on independent review of the generated manifest/v0.2.2 amendment and
-a separately authorized cn4 session. The first performance task is to replace
-the retained CUDA-core control with CUTLASS block-scaled MMA.
+No GPU claim has been made. An authorized cn4 no-launch preparation pass
+compiled the `sm_120f` cubins with pinned CUDA 13.3 and CUTLASS 4.6.1, proved
+the CUTLASS scale layout, linked the Rust/native ABI, and passed all 115 Rust
+tests without creating a CUDA context. SM120 execution remains blocked only
+on independent review of the generated manifest/v0.2.2 amendment; operator
+authorization is already recorded. The first performance task after the
+direct correctness and CUDA-graph gates is to replace the retained CUDA-core
+control with CUTLASS block-scaled MMA.
 
 While SM120 execution was pending, the CPU workspace also added the
 pinned EXL3/Trellis decoder, immutable per-tensor hybrid policy, four-rank

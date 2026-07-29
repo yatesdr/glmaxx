@@ -149,6 +149,20 @@ cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
 
 shasum -a 256 "${correctness_dir}"/*.json \
   | tee "${GLMAXX_EVIDENCE_DIR}/correctness-sha256.txt"
+
+graph_dir="${GLMAXX_EVIDENCE_DIR}/graph-correctness"
+if [[ -e "${graph_dir}" ]]; then
+  echo "Graph evidence directory already exists; refusing to overwrite it" >&2
+  exit 65
+fi
+mkdir "${graph_dir}"
+check_idle
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
+  -- gpu-graph "${graph_dir}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-graph-summary.json"
+
+shasum -a 256 "${graph_dir}"/*.json \
+  | tee "${GLMAXX_EVIDENCE_DIR}/graph-correctness-sha256.txt"
 nvidia-smi \
   --query-gpu=index,uuid,clocks.current.sm,clocks.current.memory,power.limit,persistence_mode \
   --format=csv,noheader \
@@ -164,4 +178,4 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 70
 fi
 
-echo "Eager correctness matrix finished. Do not benchmark unless summary.json reports 135 positive cases, 9 negative rejections, 2 eager deterministic cases, and zero failures; graph-captured repetition remains a separate gate."
+echo "Eager and CUDA-graph correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures, and the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures."

@@ -276,6 +276,44 @@ bool valid_host_descriptor(const glmaxx_fc1_descriptor& descriptor) {
          descriptor.activation_scales % 16 == 0;
 }
 
+cudaError_t sm120_properties(cudaDeviceProp* properties) {
+  int device = -1;
+  cudaError_t status = cudaGetDevice(&device);
+  if (status == cudaSuccess) {
+    status = cudaGetDeviceProperties(properties, device);
+  }
+  if (status == cudaSuccess &&
+      (properties->major != 12 || properties->minor != 0)) {
+    return cudaErrorInvalidDevice;
+  }
+  return status;
+}
+
+cudaError_t enqueue_fc1(const glmaxx_fc1_descriptor& descriptor,
+                        const cudaDeviceProp& properties,
+                        cudaStream_t stream) {
+  quantize_compacted_rows<<<descriptor.assignments, 256, 0, stream>>>(
+      descriptor);
+  cudaError_t status = cudaPeekAtLastError();
+  if (status != cudaSuccess) {
+    return status;
+  }
+  if (descriptor.path == GLMAXX_FC1_DECODE_PERSISTENT) {
+    const uint64_t total_blocks =
+        uint64_t{descriptor.assignments} * kLocalIntermediate;
+    const uint32_t target_blocks =
+        static_cast<uint32_t>(properties.multiProcessorCount) * 2;
+    const uint32_t persistent_blocks =
+        total_blocks < target_blocks ? static_cast<uint32_t>(total_blocks)
+                                    : target_blocks;
+    direct_fc1_swiglu<<<persistent_blocks, 256, 0, stream>>>(descriptor);
+  } else {
+    direct_fc1_swiglu<<<dim3{kLocalIntermediate, descriptor.assignments}, 256,
+                         0, stream>>>(descriptor);
+  }
+  return cudaPeekAtLastError();
+}
+
 }  // namespace
 
 extern "C" uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(
@@ -386,39 +424,92 @@ extern "C" int32_t glmaxx_nvfp4_routed_fc1_launch(
           glmaxx_nvfp4_routed_fc1_workspace_bytes(descriptor->assignments)) {
     return -2;
   }
-  int device = -1;
   cudaDeviceProp properties{};
-  cudaError_t status = cudaGetDevice(&device);
-  if (status != cudaSuccess ||
-      (status = cudaGetDeviceProperties(&properties, device)) != cudaSuccess) {
-    return static_cast<int32_t>(status);
-  }
-  if (properties.major != 12 || properties.minor != 0) {
+  cudaError_t status = sm120_properties(&properties);
+  if (status == cudaErrorInvalidDevice) {
     return -120;
   }
-  const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cuda_stream);
-  quantize_compacted_rows<<<descriptor->assignments, 256, 0, stream>>>(
-      *descriptor);
-  status = cudaPeekAtLastError();
   if (status != cudaSuccess) {
     return static_cast<int32_t>(status);
   }
-  if (descriptor->path == GLMAXX_FC1_DECODE_PERSISTENT) {
-    const uint64_t total_blocks =
-        uint64_t{descriptor->assignments} * kLocalIntermediate;
-    const uint32_t target_blocks =
-        static_cast<uint32_t>(properties.multiProcessorCount) * 2;
-    const uint32_t persistent_blocks =
-        total_blocks < target_blocks ? static_cast<uint32_t>(total_blocks)
-                                    : target_blocks;
-    direct_fc1_swiglu<<<persistent_blocks, 256, 0, stream>>>(*descriptor);
-  } else {
-    direct_fc1_swiglu<<<dim3{kLocalIntermediate, descriptor->assignments}, 256,
-                         0, stream>>>(*descriptor);
-  }
-  status = cudaPeekAtLastError();
+  const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cuda_stream);
+  status = enqueue_fc1(*descriptor, properties, stream);
   if (status != cudaSuccess) {
     return static_cast<int32_t>(status);
   }
   return 0;
+}
+
+extern "C" int32_t glmaxx_nvfp4_routed_fc1_graph_instantiate(
+    const glmaxx_fc1_descriptor* descriptor, void* cuda_stream,
+    uint64_t* graph_exec) {
+  if (descriptor == nullptr || cuda_stream == nullptr ||
+      graph_exec == nullptr) {
+    return -1;
+  }
+  *graph_exec = 0;
+  if (!valid_host_descriptor(*descriptor) ||
+      descriptor->workspace_bytes <
+          glmaxx_nvfp4_routed_fc1_workspace_bytes(descriptor->assignments)) {
+    return -2;
+  }
+  cudaDeviceProp properties{};
+  cudaError_t status = sm120_properties(&properties);
+  if (status == cudaErrorInvalidDevice) {
+    return -120;
+  }
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+  const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cuda_stream);
+  status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+  const cudaError_t enqueue_status =
+      enqueue_fc1(*descriptor, properties, stream);
+  cudaGraph_t graph = nullptr;
+  const cudaError_t capture_status = cudaStreamEndCapture(stream, &graph);
+  if (enqueue_status != cudaSuccess) {
+    if (graph != nullptr) {
+      cudaGraphDestroy(graph);
+    }
+    return static_cast<int32_t>(enqueue_status);
+  }
+  if (capture_status != cudaSuccess) {
+    if (graph != nullptr) {
+      cudaGraphDestroy(graph);
+    }
+    return static_cast<int32_t>(capture_status);
+  }
+  cudaGraphExec_t executable = nullptr;
+  status = cudaGraphInstantiate(&executable, graph, 0);
+  const cudaError_t destroy_status = cudaGraphDestroy(graph);
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+  if (destroy_status != cudaSuccess) {
+    cudaGraphExecDestroy(executable);
+    return static_cast<int32_t>(destroy_status);
+  }
+  *graph_exec = reinterpret_cast<uint64_t>(executable);
+  return 0;
+}
+
+extern "C" int32_t glmaxx_graph_exec_launch(uint64_t graph_exec,
+                                             uint64_t stream) {
+  if (graph_exec == 0 || stream == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(cudaGraphLaunch(
+      reinterpret_cast<cudaGraphExec_t>(graph_exec),
+      reinterpret_cast<cudaStream_t>(stream)));
+}
+
+extern "C" int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec) {
+  if (graph_exec == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(graph_exec)));
 }

@@ -55,6 +55,12 @@ int32_t glmaxx_nvfp4_routed_fc1_launch(
     const struct glmaxx_fc1_descriptor* descriptor,
     void* cuda_stream,
     int32_t* asynchronous_error);
+int32_t glmaxx_nvfp4_routed_fc1_graph_instantiate(
+    const struct glmaxx_fc1_descriptor* descriptor,
+    void* cuda_stream,
+    uint64_t* graph_exec);
+int32_t glmaxx_graph_exec_launch(uint64_t graph_exec, uint64_t stream);
+int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec);
 
 uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(uint32_t assignments);
 const char* glmaxx_kernel_abi(void);
