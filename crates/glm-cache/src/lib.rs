@@ -8,6 +8,7 @@ mod mtp;
 mod page;
 mod prefix;
 mod residency;
+mod sequence;
 mod store;
 mod tier;
 
@@ -21,6 +22,10 @@ pub use prefix::{
 pub use residency::{
     Residency, ResidencyConfig, ResidencyError, ResidencyManager, RestoreError, RestoreHandle,
     RestoreRequest, RestoreResult, RestoreService,
+};
+pub use sequence::{
+    MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, SequencePageError,
+    SequencePageTable, SequencePageView,
 };
 pub use store::{DurablePageRequest, FileTierStore, PagePieceBytes, RestoredPage, StoreError};
 pub use tier::{

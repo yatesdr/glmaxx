@@ -78,6 +78,27 @@ NVMe -> restoring -> HBM after validated asynchronous read
 Pinned pages are never selected. If every possible victim is pinned, the
 restore fails closed.
 
+## Active sequence page table
+
+`glm-cache::SequencePageTable` is the CPU metadata oracle for the active HBM
+working set. It reserves independent target and optional MTP draft slots on
+each DCP4 owner rank and exposes target-only and MTP-capable sequence limits
+separately. With 4,096 target and draft pages per rank, one 1,048,576-token
+MTP sequence consumes exactly 4,096 pages on every rank.
+
+Only complete sealed prefix pages can acquire shared references. A prefix key
+is bound to its logical page ordinal and therefore to one deterministic DCP4
+owner. Session forks share sealed pages and allocate a private physical copy
+for a mutable tail. MTP0–6 reservations transition target and draft
+attachments together, including a cross-page verifier tail, and commit or
+roll back atomically. Allocation failure restores the complete prior metadata
+state.
+
+This is not an HBM allocation or payload-transfer claim. The physical IDs are
+bounded rank-local slot identities; the future CUDA rank executor must map
+them to preallocated target, indexer, draft, and draft-indexer arenas without
+changing these ownership or transaction rules.
+
 ## Reproducible proof
 
 Run with an external directory:
