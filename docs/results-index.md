@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`2e3aa222e0808c27793798dab6890dbdb7614ed3`
+`72e60716cf58632dd9aba5ead41ba0d128f59395`
 
-The complete local gate most recently ran against the prefix-generation
-integrity implementation
-`aecbcdf`; its provenance record was then committed at
-`2e3aa222e0808c27793798dab6890dbdb7614ed3`. The target
+The complete local gate most recently ran against the prefix/residency
+coherence implementation
+`a3f5957b6e8d526cedb2ab58fa2204bb34d9f8b7`; its provenance record was then
+committed at `72e60716cf58632dd9aba5ead41ba0d128f59395`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -20,7 +20,8 @@ rollback and fail-stop ownership propagation through backend admission and
 event cancellation, retryable active-sequence removal, and fail-stop durable
 cache writes after uncertain publication errors, plus exclusive durable
 writer ownership and read-only rank restore snapshots, and same-key logical
-piece collision rejection with monotonic MTP capability.
+piece collision rejection with monotonic MTP capability through both the
+prefix index and owner-rank residency.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -28,11 +29,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at prefix-generation implementation `aecbcdf` passed:
+The latest local run at prefix/residency implementation `a3f5957` passed:
 
-- `scripts/local-checks.sh`: 249 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 250 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 47 then-present candidate-based review-handoff hash proofs;
+  and all 48 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -230,6 +231,14 @@ sidecar, target-only records cannot downgrade MTP capability, and every
 collision or reference overflow is rejected before mutation. The dedicated
 handoff passes local provenance validation; independent acceptance is absent.
 
+The cross-component prefix/residency correction is pinned in
+`docs/prefix-residency-coherence-proof-v1.md`. Registration now uses the
+post-insert index record as its sole residency authority, proves existing
+index/rank agreement, plans all four rank changes before mutation, preserves
+exact dedup and MTP capability, and rejects an unreconstructable prepopulated
+index at coordinator construction. The dedicated handoff passes local
+provenance validation; independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -349,6 +358,7 @@ verdicts:
 | fail-stop durable-store writes after uncertain publication | `a5019aa` | `docs/fable-durable-store-write-fail-stop-v1-handoff.md` |
 | exclusive durable writer and read-only restore snapshots | `535a8d6` | `docs/fable-durable-store-single-writer-v1-handoff.md` |
 | same-key prefix logical integrity and monotonic MTP capability | `2e3aa22` | `docs/fable-prefix-generation-integrity-v1-handoff.md` |
+| prefix index and owner-rank residency generation coherence | `72e6071` | `docs/fable-prefix-residency-coherence-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
