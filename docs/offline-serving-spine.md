@@ -33,9 +33,11 @@ changing the scheduler or cache contracts.
 4. Serving consumes the exact rank-returned token IDs; it no longer derives
    mock tokens or acceptance counts from a digest. Verify steps commit a
    checked value from one through `depth + 1`, without crossing a request's
-   generation limit. In a verify result, the first `N - 1` committed tokens
-   are accepted draft tokens and the final token is the target correction or
-   bonus token.
+   generation limit. Each record carries an explicit accepted-draft count and
+   target-token-presence bit, so an accepted draft EOS cannot be mislabeled as
+   a target correction. EOS is legal only as the final committed token,
+   terminates the scheduler before the length limit, and is reported as a
+   `stop` rather than `length` finish.
 5. Request events cover admission, prefill progress, tokens, finish,
    cancellation, and failure. Event and worker queues apply backpressure
    instead of growing without bound.

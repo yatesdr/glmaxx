@@ -12,9 +12,10 @@ use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
 #[cfg(test)]
 use glm_scheduler::SamplingCollective;
 use glm_scheduler::{
-    BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog, Scheduler,
-    SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
+    BatchCompletion, BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog,
+    Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
 };
+use glm_tokenizer::EOS_TOKEN_IDS;
 
 const MAXIMUM_STEP_EVENTS: usize = 512;
 
@@ -41,6 +42,12 @@ pub struct ServingRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestFinishReason {
+    Stop,
+    Length,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestEvent {
     Admitted {
         request_id: u64,
@@ -59,6 +66,7 @@ pub enum RequestEvent {
     },
     Finished {
         request_id: u64,
+        reason: RequestFinishReason,
     },
     Cancelled {
         request_id: u64,
@@ -201,10 +209,17 @@ impl ServingCoordinator {
             }
         };
         let output_rows = outcome.output.sequences();
-        let commits: Vec<_> = starting_progress
+        let completions: Vec<_> = starting_progress
             .iter()
             .zip(output_rows)
-            .map(|((request_id, _), output)| (*request_id, output.count()))
+            .map(|((request_id, _), output)| BatchCompletion {
+                request_id: *request_id,
+                committed_tokens: output.count(),
+                terminal: output
+                    .token_ids()
+                    .last()
+                    .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id)),
+            })
             .collect();
         let output_fits_requests = match batch.kind {
             BatchKind::Prefill => output_rows.is_empty(),
@@ -216,6 +231,7 @@ impl ServingCoordinator {
                         .all(|((_, progress), output)| {
                             u32::from(output.count())
                                 <= progress.maximum_new_tokens - progress.generated
+                                && output_has_valid_termination(output)
                         })
             }
         };
@@ -224,7 +240,8 @@ impl ServingCoordinator {
             self.emit_failed_rows(&batch)?;
             return Err(ServingError::Output);
         }
-        self.scheduler.complete_batch_with_commits(true, &commits)?;
+        self.scheduler
+            .complete_batch_with_results(true, &completions)?;
         for (row_index, row) in batch.rows.iter().enumerate() {
             let starting = starting_progress
                 .get(row_index)
@@ -253,17 +270,27 @@ impl ServingCoordinator {
                             position,
                             token_id,
                             // A verify result commits N accepted draft tokens
-                            // followed by one target/residual/bonus token.
+                            // followed by an optional target/residual/bonus
+                            // token. Accepted EOS is the draft-only case.
                             speculative: matches!(batch.kind, BatchKind::Verify { .. })
-                                && offset + 1 < u32::from(output.count()),
+                                && offset < u32::from(output.accepted_draft_count()),
                         });
                     }
                 }
             }
             if progress.state == RequestState::Finished {
+                let stopped = output_rows
+                    .get(row_index)
+                    .and_then(|output| output.token_ids().last())
+                    .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id));
                 self.release_request_prefix(row.request_id)?;
                 self.events.push_back(RequestEvent::Finished {
                     request_id: row.request_id,
+                    reason: if stopped {
+                        RequestFinishReason::Stop
+                    } else {
+                        RequestFinishReason::Length
+                    },
                 });
             }
         }
@@ -361,6 +388,20 @@ impl ServingCoordinator {
             .release(&page_keys)?;
         Ok(())
     }
+}
+
+fn output_has_valid_termination(output: &glm_engine::CommittedTokens) -> bool {
+    let token_ids = output.token_ids();
+    let first_eos = token_ids
+        .iter()
+        .position(|token_id| EOS_TOKEN_IDS.contains(token_id));
+    if first_eos.is_some_and(|position| position + 1 != token_ids.len()) {
+        return false;
+    }
+    output.target_token_present()
+        || token_ids
+            .last()
+            .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id))
 }
 
 #[derive(Debug)]
@@ -523,6 +564,7 @@ mod tests {
     }
 
     struct FixedMtpRankExecutor;
+    struct AcceptedDraftEosRankExecutor;
 
     impl RankExecutor for FixedMtpRankExecutor {
         fn execute(
@@ -534,13 +576,33 @@ mod tests {
             if plan.mode == StepMode::Prefill {
                 return Ok(StepOutput::empty());
             }
-            let token_ids: &[u32] = if plan.mode == StepMode::Verify {
-                &[41, 42]
+            let sequence = if plan.mode == StepMode::Verify {
+                CommittedTokens::verify(&[41], Some(42))
             } else {
-                &[43]
-            };
-            let sequence =
-                CommittedTokens::new(token_ids).map_err(|_| RankExecutionError::Invariant)?;
+                CommittedTokens::target(43)
+            }
+            .map_err(|_| RankExecutionError::Invariant)?;
+            StepOutput::new(&vec![sequence; usize::from(plan.active_sequences)])
+                .map_err(|_| RankExecutionError::Invariant)
+        }
+    }
+
+    impl RankExecutor for AcceptedDraftEosRankExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if plan.mode == StepMode::Prefill {
+                return Ok(StepOutput::empty());
+            }
+            let sequence = if plan.mode == StepMode::Verify {
+                CommittedTokens::verify(&[41, EOS_TOKEN_IDS[0]], None)
+            } else {
+                CommittedTokens::target(EOS_TOKEN_IDS[0])
+            }
+            .map_err(|_| RankExecutionError::Invariant)?;
             StepOutput::new(&vec![sequence; usize::from(plan.active_sequences)])
                 .map_err(|_| RankExecutionError::Invariant)
         }
@@ -549,6 +611,13 @@ mod tests {
     fn fixed_mtp_workers() -> Tp4WorkerPool {
         let executors =
             std::array::from_fn(|_| Box::new(FixedMtpRankExecutor) as Box<dyn RankExecutor>);
+        Tp4WorkerPool::spawn(2, executors).unwrap()
+    }
+
+    fn accepted_draft_eos_workers() -> Tp4WorkerPool {
+        let executors = std::array::from_fn(|_| {
+            Box::new(AcceptedDraftEosRankExecutor) as Box<dyn RankExecutor>
+        });
         Tp4WorkerPool::spawn(2, executors).unwrap()
     }
 
@@ -706,6 +775,58 @@ mod tests {
     }
 
     #[test]
+    fn accepted_draft_eos_finishes_early_without_a_fake_target_token() {
+        let mut serving = coordinator_with_workers(accepted_draft_eos_workers());
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 10,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 10,
+                    mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 64,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+        assert!(serving.tick().unwrap());
+        assert_eq!(
+            serving.request_progress(10),
+            Some(RequestProgress {
+                state: RequestState::Finished,
+                prompt_tokens: 64,
+                prompt_done: 64,
+                maximum_new_tokens: 10,
+                generated: 2,
+                mtp_depth: 6,
+            })
+        );
+        assert_eq!(
+            serving.drain_events(),
+            vec![
+                RequestEvent::Token {
+                    request_id: 10,
+                    position: 0,
+                    token_id: 41,
+                    speculative: true,
+                },
+                RequestEvent::Token {
+                    request_id: 10,
+                    position: 1,
+                    token_id: EOS_TOKEN_IDS[0],
+                    speculative: true,
+                },
+                RequestEvent::Finished {
+                    request_id: 10,
+                    reason: RequestFinishReason::Stop,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn prefix_admission_restores_real_durable_bytes_before_skipping_prefill() {
         let root = temporary_store("serving-prefix");
         let namespace = PrefixNamespace::new(NamespaceInputs {
@@ -780,7 +901,10 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(event, RequestEvent::PrefillProgress { .. }))
         );
-        assert!(events.contains(&RequestEvent::Finished { request_id: 77 }));
+        assert!(events.contains(&RequestEvent::Finished {
+            request_id: 77,
+            reason: RequestFinishReason::Length,
+        }));
         drop(serving);
         fs::remove_dir_all(root).unwrap();
     }

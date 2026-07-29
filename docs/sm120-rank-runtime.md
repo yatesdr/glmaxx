@@ -12,9 +12,13 @@ schedule. `Tp4WorkerPool` owns exactly four persistent rank threads. Each
 thread owns one mutable `RankExecutor`; plan and schedule verification occurs
 before its backend method is called. The executor returns a bounded
 `StepOutput` containing the post-collective token decisions in sequence-table
-order. All four logical records must match exactly. Mode geometry, MTP commit
-counts, and the GLM-5.2 tokenizer vocabulary ceiling are validated before the
-coordinator sees the result.
+order. Each sequence record distinguishes accepted draft tokens from an
+optional final target residual/bonus token; this represents the draft-EOS case
+without inventing a target token. All four logical records must match exactly.
+Mode geometry, MTP commit provenance, and the GLM-5.2 tokenizer vocabulary
+ceiling are validated before the coordinator sees the result. Serving then
+enforces that EOS is final and terminates the request at that collective-safe
+boundary.
 
 The CUDA rank executor will lazily create its device state on that rank thread
 and retain it until the worker generation terminates:

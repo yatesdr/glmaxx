@@ -64,6 +64,13 @@ pub struct BatchRow {
     pub prompt_tokens: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchCompletion {
+    pub request_id: u64,
+    pub committed_tokens: u8,
+    pub terminal: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduledBatch {
     pub step_id: u64,
@@ -265,12 +272,53 @@ impl Scheduler {
         success: bool,
         commits: &[(u64, u8)],
     ) -> Result<(), SchedulerError> {
+        let completions: Vec<_> = commits
+            .iter()
+            .map(|&(request_id, committed_tokens)| BatchCompletion {
+                request_id,
+                committed_tokens,
+                terminal: false,
+            })
+            .collect();
+        self.complete_batch_internal(success, &completions, false)
+    }
+
+    /// Commits explicit backend results. Unlike the legacy reference helper,
+    /// every decode/verify row must be present and may independently terminate
+    /// before its configured output-token limit (for example on EOS).
+    pub fn complete_batch_with_results(
+        &mut self,
+        success: bool,
+        completions: &[BatchCompletion],
+    ) -> Result<(), SchedulerError> {
+        self.complete_batch_internal(success, completions, true)
+    }
+
+    fn complete_batch_internal(
+        &mut self,
+        success: bool,
+        completions: &[BatchCompletion],
+        require_explicit: bool,
+    ) -> Result<(), SchedulerError> {
         let inflight = self.inflight.as_ref().ok_or(SchedulerError::NoInflight)?;
-        let commit_map: BTreeMap<_, _> = commits.iter().copied().collect();
-        if commit_map.len() != commits.len()
-            || (!success && !commits.is_empty())
-            || (matches!(inflight.kind, BatchKind::Prefill) && !commits.is_empty())
-            || (!commits.is_empty() && commits.len() != inflight.rows.len())
+        let completion_map: BTreeMap<_, _> = completions
+            .iter()
+            .map(|completion| (completion.request_id, *completion))
+            .collect();
+        if completion_map.len() != completions.len()
+            || (!success && !completions.is_empty())
+            || (matches!(inflight.kind, BatchKind::Prefill) && !completions.is_empty())
+            || (!completions.is_empty() && completions.len() != inflight.rows.len())
+            || (require_explicit
+                && success
+                && !matches!(inflight.kind, BatchKind::Prefill)
+                && completions.len() != inflight.rows.len())
+            || completions.iter().any(|completion| {
+                !inflight
+                    .rows
+                    .iter()
+                    .any(|row| row.request_id == completion.request_id)
+            })
         {
             return Err(SchedulerError::Commit);
         }
@@ -281,14 +329,23 @@ impl Scheduler {
                 BatchKind::Prefill => unreachable!(),
             };
             for row in &inflight.rows {
-                let commit = commit_map.get(&row.request_id).copied().unwrap_or(1);
+                let completion =
+                    completion_map
+                        .get(&row.request_id)
+                        .copied()
+                        .unwrap_or(BatchCompletion {
+                            request_id: row.request_id,
+                            committed_tokens: 1,
+                            terminal: false,
+                        });
                 let request = self
                     .requests
                     .get(&row.request_id)
                     .ok_or(SchedulerError::UnknownRequest)?;
-                if commit == 0
-                    || commit > maximum_commit
-                    || u32::from(commit) > request.spec.maximum_new_tokens - request.generated
+                if completion.committed_tokens == 0
+                    || completion.committed_tokens > maximum_commit
+                    || u32::from(completion.committed_tokens)
+                        > request.spec.maximum_new_tokens - request.generated
                 {
                     return Err(SchedulerError::Commit);
                 }
@@ -324,7 +381,16 @@ impl Scheduler {
                     }
                 }
                 BatchKind::Decode | BatchKind::Verify { .. } => {
-                    let commit = u32::from(commit_map.get(&row.request_id).copied().unwrap_or(1));
+                    let completion =
+                        completion_map
+                            .get(&row.request_id)
+                            .copied()
+                            .unwrap_or(BatchCompletion {
+                                request_id: row.request_id,
+                                committed_tokens: 1,
+                                terminal: false,
+                            });
+                    let commit = u32::from(completion.committed_tokens);
                     request.generated = request
                         .generated
                         .checked_add(commit)
@@ -333,7 +399,7 @@ impl Scheduler {
                         .service_units
                         .checked_add(u64::from(commit))
                         .ok_or(SchedulerError::Overflow)?;
-                    if request.generated == request.spec.maximum_new_tokens {
+                    if completion.terminal || request.generated == request.spec.maximum_new_tokens {
                         request.state = RequestState::Finished;
                     }
                 }
@@ -916,6 +982,70 @@ mod tests {
         assert_eq!(
             second.request_progress(2).unwrap().state,
             RequestState::Decoding
+        );
+    }
+
+    #[test]
+    fn explicit_terminal_result_finishes_before_the_length_limit() {
+        let mut scheduler = scheduler();
+        scheduler
+            .admit_with_prefix(
+                RequestSpec {
+                    id: 1,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 100,
+                    mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
+                },
+                64,
+            )
+            .unwrap();
+        scheduler.next_batch().unwrap();
+        scheduler
+            .complete_batch_with_results(
+                true,
+                &[BatchCompletion {
+                    request_id: 1,
+                    committed_tokens: 2,
+                    terminal: true,
+                }],
+            )
+            .unwrap();
+        let progress = scheduler.request_progress(1).unwrap();
+        assert_eq!(progress.generated, 2);
+        assert_eq!(progress.state, RequestState::Finished);
+    }
+
+    #[test]
+    fn explicit_results_require_every_inflight_row() {
+        let mut scheduler = scheduler();
+        for id in 1..=2 {
+            scheduler
+                .admit_with_prefix(
+                    RequestSpec {
+                        id,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 10,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    64,
+                )
+                .unwrap();
+        }
+        scheduler.next_batch().unwrap();
+        assert_eq!(
+            scheduler.complete_batch_with_results(
+                true,
+                &[BatchCompletion {
+                    request_id: 1,
+                    committed_tokens: 1,
+                    terminal: false,
+                }],
+            ),
+            Err(SchedulerError::Commit)
         );
     }
 }

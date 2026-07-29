@@ -13,34 +13,76 @@ const OUTPUT_HASH_DOMAIN: &[u8] = b"glmaxx.step-output.v1\0";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommittedTokens {
     count: u8,
+    accepted_draft_count: u8,
+    target_token_present: bool,
     token_ids: [u32; MAX_COMMITTED_TOKENS_PER_SEQUENCE],
 }
 
 impl CommittedTokens {
     const EMPTY: Self = Self {
         count: 0,
+        accepted_draft_count: 0,
+        target_token_present: false,
         token_ids: [0; MAX_COMMITTED_TOKENS_PER_SEQUENCE],
     };
 
-    pub fn new(token_ids: &[u32]) -> Result<Self, OutputError> {
-        if token_ids.is_empty() || token_ids.len() > MAX_COMMITTED_TOKENS_PER_SEQUENCE {
+    pub fn target(token_id: u32) -> Result<Self, OutputError> {
+        Self::from_parts(&[], Some(token_id))
+    }
+
+    /// Constructs a verifier result from accepted draft tokens followed by an
+    /// optional target residual/bonus token. A missing target is legal only
+    /// when serving subsequently proves that the final accepted draft token
+    /// is EOS.
+    pub fn verify(
+        accepted_draft_token_ids: &[u32],
+        target_token_id: Option<u32>,
+    ) -> Result<Self, OutputError> {
+        Self::from_parts(accepted_draft_token_ids, target_token_id)
+    }
+
+    fn from_parts(
+        accepted_draft_token_ids: &[u32],
+        target_token_id: Option<u32>,
+    ) -> Result<Self, OutputError> {
+        let count = accepted_draft_token_ids.len() + usize::from(target_token_id.is_some());
+        if count == 0 || count > MAX_COMMITTED_TOKENS_PER_SEQUENCE {
             return Err(OutputError::CommitCount);
         }
-        if token_ids
+        if accepted_draft_token_ids
             .iter()
-            .any(|&token_id| token_id >= GLM_52_OUTPUT_VOCABULARY)
+            .copied()
+            .chain(target_token_id)
+            .any(|token_id| token_id >= GLM_52_OUTPUT_VOCABULARY)
         {
             return Err(OutputError::TokenId);
         }
         let mut output = Self::EMPTY;
-        output.count = u8::try_from(token_ids.len()).map_err(|_| OutputError::CommitCount)?;
-        output.token_ids[..token_ids.len()].copy_from_slice(token_ids);
+        output.count = u8::try_from(count).map_err(|_| OutputError::CommitCount)?;
+        output.accepted_draft_count =
+            u8::try_from(accepted_draft_token_ids.len()).map_err(|_| OutputError::CommitCount)?;
+        output.target_token_present = target_token_id.is_some();
+        output.token_ids[..accepted_draft_token_ids.len()]
+            .copy_from_slice(accepted_draft_token_ids);
+        if let Some(target_token_id) = target_token_id {
+            output.token_ids[accepted_draft_token_ids.len()] = target_token_id;
+        }
         Ok(output)
     }
 
     #[must_use]
     pub const fn count(self) -> u8 {
         self.count
+    }
+
+    #[must_use]
+    pub const fn accepted_draft_count(self) -> u8 {
+        self.accepted_draft_count
+    }
+
+    #[must_use]
+    pub const fn target_token_present(self) -> bool {
+        self.target_token_present
     }
 
     #[must_use]
@@ -98,6 +140,8 @@ impl StepOutput {
         hasher.update(self.sequence_count.to_le_bytes());
         for sequence in self.sequences() {
             hasher.update([sequence.count]);
+            hasher.update([sequence.accepted_draft_count]);
+            hasher.update([u8::from(sequence.target_token_present)]);
             for token_id in sequence.token_ids() {
                 hasher.update(token_id.to_le_bytes());
             }
@@ -116,9 +160,19 @@ impl StepOutput {
         }
         for sequence in self.sequences() {
             let valid_count = match plan.mode {
-                StepMode::Decode => sequence.count == 1,
+                StepMode::Decode => {
+                    sequence.count == 1
+                        && sequence.accepted_draft_count == 0
+                        && sequence.target_token_present
+                }
                 StepMode::Verify => {
-                    sequence.count != 0 && sequence.count <= plan.mtp_depth.saturating_add(1)
+                    sequence.count != 0
+                        && sequence.count <= plan.mtp_depth.saturating_add(1)
+                        && sequence.accepted_draft_count <= plan.mtp_depth
+                        && sequence.count
+                            == sequence
+                                .accepted_draft_count
+                                .saturating_add(u8::from(sequence.target_token_present))
                 }
                 StepMode::Prefill | StepMode::CacheOnly | StepMode::Mixed => false,
             };
@@ -204,8 +258,8 @@ mod tests {
     fn mode_shape_and_vocabulary_are_fail_closed() {
         let decode = plan(StepMode::Decode, 2, 0);
         let valid = StepOutput::new(&[
-            CommittedTokens::new(&[0]).unwrap(),
-            CommittedTokens::new(&[GLM_52_OUTPUT_VOCABULARY - 1]).unwrap(),
+            CommittedTokens::target(0).unwrap(),
+            CommittedTokens::target(GLM_52_OUTPUT_VOCABULARY - 1).unwrap(),
         ])
         .unwrap();
         assert_eq!(valid.validate(&decode), Ok(()));
@@ -214,7 +268,7 @@ mod tests {
             Err(OutputError::SequenceCount)
         );
         assert_eq!(
-            CommittedTokens::new(&[GLM_52_OUTPUT_VOCABULARY]),
+            CommittedTokens::target(GLM_52_OUTPUT_VOCABULARY),
             Err(OutputError::TokenId)
         );
     }
@@ -223,8 +277,8 @@ mod tests {
     fn verify_accepts_one_through_depth_plus_one_tokens() {
         let verify = plan(StepMode::Verify, 2, 6);
         let valid = StepOutput::new(&[
-            CommittedTokens::new(&[1]).unwrap(),
-            CommittedTokens::new(&[2, 3, 4, 5, 6, 7, 8]).unwrap(),
+            CommittedTokens::verify(&[], Some(1)).unwrap(),
+            CommittedTokens::verify(&[2, 3, 4, 5, 6, 7], Some(8)).unwrap(),
         ])
         .unwrap();
         assert_eq!(valid.validate(&verify), Ok(()));
@@ -238,7 +292,18 @@ mod tests {
     fn prefill_requires_an_empty_output_record() {
         let prefill = plan(StepMode::Prefill, 1, 0);
         assert_eq!(StepOutput::empty().validate(&prefill), Ok(()));
-        let token = StepOutput::new(&[CommittedTokens::new(&[1]).unwrap()]).unwrap();
+        let token = StepOutput::new(&[CommittedTokens::target(1).unwrap()]).unwrap();
         assert_eq!(token.validate(&prefill), Err(OutputError::SequenceCount));
+    }
+
+    #[test]
+    fn verifier_can_distinguish_accepted_eos_from_a_target_token() {
+        let verify = plan(StepMode::Verify, 1, 6);
+        let accepted_only =
+            StepOutput::new(&[CommittedTokens::verify(&[10, 11], None).unwrap()]).unwrap();
+        assert_eq!(accepted_only.validate(&verify), Ok(()));
+        let sequence = accepted_only.sequences()[0];
+        assert_eq!(sequence.accepted_draft_count(), 2);
+        assert!(!sequence.target_token_present());
     }
 }

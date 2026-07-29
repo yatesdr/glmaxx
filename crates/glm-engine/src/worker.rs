@@ -66,7 +66,7 @@ impl RankExecutor for CpuRankExecutor {
             let mut sequences = output.sequences().to_vec();
             let first = sequences.first_mut().ok_or(RankExecutionError::Invariant)?;
             let divergent = (first.token_ids()[0] + 1) % GLM_52_OUTPUT_VOCABULARY;
-            *first = CommittedTokens::new(&[divergent])?;
+            *first = CommittedTokens::target(divergent)?;
             output = StepOutput::new(&sequences)?;
         }
         Ok(output)
@@ -390,7 +390,7 @@ fn cpu_output(
             let digest: [u8; 32] = hasher.finalize().into();
             let token_id = u32::from_le_bytes(digest[..4].try_into().expect("bounded"))
                 % GLM_52_OUTPUT_VOCABULARY;
-            CommittedTokens::new(&[token_id])
+            CommittedTokens::target(token_id)
         })
         .collect::<Result<Vec<_>, _>>()?;
     StepOutput::new(&sequences).map_err(Into::into)
