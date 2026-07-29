@@ -214,8 +214,15 @@ struct ResidentEntry {
     record: TierRecord,
     residency: Residency,
     restored: Option<RestoredPage>,
+    pending_restore: Option<PendingRestoreIdentity>,
     pin_count: u32,
     last_touch: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingRestoreIdentity {
+    request_id: u64,
+    page_ordinal: u64,
 }
 
 #[derive(Debug)]
@@ -268,6 +275,7 @@ impl ResidencyManager {
                 record,
                 residency: Residency::Nvme,
                 restored: None,
+                pending_restore: None,
                 pin_count: 0,
                 last_touch: 0,
             },
@@ -304,6 +312,9 @@ impl ResidencyManager {
         page_ordinal: u64,
         worker_rank: u8,
     ) -> Result<RestoreRequest, ResidencyError> {
+        if request_id == 0 || worker_rank >= 4 || owner_rank(page_ordinal) != worker_rank {
+            return Err(ResidencyError::Request);
+        }
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -313,6 +324,10 @@ impl ResidencyManager {
             return Err(ResidencyError::State);
         }
         entry.residency = Residency::Restoring;
+        entry.pending_restore = Some(PendingRestoreIdentity {
+            request_id,
+            page_ordinal,
+        });
         Ok(RestoreRequest {
             request_id,
             page_key,
@@ -332,6 +347,7 @@ impl ResidencyManager {
             return Err(ResidencyError::State);
         }
         entry.residency = Residency::Nvme;
+        entry.pending_restore = None;
         Ok(())
     }
 
@@ -339,8 +355,12 @@ impl ResidencyManager {
         let page_key = result.page.record.page_key;
         let entry = self.entries.get(&page_key).ok_or(ResidencyError::Missing)?;
         if entry.residency != Residency::Restoring
-            || entry.record.namespace != result.page.record.namespace
-            || entry.record.generation != result.page.record.generation
+            || entry.pending_restore
+                != Some(PendingRestoreIdentity {
+                    request_id: result.request_id,
+                    page_ordinal: result.page_ordinal,
+                })
+            || entry.record != result.page.record
         {
             return Err(ResidencyError::Stale);
         }
@@ -353,6 +373,7 @@ impl ResidencyManager {
             .ok_or(ResidencyError::Missing)?;
         entry.residency = Residency::Hbm;
         entry.restored = Some(result.page);
+        entry.pending_restore = None;
         entry.last_touch = self.clock;
         self.hbm_bytes = self
             .hbm_bytes
@@ -522,6 +543,7 @@ impl From<StoreError> for RestoreError {
 pub enum ResidencyError {
     Config,
     Record,
+    Request,
     Missing,
     State,
     Stale,
@@ -717,6 +739,75 @@ mod tests {
         assert_eq!(manager.dram_bytes(), 0);
         assert_eq!(manager.register_nvme(first), Err(ResidencyError::Stale));
         assert_eq!(manager.location([0x41; 32]), Some(Residency::Nvme));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restore_completion_is_bound_to_request_ordinal_and_exact_record() {
+        let root = temporary_store("restore-identity");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let record = store.publish(page(0x51)).unwrap();
+        let page_bytes = entry_bytes(&record).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: page_bytes,
+            dram_bytes: page_bytes,
+        })
+        .unwrap();
+        manager.register_nvme(record.clone()).unwrap();
+
+        assert_eq!(
+            manager.begin_restore(0, record.page_key, 0, 0),
+            Err(ResidencyError::Request)
+        );
+        assert_eq!(
+            manager.begin_restore(7, record.page_key, 0, 1),
+            Err(ResidencyError::Request)
+        );
+        assert_eq!(manager.location(record.page_key), Some(Residency::Nvme));
+
+        manager
+            .begin_restore(7, record.page_key, 0, owner_rank(0))
+            .unwrap();
+        let restored = store.restore(record.page_key).unwrap().unwrap();
+        assert_eq!(
+            manager.complete_restore(RestoreResult {
+                request_id: 8,
+                page_ordinal: 0,
+                page: restored.clone(),
+            }),
+            Err(ResidencyError::Stale)
+        );
+        assert_eq!(
+            manager.complete_restore(RestoreResult {
+                request_id: 7,
+                page_ordinal: 4,
+                page: restored.clone(),
+            }),
+            Err(ResidencyError::Stale)
+        );
+        let mut wrong_record = restored.clone();
+        wrong_record.record.generation += 1;
+        assert_eq!(
+            manager.complete_restore(RestoreResult {
+                request_id: 7,
+                page_ordinal: 0,
+                page: wrong_record,
+            }),
+            Err(ResidencyError::Stale)
+        );
+        assert_eq!(
+            manager.location(record.page_key),
+            Some(Residency::Restoring)
+        );
+
+        manager
+            .complete_restore(RestoreResult {
+                request_id: 7,
+                page_ordinal: 0,
+                page: restored,
+            })
+            .unwrap();
+        assert_eq!(manager.location(record.page_key), Some(Residency::Hbm));
         fs::remove_dir_all(root).unwrap();
     }
 }
