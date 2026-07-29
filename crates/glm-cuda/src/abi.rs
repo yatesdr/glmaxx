@@ -62,6 +62,22 @@ pub fn grouped_sfa_plan(
     })
 }
 
+pub fn grouped_sfa_capacity_bytes(assignments: u32) -> Result<u64, KernelError> {
+    if assignments == 0 || assignments > 65_535 {
+        return Err(KernelError::Shape);
+    }
+    let assignments = u64::from(assignments);
+    let active_experts = assignments.min(u64::from(EXPERTS));
+    assignments
+        .checked_add(
+            active_experts
+                .checked_mul(127)
+                .ok_or(KernelError::Overflow)?,
+        )
+        .and_then(|rows| rows.checked_mul(SFA_BYTES_PER_PADDED_ROW))
+        .ok_or(KernelError::Overflow)
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C, align(16))]
 pub struct Fc1Descriptor {
@@ -238,6 +254,21 @@ pub fn workspace_bytes(assignments: u32) -> Result<u64, KernelError> {
     })
 }
 
+pub fn grouped_workspace_bytes(assignments: u32) -> Result<u64, KernelError> {
+    let assignments_u64 = u64::from(assignments);
+    let padded_assignments = assignments_u64
+        .checked_add(127)
+        .map(|value| value / 128 * 128)
+        .ok_or(KernelError::Overflow)?;
+    let global_sfa_bytes = padded_assignments
+        .checked_mul(u64::from(HIDDEN) / 16)
+        .ok_or(KernelError::Overflow)?;
+    workspace_bytes(assignments)?
+        .checked_sub(global_sfa_bytes)
+        .and_then(|base| base.checked_add(grouped_sfa_capacity_bytes(assignments).ok()?))
+        .ok_or(KernelError::Overflow)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelError {
     Abi,
@@ -334,5 +365,28 @@ mod tests {
         let mut oversized = [0_u32; EXPERTS as usize + 1];
         oversized[EXPERTS as usize] = 65_536;
         assert_eq!(grouped_sfa_plan(&oversized), Err(KernelError::Shape));
+    }
+
+    #[test]
+    fn grouped_sfa_capacity_covers_real_plans() {
+        for assignments in [1_u32, 8, 128, 256, 257, 2_048, 65_535] {
+            let active = assignments.min(EXPERTS);
+            let mut offsets = [0_u32; EXPERTS as usize + 1];
+            for expert in 0..active {
+                offsets[expert as usize + 1] = expert + 1;
+            }
+            offsets[active as usize + 1..].fill(active);
+            offsets[EXPERTS as usize] = assignments;
+            let plan = grouped_sfa_plan(&offsets).unwrap();
+            assert!(plan.total_bytes <= grouped_sfa_capacity_bytes(assignments).unwrap());
+            assert!(
+                grouped_workspace_bytes(assignments).unwrap()
+                    >= workspace_bytes(assignments).unwrap()
+            );
+        }
+        assert_eq!(
+            grouped_sfa_capacity_bytes(256).unwrap(),
+            256 * 128 * SFA_BYTES_PER_PADDED_ROW
+        );
     }
 }

@@ -62,6 +62,9 @@ int32_t glmaxx_nvfp4_routed_fc1_graph_instantiate(
 int32_t glmaxx_nvfp4_quantize_launch(
     const struct glmaxx_fc1_descriptor* descriptor,
     void* cuda_stream);
+int32_t glmaxx_nvfp4_grouped_quantize_launch(
+    const struct glmaxx_fc1_descriptor* descriptor,
+    void* cuda_stream);
 int32_t glmaxx_nvfp4_core_swiglu_launch(
     const struct glmaxx_fc1_descriptor* descriptor,
     void* cuda_stream);
@@ -80,6 +83,7 @@ int32_t glmaxx_event_elapsed_ms(uint64_t start, uint64_t end,
 int32_t glmaxx_event_destroy(uint64_t event);
 
 uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(uint32_t assignments);
+uint64_t glmaxx_nvfp4_grouped_workspace_bytes(uint32_t assignments);
 const char* glmaxx_kernel_abi(void);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);

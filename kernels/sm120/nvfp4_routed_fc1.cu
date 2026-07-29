@@ -72,7 +72,7 @@ __device__ float block_max(float value, float* scratch) {
 }
 
 __global__ void quantize_compacted_rows(
-    const glmaxx_fc1_descriptor descriptor) {
+    const glmaxx_fc1_descriptor descriptor, bool expert_local_sfa) {
   const uint32_t assignment = blockIdx.x;
   if (assignment >= descriptor.assignments) {
     return;
@@ -81,6 +81,12 @@ __global__ void quantize_compacted_rows(
       reinterpret_cast<const __nv_bfloat16*>(descriptor.input_bf16);
   const auto* route_tokens =
       reinterpret_cast<const uint32_t*>(descriptor.route_tokens_u32);
+  const auto* route_experts =
+      reinterpret_cast<const uint16_t*>(descriptor.route_experts_u16);
+  const auto* expert_offsets =
+      reinterpret_cast<const uint32_t*>(descriptor.expert_offsets_u32);
+  const auto* expert_sfa_offsets =
+      reinterpret_cast<const uint64_t*>(descriptor.compacted_input_bf16);
   auto* values = reinterpret_cast<uint8_t*>(descriptor.activation_values);
   auto* scales = reinterpret_cast<uint8_t*>(descriptor.activation_scales);
   auto* globals =
@@ -100,7 +106,13 @@ __global__ void quantize_compacted_rows(
   }
   __syncthreads();
 
-  const uint32_t padded_rows = round_up_128(descriptor.assignments);
+  uint32_t scale_row = assignment;
+  uint64_t scale_base = 0;
+  if (expert_local_sfa) {
+    const uint32_t expert = route_experts[assignment];
+    scale_row = assignment - expert_offsets[expert];
+    scale_base = expert_sfa_offsets[expert];
+  }
   for (uint32_t group = threadIdx.x; group < kGroupsK;
        group += blockDim.x) {
     float group_amax = 0.0f;
@@ -114,7 +126,8 @@ __global__ void quantize_compacted_rows(
         group_amax == 0.0f
             ? 0
             : encode_e4m3((group_amax / 6.0f) / global_scale);
-    scales[scale_offset(assignment, group, padded_rows)] = scale_code;
+    scales[scale_base + scale_offset(scale_row, group, descriptor.assignments)] =
+        scale_code;
     const float decoded_scale = decode_e4m3(scale_code) * global_scale;
     uint8_t* packed_row =
         values + uint64_t{assignment} * kHidden / 2;
@@ -290,9 +303,10 @@ cudaError_t sm120_properties(cudaDeviceProp* properties) {
 }
 
 cudaError_t enqueue_quantize(const glmaxx_fc1_descriptor& descriptor,
-                             cudaStream_t stream) {
+                             cudaStream_t stream,
+                             bool expert_local_sfa = false) {
   quantize_compacted_rows<<<descriptor.assignments, 256, 0, stream>>>(
-      descriptor);
+      descriptor, expert_local_sfa);
   return cudaPeekAtLastError();
 }
 
@@ -333,6 +347,22 @@ extern "C" uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(
   return uint64_t{assignments} * (kHidden * 2 + 4 + kLocalGateUp * 4) +
          padded * kHidden / 2 + padded * kHidden / 16 +
          uint64_t{kExperts + 1} * 4;
+}
+
+extern "C" uint64_t glmaxx_nvfp4_grouped_workspace_bytes(
+    uint32_t assignments) {
+  if (assignments == 0 || assignments > 65535) {
+    return 0;
+  }
+  const uint64_t active_experts =
+      assignments < kExperts ? assignments : kExperts;
+  const uint64_t grouped_sfa_rows =
+      uint64_t{assignments} + active_experts * 127;
+  const uint64_t global_sfa_bytes =
+      uint64_t{round_up_128(assignments)} * kHidden / 16;
+  const uint64_t grouped_sfa_bytes = grouped_sfa_rows * kHidden / 16;
+  return glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments) -
+         global_sfa_bytes + grouped_sfa_bytes;
 }
 
 extern "C" const char* glmaxx_kernel_abi(void) {
@@ -527,6 +557,28 @@ extern "C" int32_t glmaxx_nvfp4_quantize_launch(
   }
   return static_cast<int32_t>(enqueue_quantize(
       *descriptor, reinterpret_cast<cudaStream_t>(cuda_stream)));
+}
+
+extern "C" int32_t glmaxx_nvfp4_grouped_quantize_launch(
+    const glmaxx_fc1_descriptor* descriptor, void* cuda_stream) {
+  if (descriptor == nullptr || cuda_stream == nullptr) {
+    return -1;
+  }
+  if (!valid_host_descriptor(*descriptor) ||
+      descriptor->workspace_bytes <
+          glmaxx_nvfp4_grouped_workspace_bytes(descriptor->assignments)) {
+    return -2;
+  }
+  cudaDeviceProp properties{};
+  const cudaError_t property_status = sm120_properties(&properties);
+  if (property_status == cudaErrorInvalidDevice) {
+    return -120;
+  }
+  if (property_status != cudaSuccess) {
+    return static_cast<int32_t>(property_status);
+  }
+  return static_cast<int32_t>(enqueue_quantize(
+      *descriptor, reinterpret_cast<cudaStream_t>(cuda_stream), true));
 }
 
 extern "C" int32_t glmaxx_nvfp4_core_swiglu_launch(

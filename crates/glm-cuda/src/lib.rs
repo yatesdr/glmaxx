@@ -5,8 +5,8 @@ mod ownership;
 
 pub use abi::{
     ABI_VERSION, Fc1Descriptor, GroupedSfaPlan, HIDDEN, KernelError, KernelPath, LOCAL_GATE_UP,
-    LOCAL_INTERMEDIATE, LaunchGeometry, SFA_BYTES_PER_PADDED_ROW, grouped_sfa_plan,
-    validate_descriptor, workspace_bytes,
+    LOCAL_INTERMEDIATE, LaunchGeometry, SFA_BYTES_PER_PADDED_ROW, grouped_sfa_capacity_bytes,
+    grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor, workspace_bytes,
 };
 pub use ownership::{CudaDriver, DeviceBuffer, LaunchTicket};
 

@@ -5,7 +5,8 @@ use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 
 use crate::{
     CudaDriver, Fc1Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    validate_descriptor, workspace_bytes,
+    grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor,
+    workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -38,6 +39,7 @@ unsafe extern "C" {
     fn glmaxx_event_elapsed_ms(start: u64, end: u64, milliseconds: *mut f32) -> i32;
     fn glmaxx_event_destroy(event: u64) -> i32;
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
+    fn glmaxx_nvfp4_grouped_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
@@ -721,10 +723,15 @@ impl NativeFc1Fixture {
         let route_weight = NativeBuffer::upload(floats_as_bytes(&route_weights), self.stream.0)?;
         let offsets = NativeBuffer::upload(dwords_as_bytes(expert_offsets), self.stream.0)?;
         let compacted = NativeBuffer::allocate(u64::from(assignments) * u64::from(HIDDEN) * 2)?;
+        let grouped_sfa = grouped_sfa_plan(expert_offsets)?;
+        compacted.upload_at(
+            qwords_as_bytes(&grouped_sfa.expert_byte_offsets),
+            0,
+            self.stream.0,
+        )?;
         let padded_assignments = u64::from(assignments.next_multiple_of(128));
         let activation_values = NativeBuffer::allocate(padded_assignments * u64::from(HIDDEN) / 2)?;
-        let activation_scales =
-            NativeBuffer::allocate(padded_assignments * u64::from(HIDDEN) / 16)?;
+        let activation_scales = NativeBuffer::allocate(grouped_sfa_capacity_bytes(assignments)?)?;
         let activation_globals = NativeBuffer::allocate(u64::from(assignments) * 4)?;
         let gate_up =
             NativeBuffer::allocate(u64::from(assignments) * u64::from(crate::LOCAL_GATE_UP) * 4)?;
@@ -754,7 +761,7 @@ impl NativeFc1Fixture {
         descriptor.activation_global_scales = activation_globals.pointer;
         descriptor.gate_up_accum_f32 = gate_up.pointer;
         descriptor.output_bf16 = output.pointer;
-        descriptor.workspace_bytes = workspace_bytes(assignments)?;
+        descriptor.workspace_bytes = grouped_workspace_bytes(assignments)?;
         descriptor.sequence = 1;
         validate_descriptor(&descriptor)?;
         // Ensure all H2D inputs are complete before returning a replayable case
@@ -836,6 +843,11 @@ fn floats_as_bytes(values: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
 }
 
+fn qwords_as_bytes(words: &[u64]) -> &[u8] {
+    // SAFETY: u64 has no invalid bit patterns and the byte length is exact.
+    unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) }
+}
+
 fn launch_native_fc1(descriptor: &Fc1Descriptor, stream: u64) -> Result<(), KernelError> {
     let mut async_error = 0_i32;
     // SAFETY: the caller keeps the descriptor allocations and stream live.
@@ -884,6 +896,8 @@ fn validate_native_library(assignments: u32) -> Result<(), KernelError> {
         || unsafe { CStr::from_ptr(native_abi) }.to_bytes() != KERNEL_ABI.as_bytes()
         || unsafe { glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments) }
             != workspace_bytes(assignments)?
+        || unsafe { glmaxx_nvfp4_grouped_workspace_bytes(assignments) }
+            != grouped_workspace_bytes(assignments)?
     {
         return Err(KernelError::Abi);
     }
