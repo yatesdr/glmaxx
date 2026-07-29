@@ -3,18 +3,19 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`2ff0ac124be63a8a8318d664d167f34dde32ed3c`
+`6535248bb217b20d56ec0d6670c8fb6f33791205`
 
-The complete local gate most recently ran against the selected-step failure
-finalization implementation
-`11bb8939aeb72c2b732d963848b4ebe53f926bbb`; its provenance record was then
-committed at `2ff0ac124be63a8a8318d664d167f34dde32ed3c`. The target
+The complete local gate most recently ran against the terminal-cleanup
+transaction implementation
+`a7087e716e3d9e1e201ff443939001c8ef428680`; its provenance record was then
+committed at `6535248bb217b20d56ec0d6670c8fb6f33791205`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
 reconstruction, exact restore-result identity, all-or-nothing HBM
 admission, captured-shape prefill progress, and all-or-nothing scheduler
-step completion, prefix release, and selected-step failure finalization.
+step completion, prefix release, selected-step failure finalization, and
+multi-request terminal cleanup.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -22,12 +23,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at selected-step failure implementation `11bb893`
+The latest local run at terminal-cleanup implementation `a7087e7`
 passed:
 
-- `scripts/local-checks.sh`: 239 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 241 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 39 then-present candidate-based review-handoff hash proofs;
+  and all 40 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -153,6 +154,16 @@ next tick is idle rather than permanently blocked by stale inflight state.
 The dedicated handoff passes local provenance; independent acceptance is
 absent.
 
+The multi-request cleanup correction is pinned in
+`docs/terminal-cleanup-transaction-proof-v1.md`. Successful step events,
+prompt accounting, prefix leases, and cumulative shared-page pin releases
+are now fully preflighted before scheduler commit, then published through an
+infallible commit. Failure and idle-cancellation cleanup use the same counted
+plan. Its shared-prefix/late-corruption regression proves no earlier user is
+partially released or published, and the exact C64/MTP6 boundary fits 512
+fixed event slots. The dedicated handoff passes local provenance;
+independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -264,6 +275,7 @@ verdicts:
 | all-or-nothing scheduler batch completion | `2f7d0ce` | `docs/fable-scheduler-batch-atomicity-v1-handoff.md` |
 | all-or-nothing prefix release | `14b97a2` | `docs/fable-prefix-release-atomicity-v1-handoff.md` |
 | selected-step failure finalization | `2ff0ac1` | `docs/fable-selected-step-failure-finalization-v1-handoff.md` |
+| multi-request terminal cleanup transaction | `6535248` | `docs/fable-terminal-cleanup-transaction-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
