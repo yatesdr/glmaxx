@@ -151,6 +151,16 @@ emits the complete per-file identity map and identity basis. On cn4,
 reconstructs actual layer-3/expert-0/rank-0 gate, up, and down payloads into a
 fresh external evidence directory without enabling CUDA.
 
+The publisher's exact `MANIFEST.sha256` at the pinned revision is
+self-inconsistent for one non-model file: it names `.gitattributes` as
+`34448b82…`, while resolving `.gitattributes` at that same immutable revision
+and the existing cn4 checkpoint both produce `5bb36c32…`. The verifier
+accepts only that exact filename, manifest digest, and revision digest tuple.
+It reports the exception separately and still requires every model shard,
+index, tokenizer/configuration file, and other manifest entry to match
+exactly. No wildcard, general metadata exemption, or weight-file exception
+exists.
+
 The repository includes `scripts/cn4-download-pinned-exl3.sh` for an external,
 resumable download. It fetches all 92 files in the immutable upstream
 `MANIFEST.sha256`, verifies each file independently, then runs a complete

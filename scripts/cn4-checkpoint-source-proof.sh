@@ -4,6 +4,8 @@ set -euo pipefail
 readonly expected_repository="brandonmusic/GLM-5.2-EXL3-TR3-3.0bpw"
 readonly expected_revision="9297b9f1d53af5c67cffa01e30cc071a1ff7144b"
 readonly expected_manifest_sha256="bfb6dc39f28da08c1cfc5b89603414046adf7003152d69e9ee350e11f7a1fa63"
+readonly expected_gitattributes_manifest_sha256="34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+readonly expected_gitattributes_revision_sha256="5bb36c320417db43af1dc6af8bd0fcc154bb7276eddaf96b12c395bdafed634d"
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_dir}"
@@ -92,6 +94,9 @@ printf '%s\n' \
   "revision=${expected_revision}" \
   "manifest_sha256=${expected_manifest_sha256}" \
   "index_sha256=346227a4ea44b6063017739ee38a830319dc10305ccf714734095e27b28064c2" \
+  "publisher_manifest_exception=.gitattributes" \
+  "publisher_manifest_sha256=${expected_gitattributes_manifest_sha256}" \
+  "publisher_revision_sha256=${expected_gitattributes_revision_sha256}" \
   "identity_basis=${marker_posture}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/source-binding.txt"
 shasum -a 256 \
@@ -138,6 +143,10 @@ if ! grep -Fq '"verdict": "PINNED_CHECKPOINT_STRUCTURE_PASS"' \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
    ! grep -Fq "\"identity_basis\": \"${marker_posture}\"" \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
+   ! grep -Fq "\"manifest_sha256\": \"${expected_gitattributes_manifest_sha256}\"" \
+    "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
+   ! grep -Fq "\"revision_sha256\": \"${expected_gitattributes_revision_sha256}\"" \
+    "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
    ! grep -Fq '"verified_file_count": 92' \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json"; then
   echo "Pinned checkpoint proof did not emit all required pass records" >&2
@@ -159,7 +168,8 @@ fi
 
 printf '%s\n' \
   "PINNED_EXL3_CPU_PROOF_PASS" \
-  "All 92 manifest files were SHA-256 verified and all 81 shards were structurally validated." \
+  "All 92 revision files were SHA-256 verified and all 81 shards were structurally validated." \
+  "The sole upstream-manifest inconsistency is the exact pinned .gitattributes non-model metadata exception recorded in checkpoint-source.json." \
   "Actual gate, up, and down layer-3/expert-0/rank-0 source payloads reconstructed deterministically without conversion." \
   "No CUDA feature or device access was used." \
   | tee "${GLMAXX_EVIDENCE_DIR}/verdict.txt"

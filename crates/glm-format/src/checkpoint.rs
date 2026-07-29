@@ -25,6 +25,14 @@ pub const PINNED_SOURCE_MANIFEST_SHA256: [u8; 32] = [
     0xbf, 0xb6, 0xdc, 0x39, 0xf2, 0x8d, 0xa0, 0x8c, 0x1c, 0xfc, 0x5b, 0x89, 0x60, 0x34, 0x14, 0x04,
     0x6a, 0xdf, 0x70, 0x03, 0x15, 0x2d, 0x69, 0xe9, 0xee, 0x35, 0x0e, 0x11, 0xf7, 0xa1, 0xfa, 0x63,
 ];
+const PINNED_GITATTRIBUTES_MANIFEST_SHA256: [u8; 32] = [
+    0x34, 0x44, 0x8b, 0x82, 0xc1, 0x7d, 0x60, 0xfe, 0xc9, 0xb6, 0x5b, 0x1f, 0x09, 0x3c, 0x11, 0x5d,
+    0xdb, 0xaa, 0xdc, 0x04, 0xbe, 0xb1, 0xb0, 0x14, 0x0b, 0x6b, 0xfe, 0xd2, 0xe0, 0x12, 0xa9, 0x30,
+];
+const PINNED_GITATTRIBUTES_REVISION_SHA256: [u8; 32] = [
+    0x5b, 0xb3, 0x6c, 0x32, 0x04, 0x17, 0xdb, 0x43, 0xaf, 0x1d, 0xc6, 0xaf, 0x8b, 0xd0, 0xfc, 0xc1,
+    0x54, 0xbb, 0x72, 0x76, 0xed, 0xda, 0xf9, 0x6b, 0x12, 0xc3, 0x95, 0xbd, 0xaf, 0xed, 0x63, 0x4d,
+];
 pub const PINNED_SOURCE_FILE_COUNT: usize = 92;
 pub const PINNED_EXL3_TENSOR_COUNT: usize = 935_105;
 pub const PINNED_EXL3_SHARD_COUNT: usize = 81;
@@ -148,6 +156,13 @@ pub struct PinnedSourceVerification {
     pub verified_file_bytes: u64,
     source_markers_verified: bool,
     file_sha256: BTreeMap<String, [u8; 32]>,
+    manifest_exceptions: BTreeMap<String, PinnedManifestException>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PinnedManifestException {
+    pub manifest_sha256: [u8; 32],
+    pub revision_sha256: [u8; 32],
 }
 
 impl PinnedSourceVerification {
@@ -179,6 +194,11 @@ impl PinnedSourceVerification {
     #[must_use]
     pub fn files(&self) -> &BTreeMap<String, [u8; 32]> {
         &self.file_sha256
+    }
+
+    #[must_use]
+    pub fn manifest_exceptions(&self) -> &BTreeMap<String, PinnedManifestException> {
+        &self.manifest_exceptions
     }
 }
 
@@ -551,6 +571,8 @@ pub fn verify_pinned_source_files(
     }
 
     let mut verified_file_bytes = 0_u64;
+    let mut verified_files = BTreeMap::new();
+    let mut manifest_exceptions = BTreeMap::new();
     for (completed, (name, expected_sha256)) in expected.iter().enumerate() {
         let path = root.join(name);
         let (observed_sha256, bytes) = if checkpoint.shards().contains(Path::new(name)) {
@@ -561,8 +583,18 @@ pub fn verify_pinned_source_files(
             hash_regular_file(&path)?
         };
         if &observed_sha256 != expected_sha256 {
-            return Err(PinnedSourceError::FileDigest(name.clone()));
+            if !is_pinned_publisher_manifest_exception(name, expected_sha256, &observed_sha256) {
+                return Err(PinnedSourceError::FileDigest(name.clone()));
+            }
+            manifest_exceptions.insert(
+                name.clone(),
+                PinnedManifestException {
+                    manifest_sha256: *expected_sha256,
+                    revision_sha256: observed_sha256,
+                },
+            );
         }
+        verified_files.insert(name.clone(), observed_sha256);
         verified_file_bytes = verified_file_bytes
             .checked_add(bytes)
             .ok_or(PinnedSourceError::Overflow)?;
@@ -572,8 +604,19 @@ pub fn verify_pinned_source_files(
         manifest_sha256: PINNED_SOURCE_MANIFEST_SHA256,
         verified_file_bytes,
         source_markers_verified,
-        file_sha256: expected,
+        file_sha256: verified_files,
+        manifest_exceptions,
     })
+}
+
+fn is_pinned_publisher_manifest_exception(
+    name: &str,
+    manifest_sha256: &[u8; 32],
+    revision_sha256: &[u8; 32],
+) -> bool {
+    name == ".gitattributes"
+        && manifest_sha256 == &PINNED_GITATTRIBUTES_MANIFEST_SHA256
+        && revision_sha256 == &PINNED_GITATTRIBUTES_REVISION_SHA256
 }
 
 fn parse_source_manifest(bytes: &[u8]) -> Result<BTreeMap<String, [u8; 32]>, PinnedSourceError> {
@@ -1648,6 +1691,27 @@ mod tests {
                 Err(PinnedSourceError::ManifestSyntax)
             ));
         }
+    }
+
+    #[test]
+    fn publisher_manifest_exception_is_exact_and_nonextensible() {
+        assert!(is_pinned_publisher_manifest_exception(
+            ".gitattributes",
+            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
+            &PINNED_GITATTRIBUTES_REVISION_SHA256
+        ));
+        let mut wrong_revision = PINNED_GITATTRIBUTES_REVISION_SHA256;
+        wrong_revision[0] ^= 1;
+        assert!(!is_pinned_publisher_manifest_exception(
+            ".gitattributes",
+            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
+            &wrong_revision
+        ));
+        assert!(!is_pinned_publisher_manifest_exception(
+            "config.json",
+            &PINNED_GITATTRIBUTES_MANIFEST_SHA256,
+            &PINNED_GITATTRIBUTES_REVISION_SHA256
+        ));
     }
 
     #[test]

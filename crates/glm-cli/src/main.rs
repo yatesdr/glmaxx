@@ -312,7 +312,15 @@ struct CheckpointSourceProof {
     verified_file_count: usize,
     verified_file_bytes: u64,
     file_sha256: BTreeMap<String, String>,
+    publisher_manifest_exceptions: BTreeMap<String, PublisherManifestExceptionProof>,
     verdict: &'static str,
+}
+
+#[derive(Serialize)]
+struct PublisherManifestExceptionProof {
+    manifest_sha256: String,
+    revision_sha256: String,
+    reason: &'static str,
 }
 
 fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -336,8 +344,22 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
         .iter()
         .map(|(name, digest)| (name.clone(), hex(digest)))
         .collect();
+    let publisher_manifest_exceptions = source
+        .manifest_exceptions()
+        .iter()
+        .map(|(name, exception)| {
+            (
+                name.clone(),
+                PublisherManifestExceptionProof {
+                    manifest_sha256: hex(&exception.manifest_sha256),
+                    revision_sha256: hex(&exception.revision_sha256),
+                    reason: "pinned upstream manifest is self-inconsistent for non-model metadata",
+                },
+            )
+        })
+        .collect();
     let proof = CheckpointSourceProof {
-        schema: "glmaxx.pinned-checkpoint-source-proof.v2",
+        schema: "glmaxx.pinned-checkpoint-source-proof.v3",
         repository: PINNED_EXL3_REPOSITORY,
         revision: EXL3_MODEL_REVISION,
         identity_basis: if source.source_markers_verified() {
@@ -352,6 +374,7 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
         verified_file_count: source.file_count(),
         verified_file_bytes: source.verified_file_bytes(),
         file_sha256,
+        publisher_manifest_exceptions,
         verdict: "PINNED_CHECKPOINT_SOURCE_PASS",
     };
     println!("{}", serde_json::to_string_pretty(&proof)?);
