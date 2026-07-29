@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: design candidate; native binding implementation and cn4 evidence
-pending
+Status: native binding qualified on cn4; kernel execution, collectives, and
+weight residency remain pending
 
 ## Boundary
 
@@ -79,3 +79,6 @@ The first proof creates no device kernel. On an idle authorized cn4 it:
 
 This opens only the rank-runtime startup boundary. It does not qualify weight
 loading, kernels, collectives, graphs, checkpoint execution, or performance.
+
+The first successful proof is pinned in
+`docs/cn4-rank-bind-result-20260729.md`.
