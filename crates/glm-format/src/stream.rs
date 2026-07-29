@@ -1,4 +1,4 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::{ffi::CString, os::unix::ffi::OsStrExt};
 use std::{
     ffi::OsString,
@@ -1237,14 +1237,42 @@ fn rename_directory_no_replace(source: &Path, destination: &Path) -> Result<(), 
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_vendor = "apple")]
 fn rename_directory_no_replace(source: &Path, destination: &Path) -> Result<(), StreamRankError> {
-    match destination.symlink_metadata() {
-        Ok(_) => return Err(StreamRankError::Published),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(StreamRankError::Io(error)),
+    let source =
+        CString::new(source.as_os_str().as_bytes()).map_err(|_| StreamRankError::UnsafePath)?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| StreamRankError::UnsafePath)?;
+    // SAFETY: both pointers remain live NUL-terminated path buffers for the
+    // call. RENAME_EXCL makes the destination-existence check and rename one
+    // atomic filesystem operation.
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(code) if code == libc::EEXIST || code == libc::ENOTEMPTY
+        ) {
+            Err(StreamRankError::Published)
+        } else {
+            Err(StreamRankError::Io(error))
+        }
     }
-    fs::rename(source, destination).map_err(StreamRankError::Io)
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+fn rename_directory_no_replace(_source: &Path, _destination: &Path) -> Result<(), StreamRankError> {
+    Err(StreamRankError::AtomicPublishUnsupported)
 }
 
 fn encode_lower_hex(bytes: &[u8]) -> String {
@@ -1431,6 +1459,7 @@ pub enum StreamRankError {
     RankSetPath,
     Published,
     UnsafePath,
+    AtomicPublishUnsupported,
 }
 
 impl fmt::Display for StreamRankError {
