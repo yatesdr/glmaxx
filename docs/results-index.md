@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`876e4ca59be4c7a8243288c57cf79ef3cbebc5d4`
+`a5019aafa7400f82928d944b0fb9a31ddae0605d`
 
-The complete local gate most recently ran against the active-sequence
-removal atomicity implementation
-`435f514f8d2a74005a0358de09f7ddb7b4c12fc2`; its provenance record was then
-committed at `876e4ca59be4c7a8243288c57cf79ef3cbebc5d4`. The target
+The complete local gate most recently ran against the durable-store
+write-fail-stop implementation
+`a96f3b1401774289d38815841cc1335038fd31db`; its final provenance record was
+then committed at `a5019aafa7400f82928d944b0fb9a31ddae0605d`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -17,7 +17,8 @@ admission, captured-shape prefill progress, and all-or-nothing scheduler
 step completion, prefix release, selected-step failure finalization, and
 multi-request terminal cleanup, plus retryable pending restore/admission
 rollback and fail-stop ownership propagation through backend admission and
-event cancellation, plus retryable active-sequence removal.
+event cancellation, retryable active-sequence removal, and fail-stop durable
+cache writes after uncertain publication errors.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -25,12 +26,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at active-sequence removal implementation `435f514`
-passed:
+The latest local run at durable-store implementation `a96f3b1` passed:
 
-- `scripts/local-checks.sh`: 246 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 247 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 44 then-present candidate-based review-handoff hash proofs;
+  and all 45 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -203,6 +203,15 @@ two-owner-page corruption/repair regression distinguishes the old
 remove-before-release path and proves exact retry. The dedicated handoff
 passes local provenance validation; independent acceptance is absent.
 
+The durable-store write correction is pinned in
+`docs/durable-store-write-fail-stop-proof-v1.md`. Request and extent
+validation now complete before journal mutation, while any error after that
+boundary poisons later writes until close/reopen replay. Regressions cover
+begin-journaled, data-synced, and piece-journaled failures, prove no second
+file mutation occurs, preserve earlier readable pages, and keep the failed
+page invisible. The dedicated handoff passes local provenance validation;
+independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -319,6 +328,7 @@ verdicts:
 | backend retained-admission fatal drain | `3ab3110` | `docs/fable-backend-admission-rollback-fatal-v1-handoff.md` |
 | backend event-cancellation fatal propagation | `0f0dd21` | `docs/fable-backend-event-cancellation-fatal-v1-handoff.md` |
 | atomic retryable active-sequence removal | `876e4ca` | `docs/fable-sequence-removal-atomicity-v1-handoff.md` |
+| fail-stop durable-store writes after uncertain publication | `a5019aa` | `docs/fable-durable-store-write-fail-stop-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
