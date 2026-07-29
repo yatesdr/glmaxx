@@ -1,0 +1,390 @@
+{
+  "schema": "glmaxx.quality-corpus-sources.v1",
+  "status": "design-candidate-not-a-materialized-corpus",
+  "date": "2026-07-29",
+  "qualification_only": true,
+  "calibration_must_be_disjoint": true,
+  "model_identity": {
+    "base_model": "zai-org/GLM-5.2",
+    "base_model_revision": "b4734de4facf877f85769a911abafc5283eab3d9",
+    "checkpoint_revision": "9297b9f1d53af5c67cffa01e30cc071a1ff7144b",
+    "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+    "tokenizer_config_sha256": "98b1271574f41abf89427ae2dda030d94dc9478f0edc5a8bd240db213c6fd5fc",
+    "generation_config_sha256": "ac76b43d8683d3b930126870fc8be73d8679308fe752fa1f381096d8354f6a55",
+    "chat_template_sha256": "172dc74a35e1752df75ecfb2b2cf9326d2852bb1379868ebeec9571654489679",
+    "tokenizer_bundle_sha256": "31eb3c003ad8b1545e29144e3f161ad706883e0ccc927beebeddf950b36a6abb",
+    "logical_vocabulary": 154856,
+    "physical_vocabulary": 154880
+  },
+  "upstream_sources": [
+    {
+      "source_id": "lm-evaluation-harness",
+      "repository": "https://github.com/EleutherAI/lm-evaluation-harness.git",
+      "revision": "f4d4b3de3ee6741a7151a9fe74945ee515262f4c",
+      "role": "prompt-and-task-config-reference-only",
+      "license": "MIT",
+      "normative_evaluator": false
+    },
+    {
+      "source_id": "mmlu-pro",
+      "repository": "https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro",
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "license": "MIT",
+      "gated": false,
+      "files": [
+        {
+          "path": "data/test-00000-of-00001.parquet",
+          "size": 4144185,
+          "sha256": "0e24a191921c2f453518a537a8b2117bd137e7714d4ef1565e9ba06c1ecb9ad8"
+        },
+        {
+          "path": "data/validation-00000-of-00001.parquet",
+          "size": 42857,
+          "sha256": "139423c23722e480c807ac4a191409a710cfce4eba744c1d641cf88e730e2078"
+        }
+      ]
+    },
+    {
+      "source_id": "mbpp",
+      "repository": "https://github.com/google-research/google-research.git",
+      "revision": "d1b3cecc62a0d8be4c4ef4730f246b76d7e567d5",
+      "license": "Apache-2.0",
+      "files": [
+        {
+          "path": "mbpp/mbpp.jsonl",
+          "git_blob": "96e2dc2f7dd95b7b87b38dc46e42cbed444251bb",
+          "size": 563743,
+          "sha256": "ccf64ceae9c5403bf50a044cb6d505bfd2a2963ee58338ba268fd65beab92a9f"
+        }
+      ]
+    },
+    {
+      "source_id": "human-eval-diagnostic",
+      "repository": "https://github.com/openai/human-eval.git",
+      "revision": "6d43fb980f9fee3c892a914eda09951f772ad10d",
+      "license": "MIT",
+      "files": [
+        {
+          "path": "data/HumanEval.jsonl.gz",
+          "git_blob": "998d25196e17af24daf9b6cb3a975fe752528e46",
+          "size": 44877,
+          "sha256": "b796127e635a67f93fb35c04f4cb03cf06f38c8072ee7cee8833d7bee06979ef"
+        }
+      ]
+    },
+    {
+      "source_id": "bfcl-v4-offline-ast",
+      "repository": "https://github.com/ShishirPatil/gorilla.git",
+      "revision": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8",
+      "license": "Apache-2.0",
+      "files": [
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_simple_python.json",
+          "size": 283274,
+          "sha256": "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json",
+          "size": 63627,
+          "sha256": "90cd5bc653690ee8e459b5b3f3fc9458606f7f3fcbf795bb51b7dc581f8c86dc"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_multiple.json",
+          "size": 316583,
+          "sha256": "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_multiple.json",
+          "size": 32254,
+          "sha256": "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel.json",
+          "size": 171896,
+          "sha256": "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel.json",
+          "size": 66005,
+          "sha256": "8a6aa19c1adddc6a5a2f7e40f9dbf30cc7e95815e7b830c90589ab318229e0f0"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_parallel_multiple.json",
+          "size": 347080,
+          "sha256": "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579"
+        },
+        {
+          "path": "berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_parallel_multiple.json",
+          "size": 74602,
+          "sha256": "5ebf24f458c1f16300c05505d83d6f0a1b68b79be273a033febd0d4f840507e3"
+        }
+      ]
+    },
+    {
+      "source_id": "wikitext-103-raw-v1",
+      "repository": "https://huggingface.co/datasets/Salesforce/wikitext",
+      "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+      "license": [
+        "CC-BY-SA-3.0",
+        "GFDL"
+      ],
+      "gated": false,
+      "files": [
+        {
+          "path": "wikitext-103-raw-v1/test-00000-of-00001.parquet",
+          "size": 732610,
+          "sha256": "5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91"
+        },
+        {
+          "path": "wikitext-103-raw-v1/validation-00000-of-00001.parquet",
+          "size": 657209,
+          "sha256": "204929b7ff9d6184953f867dedb860e40aa69c078fc1e54b3baaa8fb28511c4c"
+        }
+      ]
+    },
+    {
+      "source_id": "flores-plus-v4.6-multilingual",
+      "repository": "https://huggingface.co/datasets/openlanguagedata/flores_plus",
+      "repository_revision": "5fec6c13f9e5a4db2f745d4ec0d7c9721ddc4f06",
+      "source_repository": "https://github.com/openlanguagedata/flores.git",
+      "source_repository_revision": "b46c18000267658e2197cdbc61c731c7a121d734",
+      "license": "CC-BY-SA-4.0",
+      "gated": true,
+      "content_sha256_state": "must-be-recorded-after-authorized-materialization",
+      "files": [
+        {
+          "path": "devtest/arb_Arab.jsonl",
+          "git_blob": "e26672da474aa1b4dd25a06dd5bae3548f1b9f5c",
+          "size": 519271
+        },
+        {
+          "path": "devtest/cmn_Hans.jsonl",
+          "git_blob": "2b153fde7fba9bd5815a1d83fdaeb96bd05926b9",
+          "size": 428532
+        },
+        {
+          "path": "devtest/hin_Deva.jsonl",
+          "git_blob": "8fe2f4435a5854f691279e1affd085ca4c3f0a37",
+          "size": 644787
+        },
+        {
+          "path": "devtest/jpn_Jpan.jsonl",
+          "git_blob": "8009d4a6e96b59cb3ee1ff76ba7826f751251e2d",
+          "size": 474817
+        },
+        {
+          "path": "devtest/rus_Cyrl.jsonl",
+          "git_blob": "b45dcbde391288cd4e031e40ed8aa298eac721f6",
+          "size": 568320
+        },
+        {
+          "path": "devtest/spa_Latn.jsonl",
+          "git_blob": "c20e8ee0fb4068acffeed8d822c1cf85bdddef67",
+          "size": 467594
+        },
+        {
+          "path": "devtest/swh_Latn.jsonl",
+          "git_blob": "3dbad78b7ba26131d1e3938d57fb968668bbc436",
+          "size": 446113
+        },
+        {
+          "path": "devtest/tha_Thai.jsonl",
+          "git_blob": "e3f2e789f65f04a2afab3b8ae79e1520015dc785",
+          "size": 672708
+        }
+      ]
+    }
+  ],
+  "qualification_selections": {
+    "reasoning": {
+      "source_id": "mmlu-pro",
+      "source_split": "test",
+      "source_row_count": 12032,
+      "item_key": "question_id",
+      "item_key_unique": true,
+      "category_order": [
+        "biology",
+        "business",
+        "chemistry",
+        "computer science",
+        "economics",
+        "engineering",
+        "health",
+        "history",
+        "law",
+        "math",
+        "other",
+        "philosophy",
+        "physics",
+        "psychology"
+      ],
+      "category_quotas": [
+        72,
+        72,
+        72,
+        72,
+        72,
+        72,
+        71,
+        71,
+        71,
+        71,
+        71,
+        71,
+        71,
+        71
+      ],
+      "rank_domain": "glmaxx.quality.reasoning.mmlu-pro.selection.v1",
+      "rank_key": "sha256(domain_utf8 || 0x00 || category_utf8 || 0x00 || question_id_base10_ascii), ascending digest then ascending numeric question_id",
+      "emission_order": "category_order then rank_key order",
+      "selected_count": 1000,
+      "selected_id_stream": "category_utf8 || HTAB || question_id_base10_ascii || LF",
+      "selected_id_stream_domain": "glmaxx.quality.reasoning.item-ids.v1",
+      "selected_id_stream_sha256": "e6be6b3307b9f953ebe837852fe8fee7c7962c524e430023abd7af7d424f2c7a",
+      "fewshot_source_split": "validation",
+      "fewshot_count_per_category": 5,
+      "fewshot_selection": "first_n in pinned validation row order",
+      "qualification_items_must_not_be_fewshot": true
+    },
+    "coding": {
+      "primary": {
+        "source_id": "mbpp",
+        "selection": "task_id integer inclusive range 11..510, ascending",
+        "selected_count": 500,
+        "selected_id_stream": "mbpp || HTAB || task_id_base10_ascii || LF",
+        "selected_id_stream_domain": "glmaxx.quality.coding.item-ids.v1",
+        "selected_id_stream_sha256": "e7d3b431215d4931cccdd2092a8e37dbc07203253c9041a3df70719b6d48d467"
+      },
+      "diagnostic": {
+        "source_id": "human-eval-diagnostic",
+        "selection": "all task IDs HumanEval/0..HumanEval/163 in source order",
+        "selected_count": 164,
+        "selected_id_stream_domain": "glmaxx.quality.coding.humaneval.item-ids.v1",
+        "selected_id_stream_sha256": "0dbbca61baa0b9b486debc99ea894681688e1950f93f1a0171ccd2a7adea114e"
+      },
+      "execution_posture": "offline-unprivileged-sandbox-no-network-fail-closed"
+    },
+    "tools": {
+      "source_id": "bfcl-v4-offline-ast",
+      "categories": [
+        "simple_python",
+        "multiple",
+        "parallel",
+        "parallel_multiple"
+      ],
+      "source_counts": [
+        400,
+        200,
+        200,
+        200
+      ],
+      "quota_per_category": 125,
+      "question_answer_id_sets_equal": true,
+      "rank_domain": "glmaxx.quality.tools.bfcl.selection.v1",
+      "rank_key": "sha256(domain_utf8 || 0x00 || category_utf8 || 0x00 || item_id_utf8), ascending digest then ascending item_id bytes",
+      "emission_order": "category order then rank_key order",
+      "selected_count": 500,
+      "selected_id_stream": "category_utf8 || HTAB || item_id_utf8 || LF",
+      "selected_id_stream_domain": "glmaxx.quality.tools.item-ids.v1",
+      "selected_id_stream_sha256": "2d5633bf2c912ce0d98185a019071f8b2c56d8b804e68d80113a38e6e494b25b",
+      "excluded": [
+        "live",
+        "web-search",
+        "memory",
+        "stateful-multi-turn",
+        "network-executable"
+      ]
+    }
+  },
+  "generated_strata": {
+    "json_schema": {
+      "count": 500,
+      "families": 5,
+      "items_per_family": 100,
+      "seed_hex": "0x004a534f4e5f7631",
+      "generator_state": "not-implemented-review-gated"
+    },
+    "long_generation_repetition": {
+      "count": 500,
+      "families": 5,
+      "items_per_family": 100,
+      "seed_hex": "0x004c4f4e475f7631",
+      "generator_state": "not-implemented-review-gated"
+    },
+    "frozen_retrieval": {
+      "count": 1000,
+      "context_bands": [
+        16384,
+        65536,
+        131072,
+        491520,
+        1048576
+      ],
+      "items_per_band": 200,
+      "seed_state": "external-secret-seed-must-be-committed-by-digest-before-candidate-run",
+      "generator_state": "not-implemented-review-gated"
+    },
+    "randomized_retrieval": {
+      "count": 1000,
+      "context_bands": [
+        16384,
+        65536,
+        131072,
+        491520,
+        1048576
+      ],
+      "items_per_band": 200,
+      "seed_state": "fresh-run-family-seeds-retained-outside-git-and-shared-by-control-and-candidate",
+      "generator_state": "not-implemented-review-gated"
+    },
+    "termination_parser": {
+      "count": 500,
+      "families": 5,
+      "items_per_family": 100,
+      "seed_hex": "0x005445524d5f7631",
+      "generator_state": "not-implemented-review-gated"
+    }
+  },
+  "logit_window_recipe": {
+    "window_tokens": 2048,
+    "scored_positions_per_window": 2047,
+    "windows": {
+      "natural_text": 32,
+      "reasoning_code": 8,
+      "tool_json": 8,
+      "multilingual": 8,
+      "long_context": 8
+    },
+    "total_windows": 64,
+    "total_scored_positions": 131008,
+    "source_mapping": {
+      "natural_text": "wikitext-103-raw-v1 test and validation, 16 nonoverlapping windows each",
+      "reasoning_code": "qualification-selected MMLU-Pro and MBPP records, four windows each",
+      "tool_json": "qualification-selected BFCL and generated JSON-schema records, four windows each",
+      "multilingual": "one window from each pinned FLORES+ devtest language file",
+      "long_context": "four frozen-retrieval windows each at 491520 and 1048576, with every scored row beginning after position 131072"
+    },
+    "materialization_state": "blocked-on-reviewed-generator-and-exact-tokenizer-source"
+  },
+  "materialization_requirements": [
+    "verify every repository revision and every available source content SHA-256 before parsing",
+    "record SHA-256 for every gated FLORES+ file after authorized access; a Git blob identity alone is insufficient",
+    "rerun the pinned tokenizer proof and require the exact tokenizer, template, output-table, and bundle identities",
+    "materialize every selected item ID and verify each selected-ID stream digest",
+    "freeze exact prompt bytes, token IDs, few-shot rows, tool schemas, expected answers, maximum outputs, and checker identities",
+    "materialize generated strata only from an adversarially accepted generator implementation and retain generator commit, seed, and output digest",
+    "prove zero item or source-window overlap with every calibration input by source identity, normalized text digest, and token-window digest",
+    "store raw corpus bytes and prompts outside Git in a content-addressed immutable directory",
+    "emit a separate glmaxx.quality-corpus.v1 manifest; this source recipe must never be used as corpus_manifest_sha256"
+  ],
+  "acceptance_state": {
+    "source_byte_audit": "pass-for-all-ungated-listed-files",
+    "selection_arithmetic": "pass-for-reasoning-coding-tools",
+    "generated_corpora": "absent",
+    "multilingual_content_sha256": "absent-gated",
+    "tokenized_windows": "absent",
+    "evaluator": "absent-review-gated",
+    "corpus_manifest": "absent",
+    "model_quality_evidence": "absent"
+  }
+}

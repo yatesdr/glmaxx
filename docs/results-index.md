@@ -66,6 +66,15 @@ in `docs/cache-lifecycle-proof-v1.md`. Its deterministic fixture proves the
 CPU file-store/prefix/residency/page-table lifecycle but does not qualify
 CUDA, direct I/O, real NVMe, model attention, or long-context performance.
 
+The quality source audit is recorded in
+`docs/quality-corpus-manifest-v1.md` and
+`manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
+ungated public sources and proves exact 1,000-item reasoning, 500-item coding,
+and 500-item offline-tool selections. It is a design candidate, not the
+materialized `corpus_manifest_sha256`: generated behavior/retrieval prompts,
+gated FLORES+ content hashes, tokenized windows, evaluator code, and every
+model result remain absent.
+
 The new bounded native-rank reader CPU proof is pinned in
 `docs/native-rank-reader-proof-v1.md`. It establishes one-pass file-backed
 payload verification and four-rank semantic consensus, but explicitly excludes

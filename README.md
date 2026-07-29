@@ -99,6 +99,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Direct tier I/O adversarial handoff](docs/fable-direct-tier-io-v1-handoff.md)
 - [Quality and MTP numerical acceptance candidate](docs/quality-acceptance-v1.md)
 - [Quality acceptance adversarial handoff](docs/fable-quality-acceptance-v1-handoff.md)
+- [Quality corpus source and materialization candidate](docs/quality-corpus-manifest-v1.md)
+- [Pinned quality corpus source recipe](manifests/quality-corpus-sources-v1.json)
 - [Fail-closed review provenance verifier](docs/review-provenance-verifier-v1.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)

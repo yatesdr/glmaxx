@@ -42,7 +42,7 @@ State meanings:
 |---|---|---|---|---|
 | Q01 | REVIEW | Target-only MTP0 logits match pinned reference through prefill/decode with full-vocabulary per-position retention | `docs/quality-acceptance-v1.md` freezes raw-logit identity, MPFR KLD, stable/tie classification, smoke and multi-window thresholds; handoff pins candidate `70222ab`; evaluator and model evidence are absent | Fable review of `docs/fable-quality-acceptance-v1-handoff.md`, evaluator CPU proof, then small-checkpoint target runner |
 | Q02 | OPEN | Hybrid weight membership is selected from measured per-position quality and actual speed/capacity evidence | Immutable policy machinery exists; checked profile remains `conversion_allowed=false` | Calibrate EXL3/NVFP4/protected candidates after kernel evidence |
-| Q03 | REVIEW | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | Quality candidate `70222ab` freezes minimum item counts, paired noninferiority, behavior failures, retrieval bands, and multiple-comparison correction; dataset/evaluator manifests remain absent | Fable quality review, then pin datasets/evaluator and run after Q01 |
+| Q03 | REVIEW | Downstream reasoning, coding, tool/JSON, repetition, and termination suite passes against pinned control | Quality candidate `70222ab` freezes the statistical gates; `manifests/quality-corpus-sources-v1.json` now pins audited public revisions, exact source hashes, and deterministic 1,000-reasoning/500-coding/500-tool selections, but generated strata, gated multilingual hashes, tokenized windows, materialized corpus, evaluator, and model results remain absent | Fable quality/corpus review, then implement and prove the CPU materializer/evaluator before Q01 model execution |
 | Q04 | OPEN | Frozen and randomized retrieval pass through the documented context limit | KV CPU arithmetic is not model retrieval | Execute model context-band matrix through 1,048,576 positions |
 | Q05 | REVIEW | MTP1–6 output is equivalent to matched MTP0 under reviewed contract, with per-position acceptance/probability evidence | Quality candidate `70222ab` freezes per-depth stable/tie, full-vocabulary KLD, top-two error, task, and performance-enablement gates; no real draft execution exists | Fable quality review, C10, then matched greedy and stochastic evidence |
 
@@ -99,6 +99,10 @@ State meanings:
 - The user has stated that NVFP4 and EXL3 checkpoints already exist on the
   servers. No checkpoint download is required. Their current paths and hashes
   must be re-inventoried under H01; model bytes remain outside Git.
-- Quality datasets/evaluator revisions are not yet pinned in this repository.
+- Public quality-source revisions and the deterministic reasoning/coding/tool
+  selections are pinned in the non-runnable
+  `manifests/quality-corpus-sources-v1.json` design candidate. Generated
+  corpora, gated FLORES+ content hashes, tokenized windows, the materialized
+  corpus manifest, and the evaluator are still absent.
 - Fable responses are required for every row marked `REVIEW`; their absence
   does not prevent independent CPU design or test work on unrelated rows.
