@@ -9,6 +9,8 @@ version.workspace = true
 glm-cache = { path = "../glm-cache" }
 glm-engine = { path = "../glm-engine" }
 glm-scheduler = { path = "../glm-scheduler" }
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 
 [lints]

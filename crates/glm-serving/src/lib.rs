@@ -20,8 +20,14 @@ const GLM_52_VOCABULARY: u32 = 154_880;
 const MAXIMUM_STEP_EVENTS: usize = 512;
 
 mod cache;
+mod http;
 
 pub use cache::{PrefixRestoreCoordinator, PrefixRestoreError, RestoredPrefix};
+pub use http::{
+    ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle, ApiErrorBody, ApiHealth,
+    ApiHealthState, ApiHttpServer, ApiServerConfig, ApiUsage, ChatCompletionRequest, ChatMessage,
+    SamplingParameters, StopSequences, ValidatedChatRequest,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServingConfig {

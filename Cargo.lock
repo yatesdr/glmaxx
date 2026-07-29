@@ -132,6 +132,8 @@ dependencies = [
  "glm-cache",
  "glm-engine",
  "glm-scheduler",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 
