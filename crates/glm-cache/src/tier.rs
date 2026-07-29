@@ -60,6 +60,13 @@ pub struct TierRecord {
     pub pieces: Vec<TierPieceRecord>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TierRecordRelation {
+    ExactDedup,
+    MtpUpgrade,
+    RetainMtp,
+}
+
 impl TierRecord {
     pub fn validate(&self) -> Result<(), TierError> {
         if self.namespace == [0; 32] || self.page_key == [0; 32] || self.generation == 0 {
@@ -106,6 +113,46 @@ impl TierRecord {
         }
         Ok(())
     }
+
+    pub fn relation_to(&self, candidate: &Self) -> Result<TierRecordRelation, TierError> {
+        self.validate()?;
+        candidate.validate()?;
+        if self.namespace != candidate.namespace
+            || self.page_key != candidate.page_key
+            || [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                .into_iter()
+                .any(|piece| {
+                    logical_piece_identity(self, piece) != logical_piece_identity(candidate, piece)
+                })
+        {
+            return Err(TierError::Collision);
+        }
+        match (self.mtp, candidate.mtp) {
+            (false, false) | (true, false) => Ok(if self.mtp {
+                TierRecordRelation::RetainMtp
+            } else {
+                TierRecordRelation::ExactDedup
+            }),
+            (false, true) => Ok(TierRecordRelation::MtpUpgrade),
+            (true, true) => {
+                if logical_piece_identity(self, TierPiece::DraftSidecar)
+                    == logical_piece_identity(candidate, TierPiece::DraftSidecar)
+                {
+                    Ok(TierRecordRelation::ExactDedup)
+                } else {
+                    Err(TierError::Collision)
+                }
+            }
+        }
+    }
+}
+
+fn logical_piece_identity(record: &TierRecord, piece: TierPiece) -> Option<(u64, [u8; 32])> {
+    record
+        .pieces
+        .iter()
+        .find(|candidate| candidate.piece == piece)
+        .map(|candidate| (candidate.byte_length, candidate.sha256))
 }
 
 pub fn encode_draft_sidecar_payload(
@@ -327,12 +374,22 @@ impl TierJournal {
         }
         let mut recovered: BTreeMap<[u8; 32], TierRecord> = BTreeMap::new();
         for (_, (record, _, published)) in transactions {
-            if published
-                && recovered
-                    .get(&record.page_key)
-                    .is_none_or(|existing| existing.generation < record.generation)
-            {
-                recovered.insert(record.page_key, record);
+            if !published {
+                continue;
+            }
+            match recovered.get(&record.page_key) {
+                None => {
+                    recovered.insert(record.page_key, record);
+                }
+                Some(existing) => match existing.relation_to(&record)? {
+                    TierRecordRelation::ExactDedup | TierRecordRelation::RetainMtp => {}
+                    TierRecordRelation::MtpUpgrade => {
+                        if record.generation <= existing.generation {
+                            return Err(TierError::Journal);
+                        }
+                        recovered.insert(record.page_key, record);
+                    }
+                },
             }
         }
         Ok(recovered)
@@ -361,6 +418,7 @@ impl TierJournal {
 pub enum TierError {
     Identity,
     Pieces,
+    Collision,
     Checksum,
     NotDurable,
     AlreadyPublished,
@@ -403,6 +461,16 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn publish_record(journal: &mut TierJournal, record: TierRecord) {
+        let transaction = journal.begin(record.clone()).unwrap();
+        for piece in &record.pieces {
+            journal
+                .piece_durable(transaction, piece.piece, piece.sha256)
+                .unwrap();
+        }
+        journal.publish(transaction).unwrap();
     }
 
     #[test]
@@ -509,5 +577,40 @@ mod tests {
             journal.piece_durable(transaction, TierPiece::TargetKv, record.pieces[0].sha256),
             Err(TierError::Journal)
         );
+    }
+
+    #[test]
+    fn recovery_applies_dedup_upgrade_and_collision_matrix() {
+        let target = record(false);
+        let mut exact = target.clone();
+        exact.generation = 9;
+        exact.pieces[0].storage_offset += 8 * 1024 * 1024;
+        exact.pieces[1].storage_offset += 8 * 1024 * 1024;
+        let mut upgrade = record(true);
+        upgrade.generation = 10;
+        for piece in &mut upgrade.pieces {
+            piece.storage_offset += 16 * 1024 * 1024;
+        }
+        let mut downgrade = target.clone();
+        downgrade.generation = 11;
+        for piece in &mut downgrade.pieces {
+            piece.storage_offset += 24 * 1024 * 1024;
+        }
+
+        let mut journal = TierJournal::new();
+        for candidate in [target, exact, upgrade.clone(), downgrade] {
+            publish_record(&mut journal, candidate);
+        }
+        assert_eq!(
+            journal.recover().unwrap().get(&upgrade.page_key),
+            Some(&upgrade)
+        );
+
+        let mut conflicting = upgrade;
+        conflicting.generation = 12;
+        conflicting.pieces[2].storage_offset += 32 * 1024 * 1024;
+        conflicting.pieces[2].sha256[0] ^= 1;
+        publish_record(&mut journal, conflicting);
+        assert_eq!(journal.recover(), Err(TierError::Collision));
     }
 }

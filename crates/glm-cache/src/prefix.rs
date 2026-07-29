@@ -5,7 +5,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{PAGE_TOKENS, Tier, TierPiece, TierRecord};
+use crate::{PAGE_TOKENS, Tier, TierRecord, TierRecordRelation};
 
 const NAMESPACE_DOMAIN: &[u8] = b"glmaxx.prefix-namespace.v1\0";
 const PAGE_DOMAIN: &[u8] = b"glmaxx.prefix-page.v1\0";
@@ -135,27 +135,40 @@ impl PrefixIndex {
             if !pending_keys.insert(key) {
                 return Err(PrefixError::Collision);
             }
-            if let Some(existing) = self.pages.get(&key) {
-                if existing.parent != parent
-                    || !records_are_logically_compatible(&existing.record, &record)
-                {
+            let replace = if let Some(existing) = self.pages.get(&key) {
+                if existing.parent != parent {
                     return Err(PrefixError::Collision);
+                }
+                let relation = existing
+                    .record
+                    .relation_to(&record)
+                    .map_err(|_| PrefixError::Collision)?;
+                match relation {
+                    TierRecordRelation::MtpUpgrade
+                        if record.generation <= existing.record.generation =>
+                    {
+                        return Err(PrefixError::Collision);
+                    }
+                    TierRecordRelation::ExactDedup
+                    | TierRecordRelation::RetainMtp
+                    | TierRecordRelation::MtpUpgrade => {}
                 }
                 existing
                     .references
                     .checked_add(1)
                     .ok_or(PrefixError::Overflow)?;
-            }
-            pending.push((key, parent, record));
+                relation == TierRecordRelation::MtpUpgrade
+            } else {
+                false
+            };
+            pending.push((key, parent, record, replace));
             parent = Some(key);
         }
         let keys = pending.iter().map(|entry| entry.0).collect();
-        for (key, parent, record) in pending {
+        for (key, parent, record, replace) in pending {
             match self.pages.get_mut(&key) {
                 Some(existing) => {
-                    if record.generation > existing.record.generation
-                        && (!existing.record.mtp || record.mtp)
-                    {
+                    if replace {
                         existing.record = record;
                     }
                     existing.references += 1;
@@ -231,24 +244,6 @@ impl PrefixIndex {
             })
             .collect()
     }
-}
-
-fn records_are_logically_compatible(first: &TierRecord, second: &TierRecord) -> bool {
-    [TierPiece::TargetKv, TierPiece::TargetIndexer]
-        .into_iter()
-        .all(|piece| logical_piece_identity(first, piece) == logical_piece_identity(second, piece))
-        && (!first.mtp
-            || !second.mtp
-            || logical_piece_identity(first, TierPiece::DraftSidecar)
-                == logical_piece_identity(second, TierPiece::DraftSidecar))
-}
-
-fn logical_piece_identity(record: &TierRecord, piece: TierPiece) -> Option<(u64, [u8; 32])> {
-    record
-        .pieces
-        .iter()
-        .find(|candidate| candidate.piece == piece)
-        .map(|candidate| (candidate.byte_length, candidate.sha256))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -428,6 +423,14 @@ mod tests {
         index
             .insert(&tokens, vec![record(namespace, key, 1)])
             .unwrap();
+        let stale_upgrade = with_draft(record(namespace, key, 1), [3; 32]);
+        assert_eq!(
+            index.insert(&tokens, vec![stale_upgrade]),
+            Err(PrefixError::Collision)
+        );
+        assert_eq!(index.references(key), Some(1));
+        assert!(!index.record(key).unwrap().mtp);
+
         let upgrade = with_draft(record(namespace, key, 2), [3; 32]);
         index.insert(&tokens, vec![upgrade.clone()]).unwrap();
         assert_eq!(index.references(key), Some(2));
@@ -459,8 +462,8 @@ mod tests {
         assert_eq!(index.record(key).unwrap(), &upgrade);
 
         let refresh = with_draft(record(namespace, key, 5), [3; 32]);
-        index.insert(&tokens, vec![refresh.clone()]).unwrap();
+        index.insert(&tokens, vec![refresh]).unwrap();
         assert_eq!(index.references(key), Some(4));
-        assert_eq!(index.record(key).unwrap(), &refresh);
+        assert_eq!(index.record(key).unwrap(), &upgrade);
     }
 }

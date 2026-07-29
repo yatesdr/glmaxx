@@ -10,7 +10,10 @@ use std::{
 use glm_format::crc32c;
 use sha2::{Digest, Sha256};
 
-use crate::{JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord};
+use crate::{
+    JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord,
+    TierRecordRelation,
+};
 
 // v2 makes the incompatible TierPiece::DraftSidecar=3 meaning explicit.
 // v1 used piece 3 for the separately hashed draft-KV plane.
@@ -142,13 +145,6 @@ impl FileTierStore {
         if self.write_poisoned {
             return Err(StoreError::WritePoisoned);
         }
-        if self
-            .published
-            .get(&request.page_key)
-            .is_some_and(|record| record.generation >= request.generation)
-        {
-            return Err(StoreError::StaleGeneration);
-        }
         request.pieces.sort_by_key(|piece| piece.piece);
         if request.pieces.is_empty()
             || request
@@ -187,6 +183,21 @@ impl FileTierStore {
             pieces: piece_records,
         };
         record.validate()?;
+        if let Some(existing) = self.published.get(&record.page_key) {
+            match existing.relation_to(&record).map_err(|error| match error {
+                TierError::Collision => StoreError::ContentCollision,
+                error => StoreError::Tier(error),
+            })? {
+                TierRecordRelation::ExactDedup | TierRecordRelation::RetainMtp => {
+                    return Ok(existing.clone());
+                }
+                TierRecordRelation::MtpUpgrade => {
+                    if record.generation <= existing.generation {
+                        return Err(StoreError::StaleGeneration);
+                    }
+                }
+            }
+        }
         let next_data_offset = align_up(next_offset, NVME_ALIGNMENT)?;
 
         let result = self.publish_prevalidated(request, record, next_data_offset, failpoint);
@@ -574,6 +585,7 @@ pub enum StoreError {
     Tier(TierError),
     Pieces,
     Checksum,
+    ContentCollision,
     StaleGeneration,
     JournalSequence,
     JournalEncoding,
@@ -757,10 +769,8 @@ mod tests {
             Err(StoreError::Pieces)
         ));
         store.publish(request(0x20, 1, false)).unwrap();
-        assert!(matches!(
-            store.publish(request(0x20, 1, false)),
-            Err(StoreError::StaleGeneration)
-        ));
+        let deduplicated = store.publish(request(0x20, 1, false)).unwrap();
+        assert_eq!(deduplicated.generation, 1);
         store.publish(request(0x20, 2, false)).unwrap();
 
         assert!(matches!(
@@ -795,14 +805,77 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_and_data_corruption_fail_closed() {
+    fn durable_content_dedup_upgrade_and_collision_are_preflighted() {
+        let root = temporary_store("content-identity");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let target = store.publish(request(0x43, 1, false)).unwrap();
+        let journal_after_target = store.journal_file.metadata().unwrap().len();
+        let data_after_target = store.data.metadata().unwrap().len();
+
+        let deduplicated = store.publish(request(0x43, 9, false)).unwrap();
+        assert_eq!(deduplicated, target);
+        assert_eq!(
+            store.journal_file.metadata().unwrap().len(),
+            journal_after_target
+        );
+        assert_eq!(store.data.metadata().unwrap().len(), data_after_target);
+
+        assert!(matches!(
+            store.publish(request(0x43, 1, true)),
+            Err(StoreError::StaleGeneration)
+        ));
+        assert_eq!(
+            store.journal_file.metadata().unwrap().len(),
+            journal_after_target
+        );
+        assert_eq!(store.data.metadata().unwrap().len(), data_after_target);
+
+        let upgrade = store.publish(request(0x43, 2, true)).unwrap();
+        assert!(upgrade.mtp);
+        assert_eq!(upgrade.generation, 2);
+        let journal_after_upgrade = store.journal_file.metadata().unwrap().len();
+        let data_after_upgrade = store.data.metadata().unwrap().len();
+
+        for candidate in [request(0x43, 3, false), request(0x43, 4, true)] {
+            assert_eq!(store.publish(candidate).unwrap(), upgrade);
+            assert_eq!(
+                store.journal_file.metadata().unwrap().len(),
+                journal_after_upgrade
+            );
+            assert_eq!(store.data.metadata().unwrap().len(), data_after_upgrade);
+        }
+
+        let mut conflicting_target = request(0x43, 5, true);
+        conflicting_target.pieces[0].bytes[0] ^= 1;
+        assert!(matches!(
+            store.publish(conflicting_target),
+            Err(StoreError::ContentCollision)
+        ));
+        let mut conflicting_draft = request(0x43, 5, true);
+        conflicting_draft.pieces[2].bytes[0] ^= 1;
+        assert!(matches!(
+            store.publish(conflicting_draft),
+            Err(StoreError::ContentCollision)
+        ));
+        assert_eq!(
+            store.journal_file.metadata().unwrap().len(),
+            journal_after_upgrade
+        );
+        assert_eq!(store.data.metadata().unwrap().len(), data_after_upgrade);
+        assert_eq!(store.record([0x43; 32]), Some(&upgrade));
+
+        store.publish(request(0x44, 1, false)).unwrap();
+        drop(store);
+        let reopened = FileTierStore::open(&root).unwrap();
+        assert_eq!(reopened.record([0x43; 32]), Some(&upgrade));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn data_corruption_fails_closed() {
         let root = temporary_store("corrupt");
         let mut store = FileTierStore::open(&root).unwrap();
         store.publish(request(0x44, 2, false)).unwrap();
-        assert!(matches!(
-            store.publish(request(0x44, 2, false)),
-            Err(StoreError::StaleGeneration)
-        ));
         let first_offset = store.record([0x44; 32]).unwrap().pieces[0].storage_offset;
         store.data.seek(SeekFrom::Start(first_offset)).unwrap();
         store.data.write_all(&[0xff]).unwrap();

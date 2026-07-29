@@ -718,6 +718,143 @@ mod tests {
     }
 
     #[test]
+    fn multi_rank_mtp_upgrade_is_atomic_on_a_late_pinned_rank() {
+        let root = temporary_store();
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [31; 32],
+            tokenizer_sha256: [32; 32],
+            chat_template_sha256: [33; 32],
+            weight_policy_hash: [34; 32],
+            target_kv_abi_sha256: [35; 32],
+            draft_kv_abi_sha256: [36; 32],
+            rope_parameters_sha256: [37; 32],
+        })
+        .unwrap();
+        let tokens: Vec<u32> = (0..128).collect();
+        let index = PrefixIndex::new(namespace);
+        let keys = index.derive_keys(&tokens);
+        let mut store = FileTierStore::open(&root).unwrap();
+        let mut targets = Vec::new();
+        let mut target_pages = Vec::new();
+        let mut upgrades = Vec::new();
+        for (ordinal, &key) in keys.iter().enumerate() {
+            let target = store
+                .publish(DurablePageRequest {
+                    namespace: namespace.0,
+                    page_key: key.0,
+                    generation: 1,
+                    mtp: false,
+                    pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                        .into_iter()
+                        .map(|piece| PagePieceBytes {
+                            piece,
+                            bytes: vec![
+                                u8::try_from(ordinal + piece as usize).unwrap();
+                                piece.expected_bytes() as usize
+                            ],
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            target_pages.push(store.restore(key.0).unwrap().unwrap());
+            targets.push(target);
+            upgrades.push(
+                store
+                    .publish(DurablePageRequest {
+                        namespace: namespace.0,
+                        page_key: key.0,
+                        generation: 2,
+                        mtp: true,
+                        pieces: [
+                            TierPiece::TargetKv,
+                            TierPiece::TargetIndexer,
+                            TierPiece::DraftSidecar,
+                        ]
+                        .into_iter()
+                        .map(|piece| PagePieceBytes {
+                            piece,
+                            bytes: vec![
+                                u8::try_from(ordinal + piece as usize).unwrap();
+                                piece.expected_bytes() as usize
+                            ],
+                        })
+                        .collect(),
+                    })
+                    .unwrap(),
+            );
+        }
+        let page_bytes = upgrades[0]
+            .pieces
+            .iter()
+            .map(|piece| piece.byte_length)
+            .sum();
+        drop(store);
+
+        let mut coordinator = PrefixRestoreCoordinator::new(
+            index,
+            &root,
+            ResidencyConfig {
+                hbm_bytes: page_bytes,
+                dram_bytes: page_bytes,
+            },
+            2,
+        )
+        .unwrap();
+        coordinator
+            .register_prefix(&tokens, targets.clone())
+            .unwrap();
+        for (ordinal, (&key, page)) in keys.iter().zip(target_pages).enumerate() {
+            let ordinal = u64::try_from(ordinal).unwrap();
+            let rank = owner_rank(ordinal);
+            coordinator.ranks[usize::from(rank)]
+                .begin_restore(100 + ordinal, key.0, ordinal, rank)
+                .unwrap();
+            coordinator.ranks[usize::from(rank)]
+                .complete_restore(glm_cache::RestoreResult {
+                    request_id: 100 + ordinal,
+                    page_ordinal: ordinal,
+                    page,
+                })
+                .unwrap();
+        }
+        coordinator.ranks[1].pin_hbm(keys[1].0).unwrap();
+
+        assert!(matches!(
+            coordinator.register_prefix(&tokens, upgrades.clone()),
+            Err(PrefixRestoreError::Residency(ResidencyError::Pinned))
+        ));
+        for (ordinal, (&key, target)) in keys.iter().zip(&targets).enumerate() {
+            let rank = usize::from(owner_rank(u64::try_from(ordinal).unwrap()));
+            assert_eq!(coordinator.index.record(key), Some(target));
+            assert_eq!(coordinator.ranks[rank].record(key.0), Some(target));
+            assert_eq!(
+                coordinator.ranks[rank].location(key.0),
+                Some(Residency::Hbm)
+            );
+        }
+
+        coordinator.ranks[1].unpin(keys[1].0).unwrap();
+        coordinator.register_prefix(&tokens, upgrades).unwrap();
+        let restored = match coordinator
+            .begin_restore_longest_with_capability(42, &tokens, true)
+            .unwrap()
+        {
+            PrefixRestoreStatus::Ready(restored) => restored,
+            PrefixRestoreStatus::Pending => loop {
+                match coordinator.poll_restore(42).unwrap() {
+                    PrefixRestoreStatus::Ready(restored) => break restored,
+                    PrefixRestoreStatus::Pending => thread::yield_now(),
+                }
+            },
+        };
+        assert_eq!(restored.page_keys, keys);
+        assert_eq!(restored.page_has_draft, [true, true]);
+        coordinator.release(&keys).unwrap();
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn multi_page_restore_is_submitted_without_blocking_admission() {
         let root = temporary_store();
         let namespace = PrefixNamespace::new(NamespaceInputs {
@@ -867,10 +1004,11 @@ mod tests {
         for record in &mut newer_records {
             record.generation = 2;
         }
-        assert!(matches!(
-            coordinator.register_prefix(&tokens, newer_records),
-            Err(PrefixRestoreError::Residency(ResidencyError::Pinned))
-        ));
+        coordinator.register_prefix(&tokens, newer_records).unwrap();
+        assert_eq!(coordinator.index.references(keys[0]), Some(2));
+        assert_eq!(coordinator.index.references(keys[1]), Some(2));
+        assert_eq!(coordinator.index.record(keys[0]).unwrap().generation, 1);
+        assert_eq!(coordinator.index.record(keys[1]).unwrap().generation, 1);
         assert_eq!(coordinator.location(0, keys[0]), Some(Residency::Hbm));
         assert_eq!(coordinator.location(1, keys[1]), Some(Residency::Hbm));
         coordinator.ranks[1].unpin(keys[1].0).unwrap();
