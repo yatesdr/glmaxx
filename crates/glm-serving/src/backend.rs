@@ -8,7 +8,7 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use glm_cache::MODEL_POSITIONS;
@@ -19,7 +19,7 @@ use glm_tokenizer::{DecodeDelta, IncrementalDecoder, PinnedTokenizer, StreamFini
 use crate::{
     AdmissionStatus, ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle,
     ApiHealth, ApiHealthState, ApiUsage, RequestEvent, RequestFinishReason, ServingCoordinator,
-    ValidatedChatRequest,
+    ValidatedChatRequest, metrics::ServingMetrics,
 };
 
 const MAXIMUM_COMMAND_CAPACITY: usize = 65_536;
@@ -78,34 +78,14 @@ impl fmt::Display for CoordinatorBackendError {
 
 impl std::error::Error for CoordinatorBackendError {}
 
-struct BackendCounters {
-    submitted: AtomicU64,
-    rejected: AtomicU64,
-    completed: AtomicU64,
-    cancelled: AtomicU64,
-    failed: AtomicU64,
-    slow_consumers: AtomicU64,
-}
-
-impl BackendCounters {
-    const fn new() -> Self {
-        Self {
-            submitted: AtomicU64::new(0),
-            rejected: AtomicU64::new(0),
-            completed: AtomicU64::new(0),
-            cancelled: AtomicU64::new(0),
-            failed: AtomicU64::new(0),
-            slow_consumers: AtomicU64::new(0),
-        }
-    }
-}
-
 enum BackendCommand {
     Submit {
         request_id: u64,
         tenant: u32,
         maximum_output_tokens: u32,
         mtp_depth: u8,
+        request_started_at: Instant,
+        enqueued_at: Instant,
         tokens: Box<[u32]>,
         decoder: Box<dyn OutputDecoder>,
         events: SyncSender<ApiCompletionEvent>,
@@ -161,7 +141,13 @@ impl RuntimeTokenizer for PinnedRuntimeTokenizer {
 struct ActiveRequest {
     tenant: u32,
     prompt_tokens: u32,
+    prompt_done: u32,
     completion_tokens: u32,
+    mtp_depth: u8,
+    request_started_at: Instant,
+    admission_started_at: Instant,
+    admitted_at: Option<Instant>,
+    last_token_at: Option<Instant>,
     decoder: Box<dyn OutputDecoder>,
     events: SyncSender<ApiCompletionEvent>,
 }
@@ -182,7 +168,7 @@ pub struct CoordinatorApiBackend {
     tokenizer: Arc<dyn RuntimeTokenizer>,
     completion_event_capacity: usize,
     owners: Arc<Mutex<BTreeMap<u64, u32>>>,
-    counters: Arc<BackendCounters>,
+    counters: Arc<ServingMetrics>,
     runtime_thread: Option<JoinHandle<()>>,
 }
 
@@ -219,7 +205,7 @@ impl CoordinatorApiBackend {
         let fatal = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let owners = Arc::new(Mutex::new(BTreeMap::new()));
-        let counters = Arc::new(BackendCounters::new());
+        let counters = Arc::new(ServingMetrics::new());
         let runtime_fatal = Arc::clone(&fatal);
         let runtime_shutdown = Arc::clone(&shutdown);
         let runtime_owners = Arc::clone(&owners);
@@ -260,7 +246,7 @@ impl CoordinatorApiBackend {
     }
 
     fn reject(&self, code: &'static str, message: impl Into<String>) -> ApiBackendError {
-        self.counters.rejected.fetch_add(1, Ordering::Relaxed);
+        self.counters.increment_rejected();
         ApiBackendError {
             code,
             message: message.into(),
@@ -279,26 +265,8 @@ impl ApiBackend for CoordinatorApiBackend {
 
     fn metrics(&self) -> String {
         let active = self.owners.lock().map_or(0, |owners| owners.len());
-        format!(
-            concat!(
-                "glmaxx_backend_submitted_total {}\n",
-                "glmaxx_backend_rejected_total {}\n",
-                "glmaxx_backend_completed_total {}\n",
-                "glmaxx_backend_cancelled_total {}\n",
-                "glmaxx_backend_failed_total {}\n",
-                "glmaxx_backend_slow_consumers_total {}\n",
-                "glmaxx_backend_active_requests {}\n",
-                "glmaxx_backend_fatal {}\n"
-            ),
-            self.counters.submitted.load(Ordering::Relaxed),
-            self.counters.rejected.load(Ordering::Relaxed),
-            self.counters.completed.load(Ordering::Relaxed),
-            self.counters.cancelled.load(Ordering::Relaxed),
-            self.counters.failed.load(Ordering::Relaxed),
-            self.counters.slow_consumers.load(Ordering::Relaxed),
-            active,
-            u8::from(self.health().state == ApiHealthState::Fatal),
-        )
+        self.counters
+            .render(active, self.health().state == ApiHealthState::Fatal)
     }
 
     fn submit_chat(
@@ -321,10 +289,20 @@ impl ApiBackend for CoordinatorApiBackend {
                 "the current backend admits greedy requests only until StepInput sampling is promoted",
             ));
         }
-        let tokens = self
-            .tokenizer
-            .encode_chat(&request)
-            .map_err(|error| self.reject("TOKENIZATION_FAILED", error))?;
+        let request_started_at = Instant::now();
+        let tokenization_start = Instant::now();
+        let tokens = match self.tokenizer.encode_chat(&request) {
+            Ok(tokens) => {
+                self.counters
+                    .observe_tokenization(tokenization_start.elapsed());
+                tokens
+            }
+            Err(error) => {
+                self.counters
+                    .observe_tokenization(tokenization_start.elapsed());
+                return Err(self.reject("TOKENIZATION_FAILED", error));
+            }
+        };
         let prompt_tokens = u32::try_from(tokens.len())
             .map_err(|_| self.reject("CONTEXT_LENGTH_EXCEEDED", "prompt token count overflow"))?;
         if prompt_tokens == 0
@@ -362,13 +340,15 @@ impl ApiBackend for CoordinatorApiBackend {
             tenant,
             maximum_output_tokens: request.maximum_output_tokens,
             mtp_depth: request.mtp_depth,
+            request_started_at,
+            enqueued_at: Instant::now(),
             tokens,
             decoder,
             events: event_sender,
         };
         match self.command_sender.try_send(command) {
             Ok(()) => {
-                self.counters.submitted.fetch_add(1, Ordering::Relaxed);
+                self.counters.increment_submitted();
                 Ok(ApiCompletionHandle { request_id, events })
             }
             Err(error) => {
@@ -442,7 +422,7 @@ fn runtime_loop(
     config: CoordinatorBackendConfig,
     shutdown: &AtomicBool,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
 ) {
     let mut active = BTreeMap::<u64, ActiveRequest>::new();
     let mut pending_admissions = BTreeSet::<u64>::new();
@@ -497,8 +477,25 @@ fn runtime_loop(
             }
         }
 
-        match coordinator.tick() {
-            Ok(did_work) => progressed |= did_work,
+        let admission_events = coordinator.drain_events();
+        if !admission_events.is_empty() {
+            progressed = true;
+            dispatch_events(
+                admission_events,
+                &mut coordinator,
+                &mut active,
+                &mut pending_admissions,
+                owners,
+                counters,
+            );
+        }
+
+        match coordinator.tick_observed() {
+            Ok(Some(observation)) => {
+                counters.observe_step(&observation);
+                progressed = true;
+            }
+            Ok(None) => {}
             Err(error) => {
                 dispatch_events(
                     coordinator.drain_events(),
@@ -561,7 +558,7 @@ fn process_command(
     active: &mut BTreeMap<u64, ActiveRequest>,
     pending_admissions: &mut BTreeSet<u64>,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
 ) {
     match command {
         BackendCommand::Submit {
@@ -569,6 +566,8 @@ fn process_command(
             tenant,
             maximum_output_tokens,
             mtp_depth,
+            request_started_at,
+            enqueued_at,
             tokens,
             decoder,
             events,
@@ -586,12 +585,20 @@ fn process_command(
                     return;
                 }
             };
+            let admission_started_at = Instant::now();
+            counters.observe_queue(admission_started_at.saturating_duration_since(enqueued_at));
             active.insert(
                 request_id,
                 ActiveRequest {
                     tenant,
                     prompt_tokens,
+                    prompt_done: 0,
                     completion_tokens: 0,
+                    mtp_depth,
+                    request_started_at,
+                    admission_started_at,
+                    admitted_at: None,
+                    last_token_at: None,
                     decoder,
                     events,
                 },
@@ -647,24 +654,84 @@ fn dispatch_events(
     active: &mut BTreeMap<u64, ActiveRequest>,
     pending_admissions: &mut BTreeSet<u64>,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
 ) {
     for event in events {
         match event {
-            RequestEvent::Admitted { .. } | RequestEvent::PrefillProgress { .. } => {}
-            RequestEvent::Token {
+            RequestEvent::Admitted {
                 request_id,
-                position,
-                token_id,
-                ..
+                cached_prompt_tokens,
             } => {
                 let Some(mut request) = active.remove(&request_id) else {
                     continue;
                 };
-                if position != request.completion_tokens {
+                if request.admitted_at.is_some() || cached_prompt_tokens > request.prompt_tokens {
                     let _ = coordinator.cancel(request_id);
-                    fail_sender(
-                        request.events,
+                    fail_active_request(
+                        request,
+                        counters,
+                        "ADMISSION_EVENT_MISMATCH",
+                        "admission event is duplicated or exceeds the prompt",
+                    );
+                    remove_owner(owners, request_id);
+                    continue;
+                }
+                let now = Instant::now();
+                counters.observe_prefix_resolution(
+                    now.saturating_duration_since(request.admission_started_at),
+                );
+                counters.add_prefix_restored(cached_prompt_tokens, request.mtp_depth != 0);
+                counters.observe_admitted_mtp_depth(request.mtp_depth);
+                request.prompt_done = cached_prompt_tokens;
+                request.admitted_at = Some(now);
+                active.insert(request_id, request);
+            }
+            RequestEvent::PrefillProgress {
+                request_id,
+                prompt_done,
+                prompt_tokens,
+            } => {
+                let Some(mut request) = active.remove(&request_id) else {
+                    continue;
+                };
+                if request.admitted_at.is_none()
+                    || prompt_tokens != request.prompt_tokens
+                    || prompt_done < request.prompt_done
+                    || prompt_done > request.prompt_tokens
+                {
+                    let _ = coordinator.cancel(request_id);
+                    fail_active_request(
+                        request,
+                        counters,
+                        "PREFILL_PROGRESS_MISMATCH",
+                        "prefill progress is nonmonotonic or disagrees with admission",
+                    );
+                    remove_owner(owners, request_id);
+                    continue;
+                }
+                let computed = prompt_done - request.prompt_done;
+                counters.add_prompt_computed(computed, request.mtp_depth != 0);
+                request.prompt_done = prompt_done;
+                active.insert(request_id, request);
+            }
+            RequestEvent::Token {
+                request_id,
+                position,
+                token_id,
+                speculative,
+                draft_ordinal,
+            } => {
+                let Some(mut request) = active.remove(&request_id) else {
+                    continue;
+                };
+                if request.admitted_at.is_none()
+                    || position != request.completion_tokens
+                    || speculative != draft_ordinal.is_some()
+                    || draft_ordinal.is_some_and(|ordinal| ordinal >= request.mtp_depth)
+                {
+                    let _ = coordinator.cancel(request_id);
+                    fail_active_request(
+                        request,
                         counters,
                         "OUTPUT_POSITION_MISMATCH",
                         "committed output positions are not contiguous",
@@ -672,16 +739,39 @@ fn dispatch_events(
                     remove_owner(owners, request_id);
                     continue;
                 }
+                let now = Instant::now();
                 request.completion_tokens += 1;
                 match request.decoder.push(token_id) {
                     Ok(delta) => {
+                        if let Some(previous) = request.last_token_at {
+                            counters.observe_itl(now.saturating_duration_since(previous));
+                        } else {
+                            counters.observe_ttft(
+                                now.saturating_duration_since(request.request_started_at),
+                            );
+                            if let Some(admitted_at) = request.admitted_at {
+                                counters.observe_admission_to_first_token(
+                                    now.saturating_duration_since(admitted_at),
+                                );
+                            }
+                        }
+                        request.last_token_at = Some(now);
+                        counters.observe_output_token(
+                            speculative,
+                            request.mtp_depth,
+                            draft_ordinal,
+                        );
                         if !delta.text.is_empty()
                             && request
                                 .events
                                 .try_send(ApiCompletionEvent::TextDelta(delta.text))
                                 .is_err()
                         {
-                            counters.slow_consumers.fetch_add(1, Ordering::Relaxed);
+                            counters.increment_slow_consumers();
+                            counters.increment_cancelled();
+                            counters.observe_request_time(
+                                now.saturating_duration_since(request.request_started_at),
+                            );
                             let _ = coordinator.cancel(request_id);
                             remove_owner(owners, request_id);
                             continue;
@@ -695,7 +785,7 @@ fn dispatch_events(
                     }
                     Err(error) => {
                         let _ = coordinator.cancel(request_id);
-                        fail_sender(request.events, counters, "OUTPUT_DECODE_FAILED", error);
+                        fail_active_request(request, counters, "OUTPUT_DECODE_FAILED", error);
                         remove_owner(owners, request_id);
                     }
                 }
@@ -713,7 +803,12 @@ fn dispatch_events(
                                 .try_send(ApiCompletionEvent::TextDelta(delta.text))
                                 .is_err()
                         {
-                            counters.slow_consumers.fetch_add(1, Ordering::Relaxed);
+                            counters.increment_slow_consumers();
+                            counters.increment_cancelled();
+                            counters.observe_request_time(
+                                Instant::now()
+                                    .saturating_duration_since(request.request_started_at),
+                            );
                             remove_owner(owners, request_id);
                             continue;
                         }
@@ -728,7 +823,7 @@ fn dispatch_events(
                         finish_request(request, request_id, finish_reason, counters, owners);
                     }
                     Err(error) => {
-                        fail_sender(request.events, counters, "OUTPUT_DECODE_FAILED", error);
+                        fail_active_request(request, counters, "OUTPUT_DECODE_FAILED", error);
                         remove_owner(owners, request_id);
                     }
                 }
@@ -756,9 +851,12 @@ fn finish_request(
     request: ActiveRequest,
     request_id: u64,
     finish_reason: &'static str,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
     owners: &Mutex<BTreeMap<u64, u32>>,
 ) {
+    counters
+        .observe_request_time(Instant::now().saturating_duration_since(request.request_started_at));
+    counters.observe_termination(finish_reason);
     let Some(total_tokens) = request.prompt_tokens.checked_add(request.completion_tokens) else {
         fail_sender(
             request.events,
@@ -782,9 +880,9 @@ fn finish_request(
         })
         .is_err()
     {
-        counters.slow_consumers.fetch_add(1, Ordering::Relaxed);
+        counters.increment_slow_consumers();
     } else {
-        counters.completed.fetch_add(1, Ordering::Relaxed);
+        counters.increment_completed();
     }
     remove_owner(owners, request_id);
 }
@@ -793,12 +891,12 @@ fn fail_request(
     request_id: u64,
     active: &mut BTreeMap<u64, ActiveRequest>,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
     code: &'static str,
     message: impl Into<String>,
 ) {
     if let Some(request) = active.remove(&request_id) {
-        fail_sender(request.events, counters, code, message);
+        fail_active_request(request, counters, code, message);
     }
     remove_owner(owners, request_id);
 }
@@ -807,23 +905,26 @@ fn cancel_request(
     request_id: u64,
     active: &mut BTreeMap<u64, ActiveRequest>,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
 ) {
     if let Some(request) = active.remove(&request_id) {
+        counters.observe_request_time(
+            Instant::now().saturating_duration_since(request.request_started_at),
+        );
         let _ = request
             .events
             .try_send(ApiCompletionEvent::Failed(ApiBackendError {
                 code: "REQUEST_CANCELLED",
                 message: "request was cancelled".to_owned(),
             }));
-        counters.cancelled.fetch_add(1, Ordering::Relaxed);
+        counters.increment_cancelled();
     }
     remove_owner(owners, request_id);
 }
 
 fn fail_sender(
     events: SyncSender<ApiCompletionEvent>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
     code: &'static str,
     message: impl Into<String>,
 ) {
@@ -831,18 +932,29 @@ fn fail_sender(
         code,
         message: message.into(),
     }));
-    counters.failed.fetch_add(1, Ordering::Relaxed);
+    counters.increment_failed();
+}
+
+fn fail_active_request(
+    request: ActiveRequest,
+    counters: &ServingMetrics,
+    code: &'static str,
+    message: impl Into<String>,
+) {
+    counters
+        .observe_request_time(Instant::now().saturating_duration_since(request.request_started_at));
+    fail_sender(request.events, counters, code, message);
 }
 
 fn fail_all(
     active: &mut BTreeMap<u64, ActiveRequest>,
     owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &BackendCounters,
+    counters: &ServingMetrics,
     code: &'static str,
     message: &str,
 ) {
     for (_, request) in std::mem::take(active) {
-        fail_sender(request.events, counters, code, message);
+        fail_active_request(request, counters, code, message);
     }
     if let Ok(mut owners) = owners.lock() {
         owners.clear();
@@ -872,6 +984,8 @@ mod tests {
 
     use super::*;
     use crate::ChatCompletionRequest;
+
+    static NEXT_TEMPORARY_STORE: AtomicU64 = AtomicU64::new(0);
 
     struct FakeTokenizer;
 
@@ -930,8 +1044,9 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "glmaxx-api-backend-test-{}-{nonce}",
-            std::process::id()
+            "glmaxx-api-backend-test-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_TEMPORARY_STORE.fetch_add(1, Ordering::Relaxed),
         ))
     }
 
@@ -1101,11 +1216,34 @@ mod tests {
                 total_tokens: 3,
             }
         );
-        assert!(
-            backend
-                .metrics()
-                .contains("glmaxx_backend_completed_total 1")
-        );
+        let metrics = backend.metrics();
+        for expected in [
+            "glmaxx_backend_completed_total 1\n",
+            "glmaxx_prefix_cached_tokens_total 0\n",
+            "glmaxx_prompt_computed_tokens_total 1\n",
+            "glmaxx_output_tokens_total 2\n",
+            "glmaxx_collective_tp_bytes_total 96\n",
+            "glmaxx_collective_dcp_query_bytes_total 96\n",
+            "glmaxx_collective_dcp_candidate_bytes_total 64\n",
+            "glmaxx_collective_dcp_partial_bytes_total 96\n",
+            "glmaxx_collective_sampling_bytes_total 16\n",
+            "glmaxx_scheduler_real_sequence_rows_total 3\n",
+            "glmaxx_scheduler_bucket_sequence_rows_total 12\n",
+            "glmaxx_scheduler_real_query_rows_total 3\n",
+            "glmaxx_scheduler_bucket_query_rows_total 72\n",
+            "glmaxx_tokenization_time_us_count 1\n",
+            "glmaxx_queue_time_us_count 1\n",
+            "glmaxx_prefix_resolution_time_us_count 1\n",
+            "glmaxx_ttft_us_count 1\n",
+            "glmaxx_itl_us_count 1\n",
+            "glmaxx_request_time_us_count 1\n",
+            "glmaxx_step_worker_round_trip_us_prefill_count 1\n",
+            "glmaxx_step_worker_round_trip_us_decode_count 2\n",
+            "glmaxx_graph_selections_total{graph_id=\"1\",mode=\"prefill\"} 1\n",
+            "glmaxx_graph_selections_total{graph_id=\"2\",mode=\"decode\"} 2\n",
+        ] {
+            assert!(metrics.contains(expected), "missing metric: {expected}");
+        }
         drop(backend);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1126,6 +1264,9 @@ mod tests {
                 },
             }
         );
+        let metrics = backend.metrics();
+        assert!(metrics.contains("glmaxx_output_tokens_total 1\n"));
+        assert!(metrics.contains("glmaxx_termination_stop_total 1\n"));
         drop(backend);
         fs::remove_dir_all(root).unwrap();
     }

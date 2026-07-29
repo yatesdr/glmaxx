@@ -70,6 +70,11 @@ fake constructor used by unit tests are not production health evidence.
 - runtime shutdown or fatal step failure attempts one terminal error for every
   active receiver and drops all request ownership.
 
+Request and step telemetry is defined in
+[serving observability v1](serving-observability-v1.md). Recording uses fixed
+histograms and graph counters and performs no allocation in the runtime hot
+path.
+
 Stop strings may occur across tokens. When the decoder observes one, text
 before the stop is emitted, the stop itself and all later tokens from the same
 already-committed verifier result are hidden, usage ends at the token that

@@ -63,9 +63,13 @@ loader, padding-ID mask boundary, and incremental stop-safe detokenizer. The
 CPU candidate `CoordinatorApiBackend` now connects those components to
 `ServingCoordinator`, emits exact greedy usage and finish reasons, isolates
 slow receivers, propagates tenant-bound cancellation at collective-safe step
-boundaries, and exposes bounded lifecycle metrics. It fails closed on
-probabilistic requests until the pending `StepInput` sampling/RNG ABI is
-reviewed and implemented.
+boundaries, and exposes bounded request/step metrics. Host histograms cover
+tokenization, queueing, prefix resolution, TTFT, ITL, graph selection,
+scheduler padding, MTP acceptance, and collective bytes. Device and cache-tier
+telemetry remain explicitly unqualified; see
+[serving observability v1](serving-observability-v1.md). The adapter fails
+closed on probabilistic requests until the pending `StepInput` sampling/RNG
+ABI is reviewed and implemented.
 
 Rank execution must still apply the padding mask before every distributed
 sampling route. No current CLI command starts this server, and no current

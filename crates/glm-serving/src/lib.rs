@@ -5,10 +5,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt, thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
+use glm_engine::{
+    CollectiveKind, CollectiveSchedule, GraphProfile, StepMode, Tp4WorkerPool, WorkerError,
+};
 #[cfg(test)]
 use glm_scheduler::SamplingCollective;
 use glm_scheduler::{
@@ -22,6 +24,7 @@ const MAXIMUM_STEP_EVENTS: usize = 512;
 mod backend;
 mod cache;
 mod http;
+mod metrics;
 
 pub use backend::{CoordinatorApiBackend, CoordinatorBackendConfig, CoordinatorBackendError};
 pub use cache::{
@@ -74,6 +77,7 @@ pub enum RequestEvent {
         position: u32,
         token_id: u32,
         speculative: bool,
+        draft_ordinal: Option<u8>,
     },
     Finished {
         request_id: u64,
@@ -85,6 +89,41 @@ pub enum RequestEvent {
     Failed {
         request_id: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CollectivePayloadObservation {
+    pub tp_reduce_bytes: u64,
+    pub dcp_packed_ckv_bytes: u64,
+    pub dcp_query_gather_bytes: u64,
+    pub dcp_candidate_exchange_bytes: u64,
+    pub dcp_partial_state_return_bytes: u64,
+    pub sampling_bytes: u64,
+    pub tp_route_id: u16,
+    pub dcp_packed_ckv_route_id: u16,
+    pub dcp_query_route_id: u16,
+    pub dcp_candidate_route_id: u16,
+    pub dcp_partial_state_route_id: u16,
+    pub sampling_route_id: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServingStepObservation {
+    pub step_id: u64,
+    pub mode: StepMode,
+    pub graph_id: u32,
+    pub real_sequences: u16,
+    pub bucket_sequences: u16,
+    pub real_query_rows: u32,
+    pub bucket_query_rows: u32,
+    pub scheduled_prompt_tokens: u32,
+    pub mtp_depth: u8,
+    pub collective_count: u16,
+    pub collective_schedule_hash: [u8; 32],
+    pub collectives: CollectivePayloadObservation,
+    pub worker_round_trip: Duration,
+    pub coordinator_overhead: Duration,
+    pub total_step_time: Duration,
 }
 
 pub struct ServingCoordinator {
@@ -333,10 +372,20 @@ impl ServingCoordinator {
     /// be drained by the API layer; if their bounded queue lacks room, no new
     /// batch is selected.
     pub fn tick(&mut self) -> Result<bool, ServingError> {
+        self.tick_observed()
+            .map(|observation| observation.is_some())
+    }
+
+    /// Executes one scheduler iteration and returns the exact immutable
+    /// graph/collective selection plus host-observable timing for a committed
+    /// step. Device executors must replace `worker_round_trip` with their
+    /// qualified kernel/TP/DCP split before performance qualification.
+    pub fn tick_observed(&mut self) -> Result<Option<ServingStepObservation>, ServingError> {
+        let step_start = Instant::now();
         self.require_event_space(MAXIMUM_STEP_EVENTS)?;
         let Some(batch) = self.scheduler.next_batch()? else {
             self.emit_terminal_transitions()?;
-            return Ok(false);
+            return Ok(None);
         };
         let entry = self
             .scheduler
@@ -346,6 +395,10 @@ impl ServingCoordinator {
         let compiled = self
             .compiler
             .compile(&batch, &entry, self.sequence_table_generation)?;
+        let plan = compiled.plan;
+        let collective_count = u16::try_from(compiled.schedule.operations().len())
+            .map_err(|_| ServingError::Overflow)?;
+        let collectives = observe_collectives(&compiled.schedule);
         let starting_progress: Vec<_> = batch
             .rows
             .iter()
@@ -356,11 +409,8 @@ impl ServingCoordinator {
                     .ok_or(ServingError::Request)
             })
             .collect::<Result<_, _>>()?;
-        let outcome = match self
-            .workers
-            .try_submit(compiled.plan, compiled.schedule)?
-            .receive()
-        {
+        let worker_start = Instant::now();
+        let outcome = match self.workers.try_submit(plan, compiled.schedule)?.receive() {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.scheduler.complete_batch(false)?;
@@ -368,6 +418,7 @@ impl ServingCoordinator {
                 return Err(ServingError::Worker(error));
             }
         };
+        let worker_round_trip = worker_start.elapsed();
         let output_rows = outcome.output.sequences();
         let completions: Vec<_> = starting_progress
             .iter()
@@ -421,6 +472,10 @@ impl ServingCoordinator {
                     let output = output_rows.get(row_index).ok_or(ServingError::Output)?;
                     for (offset, &token_id) in output.token_ids().iter().enumerate() {
                         let offset = u32::try_from(offset).map_err(|_| ServingError::Overflow)?;
+                        let draft_ordinal = (matches!(batch.kind, BatchKind::Verify { .. })
+                            && offset < u32::from(output.accepted_draft_count()))
+                        .then(|| u8::try_from(offset).map_err(|_| ServingError::Overflow))
+                        .transpose()?;
                         let position = starting
                             .generated
                             .checked_add(offset)
@@ -432,8 +487,8 @@ impl ServingCoordinator {
                             // A verify result commits N accepted draft tokens
                             // followed by an optional target/residual/bonus
                             // token. Accepted EOS is the draft-only case.
-                            speculative: matches!(batch.kind, BatchKind::Verify { .. })
-                                && offset < u32::from(output.accepted_draft_count()),
+                            speculative: draft_ordinal.is_some(),
+                            draft_ordinal,
                         });
                     }
                 }
@@ -459,7 +514,24 @@ impl ServingCoordinator {
                 });
             }
         }
-        Ok(true)
+        let total_step_time = step_start.elapsed();
+        Ok(Some(ServingStepObservation {
+            step_id: plan.step_id,
+            mode: plan.mode,
+            graph_id: plan.graph_id,
+            real_sequences: plan.active_sequences,
+            bucket_sequences: plan.sequence_bucket,
+            real_query_rows: plan.query_rows,
+            bucket_query_rows: entry.maximum_query_rows,
+            scheduled_prompt_tokens: plan.scheduled_prompt_tokens,
+            mtp_depth: plan.mtp_depth,
+            collective_count,
+            collective_schedule_hash: plan.collective_schedule_hash,
+            collectives,
+            worker_round_trip,
+            coordinator_overhead: total_step_time.saturating_sub(worker_round_trip),
+            total_step_time,
+        }))
     }
 
     pub fn run_until_idle(&mut self, maximum_steps: u64) -> Result<u64, ServingError> {
@@ -593,6 +665,42 @@ fn output_has_valid_termination(output: &glm_engine::CommittedTokens) -> bool {
         || token_ids
             .last()
             .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id))
+}
+
+fn observe_collectives(schedule: &CollectiveSchedule) -> CollectivePayloadObservation {
+    let mut observation = CollectivePayloadObservation::default();
+    for operation in schedule.operations() {
+        let bytes = u64::from(operation.payload_bytes);
+        match operation.kind {
+            CollectiveKind::TpReduce => {
+                observation.tp_reduce_bytes += bytes;
+                observation.tp_route_id = operation.route_id;
+            }
+            CollectiveKind::DcpPackedCkv => {
+                observation.dcp_packed_ckv_bytes += bytes;
+                observation.dcp_packed_ckv_route_id = operation.route_id;
+            }
+            CollectiveKind::DcpQueryGather => {
+                observation.dcp_query_gather_bytes += bytes;
+                observation.dcp_query_route_id = operation.route_id;
+            }
+            CollectiveKind::DcpCandidateExchange => {
+                observation.dcp_candidate_exchange_bytes += bytes;
+                observation.dcp_candidate_route_id = operation.route_id;
+            }
+            CollectiveKind::DcpPartialStateReturn => {
+                observation.dcp_partial_state_return_bytes += bytes;
+                observation.dcp_partial_state_route_id = operation.route_id;
+            }
+            CollectiveKind::LogitsArgmax
+            | CollectiveKind::LogitsTopK
+            | CollectiveKind::LogitsMass => {
+                observation.sampling_bytes += bytes;
+                observation.sampling_route_id = operation.route_id;
+            }
+        }
+    }
+    observation
 }
 
 #[derive(Debug)]
@@ -754,6 +862,65 @@ mod tests {
             workers,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn step_observation_captures_exact_graph_routes_bytes_and_host_split() {
+        let mut serving = coordinator(None);
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 91,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 0,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+
+        let prefill = serving.tick_observed().unwrap().unwrap();
+        assert_eq!(prefill.mode, StepMode::Prefill);
+        assert_eq!(prefill.graph_id, 1);
+        assert_eq!((prefill.real_sequences, prefill.bucket_sequences), (1, 4));
+        assert_eq!(
+            (prefill.real_query_rows, prefill.bucket_query_rows),
+            (64, 64)
+        );
+        assert_eq!(prefill.scheduled_prompt_tokens, 64);
+        assert_eq!(prefill.collective_count, 3);
+        assert_eq!(prefill.collectives.dcp_query_gather_bytes, 2_048);
+        assert_eq!(prefill.collectives.dcp_partial_state_return_bytes, 2_048);
+        assert_eq!(prefill.collectives.tp_reduce_bytes, 2_048);
+        assert_eq!(prefill.collectives.sampling_bytes, 0);
+        assert_eq!(prefill.collectives.dcp_query_route_id, 3);
+        assert_eq!(prefill.collectives.dcp_partial_state_route_id, 5);
+        assert_eq!(prefill.collectives.tp_route_id, 1);
+        assert_eq!(
+            prefill
+                .worker_round_trip
+                .saturating_add(prefill.coordinator_overhead),
+            prefill.total_step_time
+        );
+        let _ = serving.drain_events();
+
+        let decode = serving.tick_observed().unwrap().unwrap();
+        assert_eq!(decode.mode, StepMode::Decode);
+        assert_eq!(decode.graph_id, 2);
+        assert_eq!((decode.real_sequences, decode.bucket_sequences), (1, 4));
+        assert_eq!((decode.real_query_rows, decode.bucket_query_rows), (1, 4));
+        assert_eq!(decode.scheduled_prompt_tokens, 0);
+        assert_eq!(decode.collective_count, 5);
+        assert_eq!(decode.collectives.dcp_query_gather_bytes, 32);
+        assert_eq!(decode.collectives.dcp_candidate_exchange_bytes, 32);
+        assert_eq!(decode.collectives.dcp_partial_state_return_bytes, 32);
+        assert_eq!(decode.collectives.tp_reduce_bytes, 32);
+        assert_eq!(decode.collectives.sampling_bytes, 8);
+        assert_eq!(decode.collectives.dcp_candidate_route_id, 4);
+        assert_eq!(decode.collectives.sampling_route_id, 6);
     }
 
     struct FixedMtpRankExecutor;
@@ -1004,12 +1171,14 @@ mod tests {
                     position: 0,
                     token_id: 41,
                     speculative: true,
+                    draft_ordinal: Some(0),
                 },
                 RequestEvent::Token {
                     request_id: 10,
                     position: 1,
                     token_id: EOS_TOKEN_IDS[0],
                     speculative: true,
+                    draft_ordinal: Some(1),
                 },
                 RequestEvent::Finished {
                     request_id: 10,
