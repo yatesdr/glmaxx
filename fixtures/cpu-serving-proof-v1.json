@@ -1,0 +1,17 @@
+{
+  "schema": "glmaxx.cpu-serving-proof.v1",
+  "backend": "four-rank-cpu-contract",
+  "tp_ranks": 4,
+  "admitted_requests": 2,
+  "completed_steps": 9,
+  "prefix_restored_tokens": 64,
+  "prefill_progress_events": 2,
+  "token_events": 11,
+  "speculative_token_events": 7,
+  "finished_requests": 2,
+  "failed_requests": 0,
+  "final_states": [
+    "finished",
+    "finished"
+  ]
+}

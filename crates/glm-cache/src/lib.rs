@@ -7,6 +7,8 @@ mod kv;
 mod mtp;
 mod page;
 mod prefix;
+mod residency;
+mod store;
 mod tier;
 
 pub use budget::{Budget, BudgetError, CacheCapacity};
@@ -16,6 +18,11 @@ pub use page::{AttachmentError, PageAttachments, PageState, PageTransitionError,
 pub use prefix::{
     NamespaceInputs, PrefixError, PrefixIndex, PrefixMatch, PrefixNamespace, PrefixPageKey,
 };
+pub use residency::{
+    Residency, ResidencyConfig, ResidencyError, ResidencyManager, RestoreError, RestoreHandle,
+    RestoreRequest, RestoreResult, RestoreService,
+};
+pub use store::{DurablePageRequest, FileTierStore, PagePieceBytes, RestoredPage, StoreError};
 pub use tier::{
     JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord,
 };

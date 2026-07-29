@@ -2,12 +2,16 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use glm_cache::{Budget, CacheCapacity, MODEL_POSITIONS};
+use glm_cache::{
+    Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
+    PagePieceBytes, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
+};
 use glm_cuda::{Fc1Descriptor, KernelPath, LaunchGeometry, workspace_bytes};
 use glm_engine::{
-    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB, GraphEntry,
-    GraphKey, GraphProfile, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
-    StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, plan_system_memory,
+    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CpuWorkerPool, GIB,
+    GraphEntry, GraphKey, GraphProfile, ProfileClass, RankMemoryInput, STEP_PLAN_ABI,
+    STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK,
+    plan_system_memory,
 };
 use glm_format::{
     Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4, RankFile,
@@ -19,6 +23,10 @@ use glm_reference::{
 };
 #[cfg(feature = "cuda-ffi")]
 use glm_reference::{NumericalCase, RoutingCase, bf16_round, routed_fc1_oracle};
+use glm_scheduler::{
+    RequestSpec, RequestState, RouteCatalog, SamplingCollective, SchedulerConfig, TenantConfig,
+};
+use glm_serving::{PrefixRestoreCoordinator, RequestEvent, ServingConfig, ServingCoordinator};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -80,6 +88,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", String::from_utf8(json)?);
             }
         }
+        Some("serving-proof") => {
+            let path = arguments
+                .get(2)
+                .ok_or("serving-proof requires an external evidence directory")?;
+            serving_proof(Path::new(path))?;
+        }
         Some("exl3-proof") => {
             let path = arguments
                 .get(2)
@@ -104,12 +118,258 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir>"
                     .into(),
             );
         }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ServingProof {
+    schema: &'static str,
+    backend: &'static str,
+    tp_ranks: u8,
+    admitted_requests: u32,
+    completed_steps: u64,
+    prefix_restored_tokens: u32,
+    prefill_progress_events: u32,
+    token_events: u32,
+    speculative_token_events: u32,
+    finished_requests: u32,
+    failed_requests: u32,
+    final_states: Vec<&'static str>,
+}
+
+fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(evidence_dir)?;
+    let store_root = evidence_dir.join("kv-store");
+    let namespace = PrefixNamespace::new(NamespaceInputs {
+        model_revision_sha256: [1; 32],
+        tokenizer_sha256: [2; 32],
+        chat_template_sha256: [3; 32],
+        weight_policy_hash: [4; 32],
+        target_kv_abi_sha256: [5; 32],
+        draft_kv_abi_sha256: [6; 32],
+        rope_parameters_sha256: [7; 32],
+    })?;
+    let cached_tokens: Vec<u32> = (0..64).collect();
+    let mut first_tokens: Vec<u32> = (0..128).collect();
+    let second_tokens: Vec<u32> = (1_000..1_064).collect();
+    let index = PrefixIndex::new(namespace);
+    let page_key = index.derive_keys(&cached_tokens)[0];
+    let mut store = FileTierStore::open(&store_root)?;
+    let record = store.publish(DurablePageRequest {
+        namespace: namespace.0,
+        page_key: page_key.0,
+        generation: 1,
+        mtp: false,
+        pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+            .into_iter()
+            .map(|piece| PagePieceBytes {
+                piece,
+                bytes: vec![piece as u8; piece.expected_bytes() as usize],
+            })
+            .collect(),
+    })?;
+    let page_bytes = record.pieces.iter().try_fold(0_u64, |total, piece| {
+        total
+            .checked_add(piece.byte_length)
+            .ok_or("prefix page byte overflow")
+    })?;
+    drop(store);
+
+    let mut prefix = PrefixRestoreCoordinator::new(
+        index,
+        &store_root,
+        ResidencyConfig {
+            hbm_bytes: page_bytes * 2,
+            dram_bytes: page_bytes * 2,
+        },
+        2,
+    )?;
+    prefix.register_prefix(&cached_tokens, vec![record])?;
+
+    let profile = GraphProfile::new(vec![
+        proof_graph(1, StepMode::Prefill, 4, 64, 0),
+        proof_graph(2, StepMode::Decode, 4, 4, 0),
+        proof_graph(3, StepMode::Verify, 4, 28, 6),
+    ])?;
+    let routes = RouteCatalog {
+        tp_route_id: 1,
+        dcp_ckv_route_id: 2,
+        dcp_query_route_id: 3,
+        dcp_candidate_route_id: 4,
+        dcp_partial_route_id: 5,
+        greedy_route_id: 6,
+        top_k_route_id: 7,
+        mass_route_id: 8,
+        packed_ckv_bytes_per_row: 32,
+        query_bytes_per_row: 32,
+        candidate_bytes_per_row: 32,
+        partial_state_bytes_per_row: 32,
+        tp_reduce_bytes_per_row: 32,
+        greedy_bytes_per_row: 8,
+        top_k_bytes_per_row: 64,
+        mass_bytes_per_row: 16,
+    };
+    let mut serving = ServingCoordinator::new(
+        ServingConfig {
+            epoch: 1,
+            event_capacity: 1024,
+            sampling: SamplingCollective::Greedy,
+        },
+        SchedulerConfig {
+            maximum_batch_sequences: 4,
+            maximum_prefill_tokens: 64,
+            maximum_decode_burst: 2,
+        },
+        profile,
+        vec![
+            TenantConfig {
+                tenant: 1,
+                weight: 1,
+                maximum_active_requests: 4,
+            },
+            TenantConfig {
+                tenant: 2,
+                weight: 2,
+                maximum_active_requests: 4,
+            },
+        ],
+        routes,
+        CpuWorkerPool::spawn(2, None)?,
+    )?;
+    serving.attach_prefix_cache(prefix)?;
+    serving.admit_tokens(
+        RequestSpec {
+            id: 101,
+            tenant: 1,
+            prompt_tokens: 128,
+            maximum_new_tokens: 4,
+            mtp_depth: 0,
+        },
+        &first_tokens,
+    )?;
+    serving.admit_tokens(
+        RequestSpec {
+            id: 202,
+            tenant: 2,
+            prompt_tokens: 64,
+            maximum_new_tokens: 7,
+            mtp_depth: 6,
+        },
+        &second_tokens,
+    )?;
+    // Make it explicit that inputs are no longer needed after admission.
+    first_tokens.clear();
+
+    let mut events = serving.drain_events();
+    let mut completed_steps = 0_u64;
+    while completed_steps < 32 && serving.tick()? {
+        completed_steps += 1;
+        events.extend(serving.drain_events());
+    }
+    events.extend(serving.drain_events());
+    let final_states = [101, 202]
+        .into_iter()
+        .map(
+            |id| match serving.request_progress(id).map(|progress| progress.state) {
+                Some(RequestState::Finished) => Ok("finished"),
+                Some(RequestState::Cancelled) => Ok("cancelled"),
+                Some(RequestState::Failed) => Ok("failed"),
+                _ => Err("serving proof did not reach a terminal request state"),
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = ServingProof {
+        schema: "glmaxx.cpu-serving-proof.v1",
+        backend: "four-rank-cpu-contract",
+        tp_ranks: 4,
+        admitted_requests: count_events(&events, |event| {
+            matches!(event, RequestEvent::Admitted { .. })
+        }),
+        completed_steps,
+        prefix_restored_tokens: events
+            .iter()
+            .find_map(|event| match event {
+                RequestEvent::Admitted {
+                    request_id: 101,
+                    cached_prompt_tokens,
+                } => Some(*cached_prompt_tokens),
+                _ => None,
+            })
+            .ok_or("missing cached-prefix admission event")?,
+        prefill_progress_events: count_events(&events, |event| {
+            matches!(event, RequestEvent::PrefillProgress { .. })
+        }),
+        token_events: count_events(&events, |event| matches!(event, RequestEvent::Token { .. })),
+        speculative_token_events: count_events(&events, |event| {
+            matches!(
+                event,
+                RequestEvent::Token {
+                    speculative: true,
+                    ..
+                }
+            )
+        }),
+        finished_requests: count_events(&events, |event| {
+            matches!(event, RequestEvent::Finished { .. })
+        }),
+        failed_requests: count_events(&events, |event| {
+            matches!(event, RequestEvent::Failed { .. })
+        }),
+        final_states,
+    };
+    let report_path = evidence_dir.join("serving-proof.json");
+    let mut json = serde_json::to_vec_pretty(&report)?;
+    json.push(b'\n');
+    fs::write(&report_path, &json)?;
+    println!("wrote {} bytes to {}", json.len(), report_path.display());
+    Ok(())
+}
+
+fn proof_graph(
+    graph_id: u32,
+    mode: StepMode,
+    sequence_bucket: u16,
+    rows: u32,
+    depth: u8,
+) -> GraphEntry {
+    GraphEntry {
+        graph_id,
+        key: GraphKey {
+            mode,
+            sequence_bucket,
+            verifier_row_bucket: if mode == StepMode::Prefill { 0 } else { rows },
+            mtp_depth: depth,
+            attention_transport: if mode == StepMode::Prefill {
+                AttentionTransport::PrefillQuery
+            } else {
+                AttentionTransport::DecodeQueryLse
+            },
+        },
+        maximum_active_sequences: sequence_bucket,
+        maximum_prompt_tokens: if mode == StepMode::Prefill { rows } else { 0 },
+        maximum_query_rows: rows,
+        compatible_tp_routes: vec![1],
+        compatible_dcp_routes: vec![3, 4, 5],
+        compatible_sampling_routes: if mode == StepMode::Prefill {
+            vec![]
+        } else {
+            vec![6, 7, 8]
+        },
+        maximum_scratch_bytes: 1,
+        argument_bytes: 1,
+        graph_object_bytes: 1,
+        resident_module_bytes: 1,
+        admission_slo_class: 1,
+    }
+}
+
+fn count_events(events: &[RequestEvent], predicate: impl Fn(&RequestEvent) -> bool) -> u32 {
+    u32::try_from(events.iter().filter(|event| predicate(event)).count()).unwrap_or(u32::MAX)
 }
 
 #[derive(Serialize)]

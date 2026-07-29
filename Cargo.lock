@@ -73,6 +73,8 @@ dependencies = [
  "glm-engine",
  "glm-format",
  "glm-reference",
+ "glm-scheduler",
+ "glm-serving",
  "serde",
  "serde_json",
  "sha2",
@@ -117,6 +119,16 @@ name = "glm-scheduler"
 version = "0.1.0"
 dependencies = [
  "glm-engine",
+]
+
+[[package]]
+name = "glm-serving"
+version = "0.1.0"
+dependencies = [
+ "glm-cache",
+ "glm-engine",
+ "glm-scheduler",
+ "sha2",
 ]
 
 [[package]]

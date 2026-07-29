@@ -31,6 +31,10 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   engine-proof "${proof_dir}/engine-proof.json"
 cmp fixtures/engine-contract-proof-v1.json \
   "${proof_dir}/engine-proof.json"
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  serving-proof "${proof_dir}/serving"
+cmp fixtures/cpu-serving-proof-v1.json \
+  "${proof_dir}/serving/serving-proof.json"
 
 clang++ -std=c++17 -fsyntax-only -x c++ kernels/include/glmaxx_kernel.h
 

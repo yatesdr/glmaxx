@@ -11,6 +11,10 @@ use std::{
 
 use glm_engine::{GraphEntry, GraphProfile, StepMode};
 
+mod compile;
+
+pub use compile::{CompileError, CompiledStep, RouteCatalog, SamplingCollective, StepPlanCompiler};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TenantConfig {
     pub tenant: u32,
@@ -34,6 +38,16 @@ pub enum RequestState {
     Finished,
     Cancelled,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestProgress {
+    pub state: RequestState,
+    pub prompt_tokens: u32,
+    pub prompt_done: u32,
+    pub maximum_new_tokens: u32,
+    pub generated: u32,
+    pub mtp_depth: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,10 +153,21 @@ impl Scheduler {
     }
 
     pub fn admit(&mut self, spec: RequestSpec) -> Result<(), SchedulerError> {
+        self.admit_with_prefix(spec, 0)
+    }
+
+    pub fn admit_with_prefix(
+        &mut self,
+        spec: RequestSpec,
+        cached_prompt_tokens: u32,
+    ) -> Result<(), SchedulerError> {
         if spec.id == 0
             || spec.prompt_tokens == 0
             || spec.maximum_new_tokens == 0
             || spec.mtp_depth > 6
+            || cached_prompt_tokens > spec.prompt_tokens
+            || (cached_prompt_tokens != spec.prompt_tokens
+                && !cached_prompt_tokens.is_multiple_of(64))
             || self.requests.contains_key(&spec.id)
         {
             return Err(SchedulerError::Request);
@@ -172,8 +197,12 @@ impl Scheduler {
             spec.id,
             Request {
                 spec,
-                state: RequestState::WaitingPrefill,
-                prompt_done: 0,
+                state: if cached_prompt_tokens == spec.prompt_tokens {
+                    RequestState::Decoding
+                } else {
+                    RequestState::WaitingPrefill
+                },
+                prompt_done: cached_prompt_tokens,
                 generated: 0,
             },
         );
@@ -226,6 +255,44 @@ impl Scheduler {
     }
 
     pub fn complete_batch(&mut self, success: bool) -> Result<(), SchedulerError> {
+        self.complete_batch_with_commits(success, &[])
+    }
+
+    pub fn complete_batch_with_commits(
+        &mut self,
+        success: bool,
+        commits: &[(u64, u8)],
+    ) -> Result<(), SchedulerError> {
+        let inflight = self.inflight.as_ref().ok_or(SchedulerError::NoInflight)?;
+        let commit_map: BTreeMap<_, _> = commits.iter().copied().collect();
+        if commit_map.len() != commits.len()
+            || (!success && !commits.is_empty())
+            || (matches!(inflight.kind, BatchKind::Prefill) && !commits.is_empty())
+            || (!commits.is_empty() && commits.len() != inflight.rows.len())
+        {
+            return Err(SchedulerError::Commit);
+        }
+        if success && !matches!(inflight.kind, BatchKind::Prefill) {
+            let maximum_commit = match inflight.kind {
+                BatchKind::Decode => 1,
+                BatchKind::Verify { depth } => depth + 1,
+                BatchKind::Prefill => unreachable!(),
+            };
+            for row in &inflight.rows {
+                let commit = commit_map.get(&row.request_id).copied().unwrap_or(1);
+                let request = self
+                    .requests
+                    .get(&row.request_id)
+                    .ok_or(SchedulerError::UnknownRequest)?;
+                if commit == 0
+                    || commit > maximum_commit
+                    || u32::from(commit) > request.spec.maximum_new_tokens - request.generated
+                {
+                    return Err(SchedulerError::Commit);
+                }
+            }
+        }
+
         let batch = self.inflight.take().ok_or(SchedulerError::NoInflight)?;
         for row in &batch.rows {
             let request = self
@@ -255,13 +322,14 @@ impl Scheduler {
                     }
                 }
                 BatchKind::Decode | BatchKind::Verify { .. } => {
+                    let commit = u32::from(commit_map.get(&row.request_id).copied().unwrap_or(1));
                     request.generated = request
                         .generated
-                        .checked_add(1)
+                        .checked_add(commit)
                         .ok_or(SchedulerError::Overflow)?;
                     tenant.service_units = tenant
                         .service_units
-                        .checked_add(1)
+                        .checked_add(u64::from(commit))
                         .ok_or(SchedulerError::Overflow)?;
                     if request.generated == request.spec.maximum_new_tokens {
                         request.state = RequestState::Finished;
@@ -281,6 +349,33 @@ impl Scheduler {
     #[must_use]
     pub fn request_state(&self, request_id: u64) -> Option<RequestState> {
         self.requests.get(&request_id).map(|request| request.state)
+    }
+
+    #[must_use]
+    pub fn request_progress(&self, request_id: u64) -> Option<RequestProgress> {
+        self.requests
+            .get(&request_id)
+            .map(|request| RequestProgress {
+                state: request.state,
+                prompt_tokens: request.spec.prompt_tokens,
+                prompt_done: request.prompt_done,
+                maximum_new_tokens: request.spec.maximum_new_tokens,
+                generated: request.generated,
+                mtp_depth: request.spec.mtp_depth,
+            })
+    }
+
+    #[must_use]
+    pub fn request_ids(&self) -> Vec<u64> {
+        self.requests.keys().copied().collect()
+    }
+
+    #[must_use]
+    pub fn graph_entry(&self, graph_id: u32) -> Option<&GraphEntry> {
+        self.profile
+            .entries
+            .iter()
+            .find(|entry| entry.graph_id == graph_id)
     }
 
     fn build_prefill_batch(&mut self) -> Result<ScheduledBatch, SchedulerError> {
@@ -470,6 +565,7 @@ pub enum SchedulerError {
     NoRunnable,
     Inflight,
     NoInflight,
+    Commit,
     Overflow,
 }
 
@@ -686,5 +782,84 @@ mod tests {
             assert_eq!(batch.rows.len(), 2);
             scheduler.complete_batch(true).unwrap();
         }
+    }
+
+    #[test]
+    fn restored_full_pages_skip_only_the_proven_prefix() {
+        let mut scheduler = scheduler();
+        scheduler
+            .admit_with_prefix(
+                RequestSpec {
+                    id: 1,
+                    tenant: 1,
+                    prompt_tokens: 96,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                },
+                64,
+            )
+            .unwrap();
+        let batch = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(batch.kind, BatchKind::Prefill);
+        assert_eq!(batch.query_rows, 32);
+        scheduler.complete_batch(true).unwrap();
+        assert_eq!(
+            scheduler.request_progress(1).unwrap(),
+            RequestProgress {
+                state: RequestState::Decoding,
+                prompt_tokens: 96,
+                prompt_done: 96,
+                maximum_new_tokens: 1,
+                generated: 0,
+                mtp_depth: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_commits_one_through_depth_plus_one_without_overshoot() {
+        let mut first = scheduler();
+        first
+            .admit_with_prefix(
+                RequestSpec {
+                    id: 1,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 7,
+                    mtp_depth: 6,
+                },
+                64,
+            )
+            .unwrap();
+        let batch = first.next_batch().unwrap().unwrap();
+        assert_eq!(batch.kind, BatchKind::Verify { depth: 6 });
+        first.complete_batch_with_commits(true, &[(1, 7)]).unwrap();
+        assert_eq!(
+            first.request_progress(1).unwrap().state,
+            RequestState::Finished
+        );
+
+        let mut second = scheduler();
+        second
+            .admit_with_prefix(
+                RequestSpec {
+                    id: 2,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 2,
+                    mtp_depth: 6,
+                },
+                64,
+            )
+            .unwrap();
+        second.next_batch().unwrap();
+        assert_eq!(
+            second.complete_batch_with_commits(true, &[(2, 3)]),
+            Err(SchedulerError::Commit)
+        );
+        assert_eq!(
+            second.request_progress(2).unwrap().state,
+            RequestState::Decoding
+        );
     }
 }

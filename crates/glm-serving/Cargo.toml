@@ -1,0 +1,15 @@
+[package]
+name = "glm-serving"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+glm-cache = { path = "../glm-cache" }
+glm-engine = { path = "../glm-engine" }
+glm-scheduler = { path = "../glm-scheduler" }
+sha2.workspace = true
+
+[lints]
+workspace = true

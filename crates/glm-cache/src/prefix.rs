@@ -190,6 +190,11 @@ impl PrefixIndex {
     }
 
     #[must_use]
+    pub fn record(&self, key: PrefixPageKey) -> Option<&TierRecord> {
+        self.pages.get(&key).map(|page| &page.record)
+    }
+
+    #[must_use]
     pub fn derive_keys(&self, tokens: &[u32]) -> Vec<PrefixPageKey> {
         let mut parent = None;
         tokens

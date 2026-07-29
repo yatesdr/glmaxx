@@ -9,6 +9,7 @@ mod memory;
 mod startup;
 mod step;
 mod weight;
+mod worker;
 
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use memory::{
@@ -26,4 +27,7 @@ pub use step::{
 pub use weight::{
     EXL3_PROJECTION_BYTES, ExpertCodec, ExpertKey, ExpertTensorRole, NVFP4_PROJECTION_BYTES,
     ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
+};
+pub use worker::{
+    CpuWorkerPool, MockWorkerFault, RankStepAck, StepHandle, StepOutcome, WorkerError,
 };

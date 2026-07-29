@@ -19,6 +19,8 @@ glm-cuda = { path = "../glm-cuda" }
 glm-engine = { path = "../glm-engine" }
 glm-format = { path = "../glm-format" }
 glm-reference = { path = "../glm-reference" }
+glm-scheduler = { path = "../glm-scheduler" }
+glm-serving = { path = "../glm-serving" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
