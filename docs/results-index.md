@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`b097703b0a6def10d3732ae70835881c93a954dd`
+`8612ec3a29421f707f0f231e3496a59bb81504b0`
 
-The complete local gate most recently ran against the durable-content
-deduplication implementation
-`85d950ee45294f2551d674736b35781986dda874`; its provenance record was then
-committed at `b097703b0a6def10d3732ae70835881c93a954dd`. The target
+The complete local gate most recently ran against the complete journal-tail
+corruption correction
+`2da57248f703702f2fddbf189a65f294cabbc649`; its provenance record was then
+committed at `8612ec3a29421f707f0f231e3496a59bb81504b0`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -30,11 +30,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at durable-content implementation `85d950e` passed:
+The latest local run at journal-tail implementation `2da5724` passed:
 
-- `scripts/local-checks.sh`: 253 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 254 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 49 then-present candidate-based review-handoff hash proofs;
+  and all 50 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -250,6 +250,14 @@ supersedes the earlier candidate's same-content revision-refresh behavior.
 The dedicated handoff passes local provenance validation; independent
 acceptance is absent.
 
+The journal-tail correction is pinned in
+`docs/journal-tail-corruption-proof-v1.md`. Every complete 512-byte journal
+record, including the last, must validate; only a genuinely short trailing
+fragment is ignored. Corrupting a real final publish record now rejects both
+writer and snapshot-reader construction instead of silently losing the page.
+The dedicated handoff passes local provenance validation; independent
+acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -371,6 +379,7 @@ verdicts:
 | same-key prefix logical integrity and monotonic MTP capability | `2e3aa22` | `docs/fable-prefix-generation-integrity-v1-handoff.md` |
 | prefix index and owner-rank residency generation coherence | `72e6071` | `docs/fable-prefix-residency-coherence-v1-handoff.md` |
 | no-write durable dedup, MTP-only upgrade, and collision-safe replay | `b097703` | `docs/fable-durable-content-dedup-v1-handoff.md` |
+| complete journal-tail corruption fails closed | `8612ec3` | `docs/fable-journal-tail-corruption-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
