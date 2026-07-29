@@ -244,8 +244,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(path) = arguments.get(3) {
                 fs::write(path, &json)?;
                 println!(
-                    "verified {} review handoffs; wrote {} bytes to {path}",
+                    "verified {} review handoffs and {}/{} configured results \
+                     ({} accepted, {} withheld); wrote {} bytes to {path}",
                     proof.verified_handoffs.len(),
+                    proof.present_review_results,
+                    proof.configured_review_results,
+                    proof.accepted_review_results,
+                    proof.withheld_review_results,
                     json.len()
                 );
             } else {

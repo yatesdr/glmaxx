@@ -51,7 +51,16 @@ how many pinned hashes were present, but no withheld result opens a gate.
 
 - `required_result_path` to the handoff proof; and
 - `candidate_commit_attested` plus `attested_input_hashes` to the optional
-  review proof.
+  review proof;
+- automatic ingestion of a declared result path when that file exists; and
+- suite counts for configured, present, accepted, and withheld result
+  artifacts.
+
+An absent declared result remains a pending gate and does not fail the suite.
+Once the file appears, `review-proof-all` verifies it on every local run and
+fails closed on a wrong path, self-review, malformed token, missing candidate,
+or missing pinned hash. Handoffs that predate the declared-result convention
+still require an explicit per-review command.
 
 The candidate blobs are still read through `git cat-file` at the pinned
 commit, never from the working tree. This verifier does not modify a handoff,

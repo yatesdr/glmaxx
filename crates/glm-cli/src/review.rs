@@ -67,6 +67,10 @@ pub struct ReviewSuiteProof {
     pub repository_head: String,
     pub verified_handoffs: Vec<ReviewProof>,
     pub skipped_historical_handoffs: Vec<String>,
+    pub configured_review_results: usize,
+    pub present_review_results: usize,
+    pub accepted_review_results: usize,
+    pub withheld_review_results: usize,
     pub verdict: &'static str,
 }
 
@@ -164,13 +168,26 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
 
     let mut verified_handoffs = Vec::new();
     let mut skipped_historical_handoffs = Vec::new();
+    let mut configured_review_results = 0usize;
     for handoff in candidates {
         let bytes = fs::read(&handoff)?;
         let relative = relative_string(&root, &handoff)?;
         let text =
             std::str::from_utf8(&bytes).map_err(|_| ReviewProofError::Utf8(relative.clone()))?;
         if has_candidate_label(text) {
-            verified_handoffs.push(verify_review_handoff(&root, &handoff, None)?);
+            let parsed = parse_handoff(text)?;
+            let review_path = if let Some(path) = parsed.required_result_path.as_deref() {
+                configured_review_results += 1;
+                let path = root.join(path);
+                path.try_exists()?.then_some(path)
+            } else {
+                None
+            };
+            verified_handoffs.push(verify_review_handoff(
+                &root,
+                &handoff,
+                review_path.as_deref(),
+            )?);
         } else if HISTORICAL_HANDOFFS.contains(&relative.as_str()) {
             skipped_historical_handoffs.push(relative);
         } else {
@@ -184,11 +201,37 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
             "no review handoff with a candidate commit was found".to_owned(),
         ));
     }
+    let present_review_results = verified_handoffs
+        .iter()
+        .filter(|proof| proof.review.is_some())
+        .count();
+    let accepted_review_results = verified_handoffs
+        .iter()
+        .filter(|proof| {
+            proof
+                .review
+                .as_ref()
+                .is_some_and(|review| review.token_state == ReviewTokenState::Accepted)
+        })
+        .count();
+    let withheld_review_results = verified_handoffs
+        .iter()
+        .filter(|proof| {
+            proof
+                .review
+                .as_ref()
+                .is_some_and(|review| review.token_state == ReviewTokenState::Withheld)
+        })
+        .count();
     Ok(ReviewSuiteProof {
         schema: "glmaxx.review-provenance-suite.v2",
         repository_head: head,
         verified_handoffs,
         skipped_historical_handoffs,
+        configured_review_results,
+        present_review_results,
+        accepted_review_results,
+        withheld_review_results,
         verdict: "PASS",
     })
 }

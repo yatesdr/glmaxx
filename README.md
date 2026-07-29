@@ -118,7 +118,8 @@ warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
 It also verifies all 27 candidate-based Fable handoffs against their exact
 committed inputs and can classify an explicit review artifact by exact
 acceptance-token presence only after the review attests the exact candidate,
-every pinned input hash, and any required result path. The external-tokenizer
+every pinned input hash, and any required result path. Declared Fable results
+are ingested automatically as soon as their files exist. The external-tokenizer
 fixture remains pinned from the prior proof; the latest run skipped that
 external check because
 `GLMAXX_TOKENIZER_DIR` was not set. The CPU/reference workspace includes

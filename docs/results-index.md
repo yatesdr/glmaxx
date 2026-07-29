@@ -23,7 +23,8 @@ candidate `b64cb6d` plus its handoff/status delta passed:
   and all 27 candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
-  classifying a supplied token artifact as accepted;
+  classifying a supplied token artifact as accepted; declared result files
+  are automatically ingested by the repository-wide gate when present;
 - the external pinned-tokenizer proof was skipped because
   `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
   unchanged from the earlier complete proof;
