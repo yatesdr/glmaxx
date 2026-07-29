@@ -77,6 +77,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Rust-owned SM120 rank executor candidate](docs/sm120-rank-executor-v1.md)
 - [SM120 rank executor adversarial handoff](docs/fable-sm120-rank-executor-v1-handoff.md)
 - [Fail-closed review provenance verifier v2](docs/review-provenance-verifier-v2.md)
+- [Integrated cache lifecycle CPU proof](docs/cache-lifecycle-proof-v1.md)
 - [Final cn4 release record](docs/cn4-release-20260729.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
@@ -113,7 +114,7 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 226 Rust tests plus formatting, Clippy with
+The current local gate passes 227 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
 It also verifies all 27 candidate-based Fable handoffs against their exact
 committed inputs and can classify an explicit review artifact by exact

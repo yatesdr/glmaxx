@@ -2,12 +2,14 @@
 
 Date: 2026-07-29
 
-Current implementation baseline:
-`4bf7bb5e817e01cc299058b56a488b35011fd79d`
+Current CPU implementation baseline:
+`d0ac1d3708a76f6877b89cdb019211b28bb782eb`
 
-The complete local gate most recently ran against implementation commit
-`4bf7bb5e817e01cc299058b56a488b35011fd79d`. Subsequent proof and handoff
-documents do not change the implementation candidate.
+The complete local gate most recently ran against the implementation bytes
+subsequently committed as
+`d0ac1d3708a76f6877b89cdb019211b28bb782eb`. The target CUDA/kernel and strict
+production-manifest baseline remains `4bf7bb5`; this later candidate adds
+CPU-only review integrity and cache-lifecycle evidence.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -15,16 +17,20 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The implementation remains `4bf7bb5`; the latest local run at rank-executor
-candidate `b64cb6d` plus its handoff/status delta passed:
+The latest local run at cache-lifecycle candidate `d0ac1d3` plus its
+status-only delta passed:
 
-- `scripts/local-checks.sh`: 226 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 227 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and all 27 candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
   are automatically ingested by the repository-wide gate when present;
+- deterministic cache-lifecycle proof covers three-page target+draft
+  publication, torn-journal restart, MTP prefix reuse, bounded
+  HBM/DRAM/NVMe pressure, pinning, COW/speculative transactions, cleanup, and
+  corrupt-restore rejection;
 - the external pinned-tokenizer proof was skipped because
   `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
   unchanged from the earlier complete proof;
@@ -37,7 +43,8 @@ Pinned inputs:
 
 | Artifact | SHA-256 |
 |---|---|
-| `scripts/local-checks.sh` | `378a717bc9d592bac68ac999c6a91d4655b633177a9005529288096a3d2a029b` |
+| `scripts/local-checks.sh` | `839ec27e61aff8249ffa5b586621e6a1fa316221dd50eddf3ee467d096a1d18f` |
+| `fixtures/cache-lifecycle-proof-v1.json` | `d8fb9505f7c2af912554d59f9dd3b84e32d5f2492fa8a3539a9ea908ae7d1dab` |
 | `fixtures/cpu-serving-proof-v1.json` | `fb76dd1cdc83501ff35ef192dc2be012b5e5cc52ced9a7f8ff4b0b1313698db1` |
 | `fixtures/engine-contract-proof-v1.json` | `a28686829ae46d62ab449eacae3a1b64bf965c43c22699bb4c9130ecedc9c1a2` |
 | `fixtures/nvfp4-actual-shape-v1.json` | `56bca55ab3489fe6f50cd864f73a21f3b83367d79faa8bc70cb26f325f9b1099` |
@@ -49,9 +56,15 @@ Pinned inputs:
 The profile validates as arithmetic but remains
 `conversion_allowed=false`.
 
-The review-handoff verifier contract, implementation hashes, commands, and
-exclusions are pinned in `docs/review-provenance-verifier-v1.md`. It validates
-candidate bytes and exact review-token presence; it does not accept any gate.
+The review-handoff verifier v2 contract, commands, and exclusions are pinned
+in `docs/review-provenance-verifier-v2.md`. It validates candidate bytes,
+declared result paths, candidate/input attestations, and exact review-token
+presence; it does not accept any gate.
+
+The integrated cache lifecycle implementation and scope boundary are pinned
+in `docs/cache-lifecycle-proof-v1.md`. Its deterministic fixture proves the
+CPU file-store/prefix/residency/page-table lifecycle but does not qualify
+CUDA, direct I/O, real NVMe, model attention, or long-context performance.
 
 The new bounded native-rank reader CPU proof is pinned in
 `docs/native-rank-reader-proof-v1.md`. It establishes one-pass file-backed
