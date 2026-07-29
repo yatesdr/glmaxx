@@ -3,11 +3,12 @@
 Date: 2026-07-29
 
 Current source baseline:
-`d0a09d7c62f1943112eaa703a9ef3f6b25e9ebc9`
+`7c718188b167615affabdb66f34939dcd6b22587`
 
 The complete gate ran against implementation commit `63b13fd`; `8aaef8e`
 changes only the accompanying terminal-delivery wording. `d0a09d7` adds only
-the unimplemented online-publication design candidate.
+the unimplemented online-publication design candidate, and `7c71818` adds
+only the unimplemented distributed-sampling design candidate.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -101,6 +102,7 @@ verdicts:
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | serving observability | `9607aa0`, with backend lifecycle delta at `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | online target/draft prefix publication | `d0a09d7` | `docs/fable-online-prefix-publication-v1-handoff.md` |
+| distributed sampling and MTP RNG | `7c71818` | `docs/fable-distributed-sampling-abi-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token

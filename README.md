@@ -75,6 +75,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Current coordinator/observability adversarial handoff](docs/fable-coordinator-api-backend-v2-handoff.md)
 - [Online target/draft prefix publication candidate](docs/online-prefix-publication-v1.md)
 - [Online publication adversarial handoff](docs/fable-online-prefix-publication-v1-handoff.md)
+- [Distributed sampling and MTP RNG candidate](docs/distributed-sampling-abi-v1.md)
+- [Distributed sampling adversarial handoff](docs/fable-distributed-sampling-abi-v1-handoff.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)

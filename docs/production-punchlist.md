@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `d0a09d7c62f1943112eaa703a9ef3f6b25e9ebc9`
+Baseline audited: `7c718188b167615affabdb66f34939dcd6b22587`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -31,7 +31,7 @@ State meanings:
 | C06 | OPEN | NVFP4 block-scaled MMA executes routed FC1, SwiGLU, FC2, compaction, activation quantization, epilogues, empty/skewed experts, and all required M buckets | CUDA-core and CUTLASS compile controls exist; no accepted device launch or complete fused operator | Authorized M2 correctness matrix, then replace controls with final MMA kernels |
 | C07 | OPEN | Direct EXL3 gate/up/down execution consumes pinned source bytes with no unmeasured repack | CPU source projection and compile control exist; no accepted device result | C01 acceptance, then actual-shape device correctness and inclusive timing |
 | C08 | OPEN | Complete GLM target layer implements attention/indexer, norms, residuals, routing, experts, and exact TP/DCP reductions | CPU sparse MoE references exist; no complete CUDA layer | One-layer TP4 replay after C06/C07 |
-| C09 | OPEN | Distributed greedy, bounded top-k/top-p, mass, residual, and bonus sampling execute without full-vocabulary gather | CPU oracle exists; backend deliberately admits only canonical greedy until C02 | Freeze sampling/RNG ABI, implement sharded device routes, compare full vocabulary |
+| C09 | REVIEW | Distributed greedy, bounded top-k/top-p, mass, residual, and bonus sampling execute without full-vocabulary gather | Contract candidate `7c71818` freezes vocabulary padding, filters, SplitMix counter draws, MTP proposal/accept/residual/bonus schedule, composite routes, and `StepOutput.v2`; implementation is intentionally absent | Fable review of `docs/fable-distributed-sampling-abi-v1-handoff.md`, then CPU proof |
 | C10 | OPEN | Real recurrent GLM draft layer supports MTP0–6 proposal, verification, commit/rollback, accepted EOS, residual, and bonus semantics | CPU transition/output metadata exists; no real draft execution | C02/C03, real draft-layer runner, then matched MTP0 equivalence |
 | C11 | OPEN | Strict four-rank checkpoint loader maps a fit-capable rank set into immutable device arenas and reaches healthy startup | Strict ingest/converter and startup consensus exist; no full device residency | Small-checkpoint smoke before any full conversion |
 | C12 | OPEN | API backend serves checkpoint outputs rather than CPU worker tokens | Bounded adapter at `4cf3a62`; CPU-only and greedy-only | Connect only after C02/C03/C05/C09 |
@@ -64,7 +64,7 @@ State meanings:
 | S01 | PASS | CPU scheduler supports bounded continuous batching, weighted tenant fairness, prefix-pending admission, and collective-safe cancellation | Scheduler/serving tests through `9607aa0` | Re-prove with real executor |
 | S02 | REVIEW | Bounded HTTP-to-coordinator adapter, tenant ownership, stop-safe streaming, slow-client isolation, and structured fatal drain accepted | Candidate `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
 | S03 | REVIEW | Host request/step observability has correct clocks, counts, MTP ordinals, graph routes, no metric-recording allocation, and consistent concurrent lifecycle totals | Metrics candidate `9607aa0`; backend concurrency delta `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
-| S04 | OPEN | Exact probabilistic parameters and deterministic seed/RNG state reach rank execution and responses | API validates them but backend rejects non-greedy | C02/C09 |
+| S04 | REVIEW | Exact probabilistic parameters and deterministic seed/RNG state reach rank execution and responses | Sampling/RNG candidate `7c71818` plus pending `StepInput.v1`; backend correctly rejects non-greedy | Accept both contracts, implement CPU ABI/consensus, then remove fail-closed rejection |
 | S05 | OPEN | Nonblocking network transport sustains target concurrency with bounded memory | Retained one-request-per-connection worker transport is functional only | Replace/qualify transport after real executor is available |
 | S06 | OPEN | Admission enforces per-tenant queued-token, resident-KV, and context-band limits | Active request count and prompt bytes are bounded; KV quotas absent | C03 plus scheduler quota contract |
 | S07 | OPEN | Sustained multi-user, cache-thrash, cancellation, rank-fault, and slow-client tests pass | CPU unit schedules only | Load/fault harness against real service |
