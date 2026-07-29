@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`8fb3adf9535683b0de9b54fe2743cb5651b9bdc2`
+`de2d43a44474427d6f67fdb7fa300307d7b1caed`
 
-The complete local gate most recently ran against the torn-journal resume
-implementation and refreshed fixture
-`c768220cb6f5d4f595a0e4800b4b8aaf398ac25a`; its provenance record was then
-committed at `8fb3adf9535683b0de9b54fe2743cb5651b9bdc2`. The target
+The complete local gate most recently ran against the durable-catalog extent
+implementation `a44a69156e3a16ff71d609158c54598332745303`; its provenance
+record was then committed at
+`de2d43a44474427d6f67fdb7fa300307d7b1caed`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -23,6 +23,9 @@ writer ownership and read-only rank restore snapshots, and same-key logical
 piece collision rejection with monotonic MTP capability through both the
 prefix index and owner-rank residency, plus a shared no-write dedup/MTP
 upgrade matrix in the prefix index, file writer, and journal replay.
+The latest correction also rejects overlapping or out-of-bounds live
+catalog extents during reader/writer startup and resumes allocation only
+after aligned physical data-file EOF.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -30,11 +33,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at torn-journal implementation `c768220` passed:
+The latest local run at durable-catalog implementation `a44a691` passed:
 
-- `scripts/local-checks.sh`: 254 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 257 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 51 then-present candidate-based review-handoff hash proofs;
+  and all 52 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -390,6 +393,7 @@ verdicts:
 | no-write durable dedup, MTP-only upgrade, and collision-safe replay | `b097703` | `docs/fable-durable-content-dedup-v1-handoff.md` |
 | complete journal-tail corruption fails closed | `8612ec3` | `docs/fable-journal-tail-corruption-v1-handoff.md` |
 | validated torn-tail repair before resumed append | `8fb3adf` | `docs/fable-torn-journal-resume-v1-handoff.md` |
+| live catalog bounds/overlap validation and physical-EOF append | `de2d43a` | `docs/fable-durable-catalog-extent-integrity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
