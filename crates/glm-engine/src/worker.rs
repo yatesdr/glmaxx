@@ -252,7 +252,14 @@ fn dispatch_loop(receiver: Receiver<DispatchCommand>, executors: [Box<dyn RankEx
             last_step_id = command.plan.step_id;
             dispatch_one(&rank_senders, &command.plan, &command.schedule)
         };
+        let failed = result.is_err();
         let _ = command.response.send(result);
+        if failed {
+            // A rank/backend/consensus failure is process-fatal for this
+            // executor generation. Continuing could let ranks enter different
+            // collective ordinals after one rank already abandoned the step.
+            break;
+        }
     }
     drop(rank_senders);
     for worker in rank_workers {

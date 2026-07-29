@@ -23,7 +23,9 @@ changing the scheduler or cache contracts.
    Plan, schedule, and output consensus are checked before the scheduler may
    commit the step. Plan and collective-schedule validation occurs before the
    backend entry point. Each executor remains on its named rank thread across
-   steps and may mutate only its own rank-local state.
+   steps and may mutate only its own rank-local state. Any plan-order,
+   rank-backend, or consensus failure permanently closes that worker
+   generation so no rank can enter a later collective schedule.
 4. Verify steps commit a checked value from one through `depth + 1`, without
    crossing a request's generation limit.
 5. Request events cover admission, prefill progress, tokens, finish,
