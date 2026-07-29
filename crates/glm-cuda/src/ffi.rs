@@ -3,10 +3,11 @@ use std::time::Instant;
 
 use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 
+use crate::abi::active_experts_for_grouped;
 use crate::{
     CudaDriver, Fc1Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    active_experts_for_grouped, grouped_sfa_capacity_bytes, grouped_sfa_plan,
-    grouped_workspace_bytes, validate_descriptor, workspace_bytes,
+    grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor,
+    workspace_bytes,
 };
 
 unsafe extern "C" {
