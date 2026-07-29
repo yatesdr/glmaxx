@@ -54,6 +54,7 @@ add_executable(glmaxx_cutlass_nvfp4_dense_control
 target_include_directories(glmaxx_cutlass_nvfp4_dense_control PRIVATE
   "${CUTLASS_DIR}/include"
   "${CUTLASS_DIR}/tools/util/include"
+  "${CUTLASS_DIR}/examples/common"
   "${CUTLASS_DIR}/examples/79_blackwell_geforce_gemm")
 target_compile_features(glmaxx_cutlass_nvfp4_dense_control
   PRIVATE cxx_std_17 cuda_std_17)
