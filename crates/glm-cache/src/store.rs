@@ -195,8 +195,9 @@ impl FileTierStore {
             pieces: piece_records,
         };
         record.validate()?;
+        let next_data_offset = align_up(next_offset, NVME_ALIGNMENT)?;
 
-        let result = self.publish_prevalidated(request, record, next_offset, failpoint);
+        let result = self.publish_prevalidated(request, record, next_data_offset, failpoint);
         if result.is_err() {
             self.write_poisoned = true;
         }
@@ -207,7 +208,7 @@ impl FileTierStore {
         &mut self,
         request: DurablePageRequest,
         record: TierRecord,
-        next_offset: u64,
+        next_data_offset: u64,
         failpoint: Option<WriteFailpoint>,
     ) -> Result<TierRecord, StoreError> {
         let transaction = self.next_transaction;
@@ -259,7 +260,7 @@ impl FileTierStore {
             &JournalEvent::Publish { transaction },
         )?;
         self.journal_file.sync_data()?;
-        self.next_data_offset = align_up(next_offset, NVME_ALIGNMENT)?;
+        self.next_data_offset = next_data_offset;
         self.published.insert(record.page_key, record.clone());
         Ok(record)
     }
