@@ -399,19 +399,13 @@ fn encode_journal_event(event: &JournalEvent) -> Result<[u8; JOURNAL_RECORD_BYTE
 }
 
 fn decode_journal(bytes: &[u8]) -> Result<(Vec<JournalEvent>, u64), StoreError> {
-    let full_records = bytes.len() / JOURNAL_RECORD_BYTES;
-    let mut events = Vec::with_capacity(full_records);
+    let mut events = Vec::with_capacity(bytes.len() / JOURNAL_RECORD_BYTES);
     let mut maximum_transaction = 0_u64;
-    for (index, record) in bytes.chunks_exact(JOURNAL_RECORD_BYTES).enumerate() {
-        match decode_journal_event(record) {
-            Ok(event) => {
-                let transaction = event_transaction(&event);
-                maximum_transaction = maximum_transaction.max(transaction);
-                events.push(event);
-            }
-            Err(_) if index + 1 == full_records => break,
-            Err(error) => return Err(error),
-        }
+    for record in bytes.chunks_exact(JOURNAL_RECORD_BYTES) {
+        let event = decode_journal_event(record)?;
+        let transaction = event_transaction(&event);
+        maximum_transaction = maximum_transaction.max(transaction);
+        events.push(event);
     }
     let next_transaction = if maximum_transaction == 0 {
         1
@@ -901,6 +895,57 @@ mod tests {
         drop(journal);
         let mut reopened = FileTierStore::open(&root).unwrap();
         assert!(reopened.restore([0x55; 32]).unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn complete_corrupt_trailing_journal_record_is_never_ignored() {
+        let root = temporary_store("complete-corrupt-tail");
+        let mut store = FileTierStore::open(&root).unwrap();
+        store.publish(request(0x56, 1, false)).unwrap();
+        drop(store);
+
+        let journal_path = root.join("journal.log");
+        let mut journal = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&journal_path)
+            .unwrap();
+        let final_byte_offset = journal.metadata().unwrap().len() - 1;
+        journal.seek(SeekFrom::Start(final_byte_offset)).unwrap();
+        let mut final_byte = [0_u8; 1];
+        journal.read_exact(&mut final_byte).unwrap();
+        final_byte[0] ^= 1;
+        journal.seek(SeekFrom::Start(final_byte_offset)).unwrap();
+        journal.write_all(&final_byte).unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::JournalChecksum)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::JournalChecksum)
+        ));
+        fs::remove_dir_all(root).unwrap();
+
+        let root = temporary_store("complete-garbage-tail");
+        let mut store = FileTierStore::open(&root).unwrap();
+        store.publish(request(0x57, 1, false)).unwrap();
+        drop(store);
+        let mut journal = OpenOptions::new()
+            .append(true)
+            .open(root.join("journal.log"))
+            .unwrap();
+        journal.write_all(&[0xaa; JOURNAL_RECORD_BYTES]).unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::JournalChecksum)
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
