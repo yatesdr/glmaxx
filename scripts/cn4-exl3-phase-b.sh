@@ -140,7 +140,7 @@ nvidia-smi \
 gpu_count="$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l | tr -d ' ')"
 sm120_count="$(
   nvidia-smi --query-gpu=compute_cap --format=csv,noheader \
-    | tr -d ' ' \
+    | tr -d '\r ' \
     | grep -c '^12\\.0$' || true
 )"
 if [[ "${gpu_count}" != "4" || "${sm120_count}" != "4" ]]; then
