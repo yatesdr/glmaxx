@@ -508,14 +508,25 @@ fn runtime_loop(
         let admission_events = coordinator.drain_events();
         if !admission_events.is_empty() {
             progressed = true;
-            dispatch_events(
+            if let Err(error) = dispatch_events(
                 admission_events,
                 &mut coordinator,
                 &mut active,
                 &mut pending_admissions,
                 owners,
                 counters,
-            );
+            ) {
+                fatal.store(true, Ordering::Release);
+                fail_all(
+                    &mut active,
+                    &commands,
+                    owners,
+                    counters,
+                    error.code,
+                    &error.message,
+                );
+                return;
+            }
         }
 
         match coordinator.tick_observed() {
@@ -526,36 +537,59 @@ fn runtime_loop(
             Ok(None) => {}
             Err(error) => {
                 fatal.store(true, Ordering::Release);
-                dispatch_events(
+                let dispatch_error = dispatch_events(
                     coordinator.drain_events(),
                     &mut coordinator,
                     &mut active,
                     &mut pending_admissions,
                     owners,
                     counters,
-                );
-                fail_all(
-                    &mut active,
-                    &commands,
-                    owners,
-                    counters,
-                    "ENGINE_STEP_FAILED",
-                    &error.to_string(),
-                );
+                )
+                .err();
+                if let Some(dispatch_error) = dispatch_error {
+                    fail_all(
+                        &mut active,
+                        &commands,
+                        owners,
+                        counters,
+                        dispatch_error.code,
+                        &dispatch_error.message,
+                    );
+                } else {
+                    fail_all(
+                        &mut active,
+                        &commands,
+                        owners,
+                        counters,
+                        "ENGINE_STEP_FAILED",
+                        &error.to_string(),
+                    );
+                }
                 return;
             }
         }
         let events = coordinator.drain_events();
         if !events.is_empty() {
             progressed = true;
-            dispatch_events(
+            if let Err(error) = dispatch_events(
                 events,
                 &mut coordinator,
                 &mut active,
                 &mut pending_admissions,
                 owners,
                 counters,
-            );
+            ) {
+                fatal.store(true, Ordering::Release);
+                fail_all(
+                    &mut active,
+                    &commands,
+                    owners,
+                    counters,
+                    error.code,
+                    &error.message,
+                );
+                return;
+            }
         }
 
         if !progressed {
@@ -744,7 +778,7 @@ fn dispatch_events(
     pending_admissions: &mut BTreeSet<u64>,
     owners: &Mutex<BTreeMap<u64, u32>>,
     counters: &ServingMetrics,
-) {
+) -> Result<(), ApiBackendError> {
     for event in events {
         match event {
             RequestEvent::Admitted {
@@ -755,7 +789,8 @@ fn dispatch_events(
                     continue;
                 };
                 if request.admitted_at.is_some() || cached_prompt_tokens > request.prompt_tokens {
-                    let _ = coordinator.cancel(request_id);
+                    let request =
+                        cancel_dispatch_request(coordinator, active, request_id, request)?;
                     fail_active_request(
                         request,
                         counters,
@@ -788,7 +823,8 @@ fn dispatch_events(
                     || prompt_done < request.prompt_done
                     || prompt_done > request.prompt_tokens
                 {
-                    let _ = coordinator.cancel(request_id);
+                    let request =
+                        cancel_dispatch_request(coordinator, active, request_id, request)?;
                     fail_active_request(
                         request,
                         counters,
@@ -818,7 +854,8 @@ fn dispatch_events(
                     || speculative != draft_ordinal.is_some()
                     || draft_ordinal.is_some_and(|ordinal| ordinal >= request.mtp_depth)
                 {
-                    let _ = coordinator.cancel(request_id);
+                    let request =
+                        cancel_dispatch_request(coordinator, active, request_id, request)?;
                     fail_active_request(
                         request,
                         counters,
@@ -856,24 +893,27 @@ fn dispatch_events(
                                 .try_send(ApiCompletionEvent::TextDelta(delta.text))
                                 .is_err()
                         {
+                            let request =
+                                cancel_dispatch_request(coordinator, active, request_id, request)?;
                             counters.increment_slow_consumers();
                             counters.increment_cancelled();
                             counters.observe_request_time(
                                 now.saturating_duration_since(request.request_started_at),
                             );
-                            let _ = coordinator.cancel(request_id);
                             remove_owner(owners, request_id);
                             continue;
                         }
                         if delta.finish.is_some() {
+                            let request =
+                                cancel_dispatch_request(coordinator, active, request_id, request)?;
                             finish_request(request, request_id, "stop", counters, owners);
-                            let _ = coordinator.cancel(request_id);
                         } else {
                             active.insert(request_id, request);
                         }
                     }
                     Err(error) => {
-                        let _ = coordinator.cancel(request_id);
+                        let request =
+                            cancel_dispatch_request(coordinator, active, request_id, request)?;
                         fail_active_request(request, counters, "OUTPUT_DECODE_FAILED", error);
                         remove_owner(owners, request_id);
                     }
@@ -932,6 +972,27 @@ fn dispatch_events(
                     "request failed at a collective-safe step boundary",
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+fn cancel_dispatch_request(
+    coordinator: &mut ServingCoordinator,
+    active: &mut BTreeMap<u64, ActiveRequest>,
+    request_id: u64,
+    request: ActiveRequest,
+) -> Result<ActiveRequest, ApiBackendError> {
+    match coordinator.cancel(request_id) {
+        Ok(()) => Ok(request),
+        Err(error) => {
+            if active.insert(request_id, request).is_some() {
+                panic!("dispatch request identity reappeared under exclusive backend access");
+            }
+            Err(ApiBackendError {
+                code: "EVENT_CANCELLATION_FAILED",
+                message: error.to_string(),
+            })
         }
     }
 }
@@ -1507,10 +1568,113 @@ mod tests {
             &mut pending_admissions,
             &owners,
             &counters,
-        );
+        )
+        .unwrap();
         assert!(!active.contains_key(&50));
         assert!(!owners.lock().unwrap().contains_key(&50));
         assert_eq!(coordinator.retained_prompt_bytes(), 0);
+        assert!(matches!(
+            completion.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ApiCompletionEvent::Failed(ApiBackendError {
+                code: "REQUEST_CANCELLED",
+                ..
+            })
+        ));
+
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dispatch_cancellation_failure_preserves_request_for_fatal_drain() {
+        let root = temporary_store();
+        let mut coordinator = coordinator(&root);
+        let counters = ServingMetrics::new();
+        let owners = Mutex::new(BTreeMap::from([(60, 1)]));
+        let mut active = BTreeMap::new();
+        let mut pending_admissions = BTreeSet::new();
+        let (events, completion) = mpsc::sync_channel(4);
+        process_command(
+            BackendCommand::Submit {
+                request_id: 60,
+                tenant: 1,
+                maximum_output_tokens: 1,
+                mtp_depth: 0,
+                request_started_at: Instant::now(),
+                enqueued_at: Instant::now(),
+                tokens: vec![17].into_boxed_slice(),
+                decoder: Box::new(FakeDecoder {
+                    stop_on_x: false,
+                    finished: false,
+                }),
+                events,
+            },
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        dispatch_events(
+            coordinator.drain_events(),
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        assert!(active.get(&60).unwrap().admitted_at.is_some());
+        assert_eq!(owners.lock().unwrap().get(&60), Some(&1));
+
+        coordinator.sequence_table_generation = u64::MAX;
+        let error = dispatch_events(
+            vec![RequestEvent::Token {
+                request_id: 60,
+                position: 1,
+                token_id: 99,
+                speculative: false,
+                draft_ordinal: None,
+            }],
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "EVENT_CANCELLATION_FAILED");
+        assert!(active.contains_key(&60));
+        assert_eq!(owners.lock().unwrap().get(&60), Some(&1));
+        assert!(coordinator.request_progress(60).is_some());
+        assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
+
+        coordinator.sequence_table_generation = 1;
+        process_command(
+            BackendCommand::Cancel {
+                request_id: 60,
+                tenant: 1,
+            },
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        assert!(!coordinator.tick().unwrap());
+        dispatch_events(
+            coordinator.drain_events(),
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            &owners,
+            &counters,
+        )
+        .unwrap();
+        assert!(!active.contains_key(&60));
+        assert!(!owners.lock().unwrap().contains_key(&60));
         assert!(matches!(
             completion.recv_timeout(Duration::from_secs(1)).unwrap(),
             ApiCompletionEvent::Failed(ApiBackendError {
