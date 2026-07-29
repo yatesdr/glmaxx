@@ -73,6 +73,12 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_fc2_dense_control_launch(
+        descriptor: *const Fc2Descriptor,
+        expert: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -324,6 +330,59 @@ struct NativeFc1Case {
     _gate_up: NativeBuffer,
     output: NativeBuffer,
     descriptor: Fc1Descriptor,
+}
+
+struct NativeFc2Case {
+    _input: NativeBuffer,
+    _route_expert: NativeBuffer,
+    _route_token: NativeBuffer,
+    _route_slot: NativeBuffer,
+    _route_weight: NativeBuffer,
+    _offsets: NativeBuffer,
+    _activation_values: NativeBuffer,
+    _activation_scales: NativeBuffer,
+    _activation_globals: NativeBuffer,
+    _assignment_down: NativeBuffer,
+    output: NativeBuffer,
+    _slot_assignment: NativeBuffer,
+    validation_error: NativeBuffer,
+    descriptor: Fc2Descriptor,
+}
+
+impl NativeFc2Case {
+    fn download(&self, stream: u64) -> Result<Vec<f32>, KernelError> {
+        let output_words = u64::from(self.descriptor.rows)
+            .checked_mul(u64::from(HIDDEN))
+            .ok_or(KernelError::Overflow)?;
+        let output_bytes = output_words.checked_mul(4).ok_or(KernelError::Overflow)?;
+        let mut host_output =
+            vec![0.0_f32; usize::try_from(output_words).map_err(|_| KernelError::Overflow)?];
+        let mut validation_error = 0_u32;
+        // SAFETY: both destination slices and both source allocations cover
+        // the exact requested byte ranges and remain live through sync.
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                host_output.as_mut_ptr().cast(),
+                self.output.pointer,
+                output_bytes,
+                stream,
+            )
+        })?;
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                std::ptr::from_mut(&mut validation_error).cast(),
+                self.validation_error.pointer,
+                4,
+                stream,
+            )
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(stream) })?;
+        if validation_error == 0 {
+            Ok(host_output)
+        } else {
+            Err(KernelError::DeviceValidation(validation_error))
+        }
+    }
 }
 
 impl NativeFc1Case {
@@ -979,6 +1038,291 @@ impl NativeFc1Fixture {
     }
 }
 
+pub struct NativeFc2Fixture {
+    stream: NativeStream,
+    weight_values: NativeBuffer,
+    weight_scales: NativeBuffer,
+    weight_globals: NativeBuffer,
+    initialized_experts: [bool; 256],
+}
+
+impl NativeFc2Fixture {
+    pub fn replicated(weights: &PackedNvfp4, experts: &[u16]) -> Result<Self, KernelError> {
+        validate_fc2_weights(weights)?;
+        if experts.is_empty() {
+            return Err(KernelError::Shape);
+        }
+        let mut initialized_experts = [false; 256];
+        for &expert in experts {
+            *initialized_experts
+                .get_mut(usize::from(expert))
+                .ok_or(KernelError::Shape)? = true;
+        }
+        let first_expert = initialized_experts
+            .iter()
+            .position(|&initialized| initialized)
+            .ok_or(KernelError::Shape)?;
+        let allocated_experts = initialized_experts
+            .iter()
+            .rposition(|&initialized| initialized)
+            .and_then(|index| index.checked_add(1))
+            .ok_or(KernelError::Shape)?;
+        let value_stride =
+            u64::try_from(weights.values.len()).map_err(|_| KernelError::Overflow)?;
+        let scale_stride =
+            u64::try_from(weights.scales.len()).map_err(|_| KernelError::Overflow)?;
+        let value_bytes = value_stride
+            .checked_mul(allocated_experts as u64)
+            .ok_or(KernelError::Overflow)?;
+        let scale_bytes = scale_stride
+            .checked_mul(allocated_experts as u64)
+            .ok_or(KernelError::Overflow)?;
+        let stream = NativeStream::create()?;
+        let weight_values = NativeBuffer::allocate(value_bytes)?;
+        let weight_scales = NativeBuffer::allocate(scale_bytes)?;
+        let first_value_offset = value_stride
+            .checked_mul(first_expert as u64)
+            .ok_or(KernelError::Overflow)?;
+        let first_scale_offset = scale_stride
+            .checked_mul(first_expert as u64)
+            .ok_or(KernelError::Overflow)?;
+        weight_values.upload_at(&weights.values, first_value_offset, stream.0)?;
+        weight_scales.upload_at(&weights.scales, first_scale_offset, stream.0)?;
+        for (expert, &initialized) in initialized_experts.iter().enumerate() {
+            if initialized && expert != first_expert {
+                weight_values.copy_within(
+                    first_value_offset,
+                    value_stride
+                        .checked_mul(expert as u64)
+                        .ok_or(KernelError::Overflow)?,
+                    value_stride,
+                    stream.0,
+                )?;
+                weight_scales.copy_within(
+                    first_scale_offset,
+                    scale_stride
+                        .checked_mul(expert as u64)
+                        .ok_or(KernelError::Overflow)?,
+                    scale_stride,
+                    stream.0,
+                )?;
+            }
+        }
+        let mut globals = vec![0.0_f32; allocated_experts];
+        for (expert, &initialized) in initialized_experts.iter().enumerate() {
+            if initialized {
+                globals[expert] = weights.metadata.global_scale;
+            }
+        }
+        let weight_globals = NativeBuffer::upload(floats_as_bytes(&globals), stream.0)?;
+        check(unsafe { glmaxx_stream_synchronize(stream.0) })?;
+        Ok(Self {
+            stream,
+            weight_values,
+            weight_scales,
+            weight_globals,
+            initialized_experts,
+        })
+    }
+
+    pub fn run(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+    ) -> Result<Vec<f32>, KernelError> {
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        launch_native_fc2(&execution.descriptor, self.stream.0)?;
+        execution.download(self.stream.0)
+    }
+
+    pub fn run_dense_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+    ) -> Result<Vec<f32>, KernelError> {
+        let &expert = route_experts.first().ok_or(KernelError::Shape)?;
+        if route_experts.iter().any(|&candidate| candidate != expert) {
+            return Err(KernelError::Shape);
+        }
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let mut async_error = 0_i32;
+        // SAFETY: the prepared descriptor and all allocations remain live
+        // until `download` synchronizes; every assignment uses `expert`.
+        let status = unsafe {
+            glmaxx_nvfp4_fc2_dense_control_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                u32::from(expert),
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        check(status)?;
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
+    }
+
+    fn prepare_case(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+    ) -> Result<NativeFc2Case, KernelError> {
+        let assignments = u32::try_from(route_experts.len()).map_err(|_| KernelError::Overflow)?;
+        if rows == 0
+            || rows > 65_536
+            || assignments == 0
+            || assignments > 65_535
+            || assignments > rows.checked_mul(8).ok_or(KernelError::Overflow)?
+            || input_bf16.len()
+                != (assignments as usize)
+                    .checked_mul(LOCAL_INTERMEDIATE as usize)
+                    .ok_or(KernelError::Overflow)?
+            || route_tokens.len() != route_experts.len()
+            || route_slots.len() != route_experts.len()
+            || route_weights.len() != route_experts.len()
+        {
+            return Err(KernelError::Shape);
+        }
+        let mut slot_masks = vec![0_u8; rows as usize];
+        let mut expert_masks = vec![[0_u64; 4]; rows as usize];
+        let mut offsets = [0_u32; 257];
+        let mut previous = None;
+        for (((&expert, &token), &slot), &weight) in route_experts
+            .iter()
+            .zip(route_tokens)
+            .zip(route_slots)
+            .zip(route_weights)
+        {
+            let token_index = usize::try_from(token).map_err(|_| KernelError::Shape)?;
+            let expert_index = usize::from(expert);
+            let order = (expert, token, slot);
+            if token >= rows
+                || slot >= 8
+                || !weight.is_finite()
+                || weight < 0.0
+                || !self
+                    .initialized_experts
+                    .get(expert_index)
+                    .copied()
+                    .unwrap_or(false)
+                || previous.is_some_and(|prior| prior >= order)
+            {
+                return Err(KernelError::Shape);
+            }
+            let slot_bit = 1_u8 << slot;
+            let expert_word = expert_index / 64;
+            let expert_bit = 1_u64 << (expert_index % 64);
+            if slot_masks[token_index] & slot_bit != 0
+                || expert_masks[token_index][expert_word] & expert_bit != 0
+            {
+                return Err(KernelError::Shape);
+            }
+            slot_masks[token_index] |= slot_bit;
+            expert_masks[token_index][expert_word] |= expert_bit;
+            offsets[expert_index + 1] = offsets[expert_index + 1]
+                .checked_add(1)
+                .ok_or(KernelError::Overflow)?;
+            previous = Some(order);
+        }
+        for expert in 1..offsets.len() {
+            offsets[expert] = offsets[expert]
+                .checked_add(offsets[expert - 1])
+                .ok_or(KernelError::Overflow)?;
+        }
+        validate_native_fc2_library(rows, assignments)?;
+        let input = NativeBuffer::upload(words_as_bytes(input_bf16), self.stream.0)?;
+        let route_expert = NativeBuffer::upload(words_as_bytes(route_experts), self.stream.0)?;
+        let route_token = NativeBuffer::upload(dwords_as_bytes(route_tokens), self.stream.0)?;
+        let route_slot = NativeBuffer::upload(route_slots, self.stream.0)?;
+        let route_weight = NativeBuffer::upload(floats_as_bytes(route_weights), self.stream.0)?;
+        let offsets = NativeBuffer::upload(dwords_as_bytes(&offsets), self.stream.0)?;
+        let padded_assignments = u64::from(assignments.next_multiple_of(128));
+        let activation_values =
+            NativeBuffer::allocate(padded_assignments * u64::from(LOCAL_INTERMEDIATE) / 2)?;
+        let activation_scales =
+            NativeBuffer::allocate(padded_assignments * u64::from(LOCAL_INTERMEDIATE) / 16)?;
+        let activation_globals = NativeBuffer::allocate(u64::from(assignments) * 4)?;
+        let assignment_down =
+            NativeBuffer::allocate(u64::from(assignments) * u64::from(HIDDEN) * 4)?;
+        let output = NativeBuffer::allocate(u64::from(rows) * u64::from(HIDDEN) * 4)?;
+        let slot_assignment =
+            NativeBuffer::allocate(u64::from(rows) * u64::from(crate::TOP_K) * 4)?;
+        let validation_error = NativeBuffer::allocate(4)?;
+        let mut descriptor = Fc2Descriptor::new(LaunchGeometry {
+            rows,
+            assignments,
+            path: if rows <= 128 {
+                KernelPath::DecodePersistent
+            } else {
+                KernelPath::PrefillGrouped
+            },
+        });
+        descriptor.input_bf16 = input.pointer;
+        descriptor.expert_value_base = self.weight_values.pointer;
+        descriptor.expert_scale_base = self.weight_scales.pointer;
+        descriptor.expert_global_scales = self.weight_globals.pointer;
+        descriptor.route_experts_u16 = route_expert.pointer;
+        descriptor.route_tokens_u32 = route_token.pointer;
+        descriptor.route_slots_u8 = route_slot.pointer;
+        descriptor.route_weights_f32 = route_weight.pointer;
+        descriptor.expert_offsets_u32 = offsets.pointer;
+        descriptor.activation_values = activation_values.pointer;
+        descriptor.activation_scales = activation_scales.pointer;
+        descriptor.activation_global_scales = activation_globals.pointer;
+        descriptor.assignment_down_f32 = assignment_down.pointer;
+        descriptor.token_output_f32 = output.pointer;
+        descriptor.slot_assignment_u32 = slot_assignment.pointer;
+        descriptor.validation_error_u32 = validation_error.pointer;
+        descriptor.workspace_bytes = fc2_workspace_bytes(rows, assignments)?;
+        descriptor.sequence = 1;
+        crate::validate_fc2_descriptor(&descriptor)?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        Ok(NativeFc2Case {
+            _input: input,
+            _route_expert: route_expert,
+            _route_token: route_token,
+            _route_slot: route_slot,
+            _route_weight: route_weight,
+            _offsets: offsets,
+            _activation_values: activation_values,
+            _activation_scales: activation_scales,
+            _activation_globals: activation_globals,
+            _assignment_down: assignment_down,
+            output,
+            _slot_assignment: slot_assignment,
+            validation_error,
+            descriptor,
+        })
+    }
+}
+
 pub fn run_single_expert(
     input_bf16: &[u16],
     rows: u32,
@@ -1014,6 +1358,22 @@ fn validate_weights(weights: &PackedNvfp4) -> Result<(), KernelError> {
         || weights.metadata.codec != Codec::OneDimensional
         || weights.values.len() != 1024 * HIDDEN as usize / 2
         || weights.scales.len() != 1024 * HIDDEN as usize / 16
+        || weights.validate().is_err()
+    {
+        Err(KernelError::Shape)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_fc2_weights(weights: &PackedNvfp4) -> Result<(), KernelError> {
+    if weights.metadata.logical_n != HIDDEN
+        || weights.metadata.logical_k != LOCAL_INTERMEDIATE
+        || weights.metadata.padded_n != HIDDEN
+        || weights.metadata.padded_k != LOCAL_INTERMEDIATE
+        || weights.metadata.codec != Codec::OneDimensional
+        || weights.values.len() != HIDDEN as usize * LOCAL_INTERMEDIATE as usize / 2
+        || weights.scales.len() != HIDDEN as usize * LOCAL_INTERMEDIATE as usize / 16
         || weights.validate().is_err()
     {
         Err(KernelError::Shape)
@@ -1059,6 +1419,22 @@ fn launch_native_fc1(descriptor: &Fc1Descriptor, stream: u64) -> Result<(), Kern
     }
 }
 
+fn launch_native_fc2(descriptor: &Fc2Descriptor, stream: u64) -> Result<(), KernelError> {
+    let mut async_error = 0_i32;
+    // SAFETY: the caller keeps the descriptor allocations and stream live.
+    check(unsafe {
+        glmaxx_nvfp4_routed_fc2_launch(
+            std::ptr::from_ref(descriptor),
+            stream as *mut c_void,
+            std::ptr::from_mut(&mut async_error),
+        )
+    })?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
 fn launch_native_grouped_control(
     descriptor: &Fc1Descriptor,
     active_experts: &[u16],

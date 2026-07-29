@@ -10,7 +10,9 @@ use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
     PagePieceBytes, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
 };
-use glm_cuda::{Fc1Descriptor, KernelPath, LaunchGeometry, workspace_bytes};
+use glm_cuda::{
+    Fc1Descriptor, Fc2Descriptor, KernelPath, LaunchGeometry, fc2_workspace_bytes, workspace_bytes,
+};
 use glm_engine::{
     AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CpuWorkerPool, GIB,
     GraphEntry, GraphKey, GraphProfile, ProfileBudgetArtifact, ProfileClass, RankMemoryInput,
@@ -2652,7 +2654,7 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         path: KernelPath::DecodePersistent,
     });
     #[cfg(feature = "cuda-ffi")]
-    glm_cuda::validate_native_abi(assignments)?;
+    glm_cuda::validate_native_moe_abi(rows, assignments)?;
     let native_abi_verified = cfg!(feature = "cuda-ffi");
     let reason = if native_abi_verified {
         "native library linked; ABI and workspace formula verified without a GPU launch"
@@ -2663,7 +2665,10 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         "kernel_abi": KERNEL_ABI,
         "descriptor_bytes": std::mem::size_of::<Fc1Descriptor>(),
         "descriptor_alignment": std::mem::align_of::<Fc1Descriptor>(),
+        "fc2_descriptor_bytes": std::mem::size_of::<Fc2Descriptor>(),
+        "fc2_descriptor_alignment": std::mem::align_of::<Fc2Descriptor>(),
         "m128_workspace_bytes": workspace_bytes(assignments)?,
+        "m128_fc2_workspace_bytes": fc2_workspace_bytes(rows, assignments)?,
         "cuda_ffi_feature": cfg!(feature = "cuda-ffi"),
         "native_abi_verified": native_abi_verified,
         "gpu_launched": false,

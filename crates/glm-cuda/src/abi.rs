@@ -498,6 +498,7 @@ pub enum KernelError {
     Workspace { required: u64, provided: u64 },
     Driver(i32),
     Async(i32),
+    DeviceValidation(u32),
 }
 
 impl fmt::Display for KernelError {
