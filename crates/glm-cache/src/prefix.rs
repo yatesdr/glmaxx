@@ -1,8 +1,11 @@
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use sha2::{Digest, Sha256};
 
-use crate::{PAGE_TOKENS, Tier, TierRecord};
+use crate::{PAGE_TOKENS, Tier, TierPiece, TierRecord};
 
 const NAMESPACE_DOMAIN: &[u8] = b"glmaxx.prefix-namespace.v1\0";
 const PAGE_DOMAIN: &[u8] = b"glmaxx.prefix-page.v1\0";
@@ -111,6 +114,7 @@ impl PrefixIndex {
         }
         let mut parent = None;
         let mut pending = Vec::with_capacity(records.len());
+        let mut pending_keys = BTreeSet::new();
         for (page_tokens, record) in tokens
             .chunks_exact(PAGE_TOKENS as usize)
             .zip(records.into_iter())
@@ -123,8 +127,13 @@ impl PrefixIndex {
             if record.page_key != key.0 {
                 return Err(PrefixError::PageKey);
             }
+            if !pending_keys.insert(key) {
+                return Err(PrefixError::Collision);
+            }
             if let Some(existing) = self.pages.get(&key) {
-                if existing.parent != parent {
+                if existing.parent != parent
+                    || !records_are_logically_compatible(&existing.record, &record)
+                {
                     return Err(PrefixError::Collision);
                 }
                 existing
@@ -139,7 +148,9 @@ impl PrefixIndex {
         for (key, parent, record) in pending {
             match self.pages.get_mut(&key) {
                 Some(existing) => {
-                    if record.generation > existing.record.generation {
+                    if record.generation > existing.record.generation
+                        && (!existing.record.mtp || record.mtp)
+                    {
                         existing.record = record;
                     }
                     existing.references += 1;
@@ -217,6 +228,24 @@ impl PrefixIndex {
     }
 }
 
+fn records_are_logically_compatible(first: &TierRecord, second: &TierRecord) -> bool {
+    [TierPiece::TargetKv, TierPiece::TargetIndexer]
+        .into_iter()
+        .all(|piece| logical_piece_identity(first, piece) == logical_piece_identity(second, piece))
+        && (!first.mtp
+            || !second.mtp
+            || logical_piece_identity(first, TierPiece::DraftSidecar)
+                == logical_piece_identity(second, TierPiece::DraftSidecar))
+}
+
+fn logical_piece_identity(record: &TierRecord, piece: TierPiece) -> Option<(u64, [u8; 32])> {
+    record
+        .pieces
+        .iter()
+        .find(|candidate| candidate.piece == piece)
+        .map(|candidate| (candidate.byte_length, candidate.sha256))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrefixError {
     Namespace,
@@ -273,6 +302,17 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn with_draft(mut record: TierRecord, digest: [u8; 32]) -> TierRecord {
+        record.mtp = true;
+        record.pieces.push(TierPieceRecord {
+            piece: TierPiece::DraftSidecar,
+            byte_length: TierPiece::DraftSidecar.expected_bytes(),
+            storage_offset: 4 * 1024 * 1024,
+            sha256: digest,
+        });
+        record
     }
 
     #[test]
@@ -371,5 +411,51 @@ mod tests {
         );
         assert!(index.longest_match(&tokens).is_none());
         assert_eq!(index.references(keys[0]), None);
+    }
+
+    #[test]
+    fn same_key_generations_require_identical_bytes_and_never_downgrade_mtp() {
+        let namespace = namespace();
+        let mut index = PrefixIndex::new(namespace);
+        let tokens: Vec<u32> = (0..64).collect();
+        let key = index.derive_keys(&tokens)[0];
+
+        index
+            .insert(&tokens, vec![record(namespace, key, 1)])
+            .unwrap();
+        let upgrade = with_draft(record(namespace, key, 2), [3; 32]);
+        index.insert(&tokens, vec![upgrade.clone()]).unwrap();
+        assert_eq!(index.references(key), Some(2));
+        assert!(index.record(key).unwrap().mtp);
+        assert_eq!(index.record(key).unwrap().generation, 2);
+
+        let downgrade = record(namespace, key, 3);
+        index.insert(&tokens, vec![downgrade]).unwrap();
+        assert_eq!(index.references(key), Some(3));
+        assert!(index.record(key).unwrap().mtp);
+        assert_eq!(index.record(key).unwrap().generation, 2);
+
+        let mut conflicting_target = record(namespace, key, 4);
+        conflicting_target.pieces[0].sha256[0] ^= 1;
+        assert_eq!(
+            index.insert(&tokens, vec![conflicting_target]),
+            Err(PrefixError::Collision)
+        );
+        assert_eq!(index.references(key), Some(3));
+        assert_eq!(index.record(key).unwrap(), &upgrade);
+
+        let mut conflicting_draft = with_draft(record(namespace, key, 4), [3; 32]);
+        conflicting_draft.pieces[2].sha256[0] ^= 1;
+        assert_eq!(
+            index.insert(&tokens, vec![conflicting_draft]),
+            Err(PrefixError::Collision)
+        );
+        assert_eq!(index.references(key), Some(3));
+        assert_eq!(index.record(key).unwrap(), &upgrade);
+
+        let refresh = with_draft(record(namespace, key, 5), [3; 32]);
+        index.insert(&tokens, vec![refresh.clone()]).unwrap();
+        assert_eq!(index.references(key), Some(4));
+        assert_eq!(index.record(key).unwrap(), &refresh);
     }
 }
