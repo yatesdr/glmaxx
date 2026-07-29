@@ -73,6 +73,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Benchmark and quality contract](docs/benchmark-contract.md)
 - [Serving observability contract](docs/serving-observability-v1.md)
 - [Current coordinator/observability adversarial handoff](docs/fable-coordinator-api-backend-v2-handoff.md)
+- [Online target/draft prefix publication candidate](docs/online-prefix-publication-v1.md)
+- [Online publication adversarial handoff](docs/fable-online-prefix-publication-v1-handoff.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)
