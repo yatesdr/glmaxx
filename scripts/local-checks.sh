@@ -37,6 +37,10 @@ cargo run --release --offline -p glm-cli --bin glmaxx -- \
   serving-proof "${proof_dir}/serving"
 cmp fixtures/cpu-serving-proof-v1.json \
   "${proof_dir}/serving/serving-proof.json"
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  cache-lifecycle-proof "${proof_dir}/cache-lifecycle"
+cmp fixtures/cache-lifecycle-proof-v1.json \
+  "${proof_dir}/cache-lifecycle/cache-lifecycle-proof.json"
 if [[ -n "${GLMAXX_TOKENIZER_DIR:-}" ]]; then
   cargo run --release --offline -p glm-cli --bin glmaxx -- \
     tokenizer-proof "${GLMAXX_TOKENIZER_DIR}" \

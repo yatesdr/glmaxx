@@ -1,0 +1,28 @@
+{
+  "schema": "glmaxx.cache-lifecycle-proof.v1",
+  "pages_published": 3,
+  "page_tokens": 64,
+  "mtp_sidecars": 3,
+  "page_payload_bytes": 2046464,
+  "resident_payload_bytes": 6139392,
+  "torn_journal_bytes": 113,
+  "restart_recovered_pages": 3,
+  "prefix_match_tokens": 192,
+  "dcp_postures_reusing_namespace": [
+    1,
+    4
+  ],
+  "bounded_restore_saturation_observed": true,
+  "hbm_capacity_pages": 1,
+  "dram_capacity_pages": 1,
+  "pinned_pressure_failed_closed": true,
+  "hbm_to_dram_to_nvme_observed": true,
+  "copy_on_write_tail_observed": true,
+  "speculative_rollback_observed": true,
+  "partial_speculative_commit_observed": true,
+  "corruption_failed_closed": true,
+  "corrupted_page_remained_nvme": true,
+  "journal_sha256": "4e408ba928de61dcd9f8b5a21aeeb5f7f7282ffeb81839b088529e0f7bfe15d7",
+  "pages_sha256_after_corruption": "42607370c95ed58b56c41f645a75e13ffaba22d569723207567a69bf771ecda4",
+  "verdict": "CPU_CACHE_LIFECYCLE_PASS"
+}
