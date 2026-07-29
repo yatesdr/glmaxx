@@ -79,6 +79,8 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Distributed sampling adversarial handoff](docs/fable-distributed-sampling-abi-v1-handoff.md)
 - [Tenant/global resource quota candidate](docs/tenant-resource-quotas-v1.md)
 - [Resource quota adversarial handoff](docs/fable-tenant-resource-quotas-v1-handoff.md)
+- [Nonblocking Linux HTTP transport candidate](docs/nonblocking-http-transport-v1.md)
+- [Nonblocking transport adversarial handoff](docs/fable-nonblocking-http-transport-v1-handoff.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)

@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `7e810c43a8856e09d48314dfef3959ded93c5f8f`
+Baseline audited: `3608a030530d2157fedc25a1432cd769ec8e9f98`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -65,7 +65,7 @@ State meanings:
 | S02 | REVIEW | Bounded HTTP-to-coordinator adapter, tenant ownership, stop-safe streaming, slow-client isolation, and structured fatal drain accepted | Candidate `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
 | S03 | REVIEW | Host request/step observability has correct clocks, counts, MTP ordinals, graph routes, no metric-recording allocation, and consistent concurrent lifecycle totals | Metrics candidate `9607aa0`; backend concurrency delta `8aaef8e`; combined v2 handoff pending | Adversarial verdict and fixes |
 | S04 | REVIEW | Exact probabilistic parameters and deterministic seed/RNG state reach rank execution and responses | Sampling/RNG candidate `7c71818` plus pending `StepInput.v1`; backend correctly rejects non-greedy | Accept both contracts, implement CPU ABI/consensus, then remove fail-closed rejection |
-| S05 | OPEN | Nonblocking network transport sustains target concurrency with bounded memory | Retained one-request-per-connection worker transport is functional only | Replace/qualify transport after real executor is available |
+| S05 | REVIEW | Nonblocking network transport sustains target concurrency with bounded memory | Contract candidate `3608a03` defines sharded Linux epoll/eventfd reactors, connection generations, off-reactor admission, lossless completion wakeups, bounded output, and shutdown/fault evidence; implementation is intentionally absent | Fable review of `docs/fable-nonblocking-http-transport-v1-handoff.md`, then CPU parser/reactor proof |
 | S06 | REVIEW | Admission enforces per-tenant queued-token, resident-KV, and context-band limits | Contract candidate `7e810c4` defines a single permit ledger, authenticated ingress, global-physical/tenant-logical charges, restore/step/offload transactions, exact 1M/page-slack arithmetic, and fatal cleanup; implementation is intentionally absent | Fable review of `docs/fable-tenant-resource-quotas-v1-handoff.md`, then CPU proof |
 | S07 | OPEN | Sustained multi-user, cache-thrash, cancellation, rank-fault, and slow-client tests pass | CPU unit schedules only | Load/fault harness against real service |
 

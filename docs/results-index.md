@@ -3,12 +3,13 @@
 Date: 2026-07-29
 
 Current source baseline:
-`7e810c43a8856e09d48314dfef3959ded93c5f8f`
+`3608a030530d2157fedc25a1432cd769ec8e9f98`
 
 The complete gate ran against implementation commit `63b13fd`; `8aaef8e`
 changes only the accompanying terminal-delivery wording. `d0a09d7`,
-`7c71818`, and `7e810c4` add only the unimplemented online-publication,
-distributed-sampling, and tenant-resource-quota design candidates.
+`7c71818`, `7e810c4`, and `3608a03` add only the unimplemented
+online-publication, distributed-sampling, tenant-resource-quota, and
+nonblocking-transport design candidates.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -104,6 +105,7 @@ verdicts:
 | online target/draft prefix publication | `d0a09d7` | `docs/fable-online-prefix-publication-v1-handoff.md` |
 | distributed sampling and MTP RNG | `7c71818` | `docs/fable-distributed-sampling-abi-v1-handoff.md` |
 | tenant/global serving resource quotas | `7e810c4` | `docs/fable-tenant-resource-quotas-v1-handoff.md` |
+| nonblocking Linux HTTP transport | `3608a03` | `docs/fable-nonblocking-http-transport-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
