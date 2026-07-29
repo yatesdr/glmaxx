@@ -176,7 +176,7 @@ pub fn write_cache_lifecycle_proof(
     }
     residency.promote_dram(keys[0].0)?;
     if residency.location(keys[0].0) != Some(Residency::Hbm)
-        || residency.location(keys[2].0) != Some(Residency::Nvme)
+        || residency.location(keys[2].0) != Some(Residency::Dram)
     {
         return Err(proof_error("DRAM promotion did not preserve bounded residency").into());
     }
@@ -192,9 +192,9 @@ pub fn write_cache_lifecycle_proof(
     residency.abort_restore(keys[1].0)?;
     residency.unpin(keys[0].0)?;
     restore_page(&mut residency, &service, keys[1].0, 1, 7)?;
-    let hbm_to_dram_to_nvme_observed = residency.location(keys[0].0) == Some(Residency::Dram)
+    let hbm_to_dram_to_nvme_observed = residency.location(keys[0].0) == Some(Residency::Nvme)
         && residency.location(keys[1].0) == Some(Residency::Hbm)
-        && residency.location(keys[2].0) == Some(Residency::Nvme);
+        && residency.location(keys[2].0) == Some(Residency::Dram);
     if !hbm_to_dram_to_nvme_observed {
         return Err(proof_error("final tier posture is not bounded HBM/DRAM/NVMe").into());
     }
@@ -206,7 +206,7 @@ pub fn write_cache_lifecycle_proof(
         partial_speculative_commit_observed,
     ) = prove_page_table_lifecycle(&keys)?;
 
-    let corrupt_offset = recovered[2]
+    let corrupt_offset = recovered[0]
         .pieces
         .iter()
         .find(|piece| piece.piece == TierPiece::TargetKv)
@@ -215,7 +215,7 @@ pub fn write_cache_lifecycle_proof(
     let data_path = store_root.join("pages.dat");
     corrupt_one_byte(&data_path, corrupt_offset)?;
     let service = RestoreService::spawn(&store_root, 1)?;
-    let corrupt_request = residency.begin_restore(8, keys[2].0, 2, owner_rank(2))?;
+    let corrupt_request = residency.begin_restore(8, keys[0].0, 0, owner_rank(0))?;
     let corruption_failed_closed = matches!(
         service.try_submit(corrupt_request)?.receive(),
         Err(RestoreError::Store(StoreError::Checksum))
@@ -223,8 +223,8 @@ pub fn write_cache_lifecycle_proof(
     if !corruption_failed_closed {
         return Err(proof_error("corrupt tier payload was observable").into());
     }
-    residency.abort_restore(keys[2].0)?;
-    let corrupted_page_remained_nvme = residency.location(keys[2].0) == Some(Residency::Nvme);
+    residency.abort_restore(keys[0].0)?;
+    let corrupted_page_remained_nvme = residency.location(keys[0].0) == Some(Residency::Nvme);
     if !corrupted_page_remained_nvme {
         return Err(proof_error("corrupt restore changed residency state").into());
     }

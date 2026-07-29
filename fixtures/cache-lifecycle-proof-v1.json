@@ -23,6 +23,6 @@
   "corruption_failed_closed": true,
   "corrupted_page_remained_nvme": true,
   "journal_sha256": "4e408ba928de61dcd9f8b5a21aeeb5f7f7282ffeb81839b088529e0f7bfe15d7",
-  "pages_sha256_after_corruption": "42607370c95ed58b56c41f645a75e13ffaba22d569723207567a69bf771ecda4",
+  "pages_sha256_after_corruption": "90dc21ff22cb31b0e37a66508a52e4b8bca36cd2563355bafaad73782d149e6b",
   "verdict": "CPU_CACHE_LIFECYCLE_PASS"
 }
