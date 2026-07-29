@@ -145,6 +145,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("checkpoint-proof requires the pinned safetensors index")?;
             checkpoint_proof(Path::new(path))?;
         }
+        Some("checkpoint-source-proof") => {
+            let path = arguments
+                .get(2)
+                .ok_or("checkpoint-source-proof requires the pinned safetensors index")?;
+            checkpoint_source_proof(Path::new(path))?;
+        }
         Some("convert-pinned-exl3") => {
             let index = arguments
                 .get(2)
@@ -241,7 +247,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -286,6 +292,57 @@ fn checkpoint_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         exl3_component_count: inventory.exl3_component_count,
         protected_tensor_count: inventory.protected_tensor_count,
         verdict: "PINNED_CHECKPOINT_STRUCTURE_PASS",
+    };
+    println!("{}", serde_json::to_string_pretty(&proof)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CheckpointSourceProof {
+    schema: &'static str,
+    repository: &'static str,
+    revision: &'static str,
+    source: String,
+    structure_sha256: String,
+    manifest_sha256: String,
+    verified_file_count: usize,
+    verified_file_bytes: u64,
+    file_sha256: BTreeMap<String, String>,
+    verdict: &'static str,
+}
+
+fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".safetensors.index.json"))
+    {
+        return Err(
+            "checkpoint-source-proof requires the pinned standard index, not a directory".into(),
+        );
+    }
+    let checkpoint = ShardedSafetensors::open(path)?;
+    let inventory = validate_pinned_exl3_checkpoint(&checkpoint, EXL3_MODEL_REVISION)?;
+    let source =
+        verify_pinned_source_files(&checkpoint, |completed, total, verified_bytes, name| {
+            eprintln!("source-verify {completed}/{total} bytes={verified_bytes} file={name}");
+        })?;
+    let file_sha256 = source
+        .files()
+        .iter()
+        .map(|(name, digest)| (name.clone(), hex(digest)))
+        .collect();
+    let proof = CheckpointSourceProof {
+        schema: "glmaxx.pinned-checkpoint-source-proof.v1",
+        repository: PINNED_EXL3_REPOSITORY,
+        revision: EXL3_MODEL_REVISION,
+        source: path.display().to_string(),
+        structure_sha256: hex(&inventory.structure_sha256),
+        manifest_sha256: hex(&source.manifest_sha256()),
+        verified_file_count: source.file_count(),
+        verified_file_bytes: source.verified_file_bytes(),
+        file_sha256,
+        verdict: "PINNED_CHECKPOINT_SOURCE_PASS",
     };
     println!("{}", serde_json::to_string_pretty(&proof)?);
     Ok(())

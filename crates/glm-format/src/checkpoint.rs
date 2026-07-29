@@ -151,8 +151,18 @@ pub struct PinnedSourceVerification {
 
 impl PinnedSourceVerification {
     #[must_use]
+    pub const fn manifest_sha256(&self) -> [u8; 32] {
+        self.manifest_sha256
+    }
+
+    #[must_use]
     pub fn file_count(&self) -> usize {
         self.file_sha256.len()
+    }
+
+    #[must_use]
+    pub const fn verified_file_bytes(&self) -> u64 {
+        self.verified_file_bytes
     }
 
     #[must_use]

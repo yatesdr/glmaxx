@@ -131,6 +131,22 @@ cargo run -p glm-cli --release -- \
   checkpoint-proof /external/model/model.safetensors.index.json
 ```
 
+Recompute every manifest SHA-256 through the fail-closed Rust reader:
+
+```text
+cargo run -p glm-cli --release -- \
+  checkpoint-source-proof \
+  /external/model/model.safetensors.index.json
+```
+
+This second proof is deliberately stronger and slower than the structural
+proof. It requires the exact repository/revision marker files, verifies all
+92 manifest entries, hashes safetensor shards through the already-open
+descriptors, and emits the complete per-file identity map. On cn4,
+`scripts/cn4-checkpoint-source-proof.sh` runs both proofs and twice
+reconstructs actual layer-3/expert-0/rank-0 gate, up, and down payloads into a
+fresh external evidence directory without enabling CUDA.
+
 The repository includes `scripts/cn4-download-pinned-exl3.sh` for an external,
 resumable download. It fetches all 92 files in the immutable upstream
 `MANIFEST.sha256`, verifies each file independently, then runs a complete
