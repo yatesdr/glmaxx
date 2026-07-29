@@ -6,8 +6,9 @@ if [[ "${GLMAXX_CN4_AUTHORIZATION:-}" != "phase-b-authorized" ]]; then
   exit 64
 fi
 
-if [[ "${GLMAXX_REVIEW_GATE:-}" != "manifest-abi-v0.2.2-accepted" ]]; then
-  echo "Refusing M2: independent review of the manifest and v0.2.2 ABI is not recorded" >&2
+if [[ "${GLMAXX_REVIEW_GATE:-}" != "manifest-abi-v0.2.2-accepted" ||
+      -z "${GLMAXX_REVIEW_ARTIFACT:-}" ]]; then
+  echo "Refusing M2: the review token and committed review artifact are required" >&2
   exit 64
 fi
 
@@ -48,6 +49,29 @@ if [[ -n "${source_status}" ]]; then
   exit 65
 fi
 
+if [[ ! -f "${GLMAXX_REVIEW_ARTIFACT}" ]]; then
+  echo "Review artifact does not exist or is not a regular file" >&2
+  exit 65
+fi
+review_artifact="$(realpath "${GLMAXX_REVIEW_ARTIFACT}")"
+case "${review_artifact}" in
+  "${repo_dir}"/*) ;;
+  *)
+    echo "Review artifact must be inside the source repository" >&2
+    exit 65
+    ;;
+esac
+review_relative="${review_artifact#"${repo_dir}/"}"
+if ! git ls-files --error-unmatch "${review_relative}" >/dev/null 2>&1; then
+  echo "Review artifact must be tracked by Git" >&2
+  exit 65
+fi
+if ! grep -Fxq "manifest-abi-v0.2.2-accepted" "${review_artifact}"; then
+  echo "Review artifact does not contain the exact acceptance token" >&2
+  exit 65
+fi
+review_sha_before="$(shasum -a 256 "${review_artifact}" | awk '{print $1}')"
+
 mkdir -p "${GLMAXX_EVIDENCE_DIR}"
 
 check_idle() {
@@ -80,19 +104,23 @@ cmake --version | tee "${GLMAXX_EVIDENCE_DIR}/cmake.txt"
 git -C "${CUTLASS_DIR}" rev-parse HEAD | tee "${GLMAXX_EVIDENCE_DIR}/cutlass-commit.txt"
 printf '%s\n' "${GLMAXX_CONTAINER_DIGEST}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/container-digest.txt"
+printf '%s  %s\n' "${review_sha_before}" "${review_relative}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/review-artifact-sha256.txt"
 shasum -a 256 spec/engine-v0.md spec/format-v0.md \
   manifests/glm52-operation-v1.json benchmarks/sm120-fc1-matrix-v1.json \
-  fixtures/sm120-fc1-matrix-proof-v1.json \
+  fixtures/sm120-fc1-matrix-proof-v1.json "${review_artifact}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/input-sha256.txt"
 
-cargo test --workspace --offline | tee "${GLMAXX_EVIDENCE_DIR}/cargo-test.txt"
+export CARGO_TARGET_DIR="${GLMAXX_EVIDENCE_DIR}/cargo-target"
+cargo test --workspace --offline 2>&1 \
+  | tee "${GLMAXX_EVIDENCE_DIR}/cargo-test.txt"
 
 build_dir="${GLMAXX_EVIDENCE_DIR}/build"
 cmake -S kernels -B "${build_dir}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCUTLASS_DIR="${CUTLASS_DIR}" \
+  -DCUTLASS_DIR="${CUTLASS_DIR}" 2>&1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/cmake-configure.txt"
-cmake --build "${build_dir}" --verbose \
+cmake --build "${build_dir}" --verbose 2>&1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/cmake-build.txt"
 
 "${build_dir}/glmaxx_cutlass_layout_probe" \
@@ -104,7 +132,7 @@ export GLMAXX_KERNEL_LIB_DIR="${build_dir}"
 export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
 
 check_idle
-cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx \
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
   -- gpu-smoke 1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/gpu-smoke-m1.json"
 
@@ -115,7 +143,7 @@ if [[ -e "${correctness_dir}" ]]; then
 fi
 mkdir "${correctness_dir}"
 check_idle
-cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx \
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
   -- gpu-matrix "${correctness_dir}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/gpu-matrix-summary.json"
 
@@ -125,5 +153,15 @@ nvidia-smi \
   --query-gpu=index,uuid,clocks.current.sm,clocks.current.memory,power.limit,persistence_mode \
   --format=csv,noheader \
   | tee "${GLMAXX_EVIDENCE_DIR}/gpu-clocks-after.csv"
+
+review_sha_after="$(shasum -a 256 "${review_artifact}" | awk '{print $1}')"
+if [[ "${review_sha_after}" != "${review_sha_before}" ]]; then
+  echo "Review artifact changed during qualification" >&2
+  exit 70
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Source tree changed during qualification" >&2
+  exit 70
+fi
 
 echo "Eager correctness matrix finished. Do not benchmark unless summary.json reports 135 positive cases, 9 negative rejections, 2 eager deterministic cases, and zero failures; graph-captured repetition remains a separate gate."

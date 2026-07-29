@@ -99,9 +99,15 @@ export CUTLASS_DIR=/path/to/cutlass-4.6.1
 export GLMAXX_EVIDENCE_DIR=/path/outside/repo/glmaxx-m2-$(date -u +%Y%m%dT%H%M%SZ)
 export GLMAXX_CONTAINER_DIGEST=sha256:<64-lowercase-hex-container-digest>
 export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
+export GLMAXX_REVIEW_ARTIFACT=/path/to/glmaxx/fable-manifest-abi-v022.md
 export GLMAXX_CN4_AUTHORIZATION=phase-b-authorized
 ./scripts/cn4-phase-b.sh
 ```
+
+The review artifact must be committed in the source repository and contain
+the exact acceptance token on its own line. The script records its SHA-256 at
+launch and verifies that neither it nor the source tree changed during the
+run. An environment token without that artifact cannot open the gate.
 
 The expected environment is Rust 1.92, CMake at least 3.28, Ninja, CUDA
 13.3, and CUTLASS commit
