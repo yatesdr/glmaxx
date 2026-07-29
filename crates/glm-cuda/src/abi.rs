@@ -113,6 +113,81 @@ pub struct Fc1Descriptor {
     pub reserved: [u64; 4],
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(C, align(16))]
+pub struct Fc2Descriptor {
+    pub abi_version: u32,
+    pub struct_bytes: u32,
+    pub flags: u32,
+    pub path: u32,
+    pub rows: u32,
+    pub assignments: u32,
+    pub hidden: u32,
+    pub local_intermediate: u32,
+    pub experts: u32,
+    pub top_k: u32,
+    pub reserved0: u32,
+    pub reserved1: u32,
+    pub input_bf16: u64,
+    pub expert_value_base: u64,
+    pub expert_scale_base: u64,
+    pub expert_global_scales: u64,
+    pub route_experts_u16: u64,
+    pub route_tokens_u32: u64,
+    pub route_slots_u8: u64,
+    pub route_weights_f32: u64,
+    pub expert_offsets_u32: u64,
+    pub activation_values: u64,
+    pub activation_scales: u64,
+    pub activation_global_scales: u64,
+    pub assignment_down_f32: u64,
+    pub token_output_f32: u64,
+    pub slot_assignment_u32: u64,
+    pub validation_error_u32: u64,
+    pub workspace_bytes: u64,
+    pub sequence: u64,
+    pub reserved: [u64; 4],
+}
+
+impl Fc2Descriptor {
+    #[must_use]
+    pub fn new(geometry: LaunchGeometry) -> Self {
+        Self {
+            abi_version: ABI_VERSION,
+            struct_bytes: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            path: geometry.path as u32,
+            rows: geometry.rows,
+            assignments: geometry.assignments,
+            hidden: HIDDEN,
+            local_intermediate: LOCAL_INTERMEDIATE,
+            experts: EXPERTS,
+            top_k: TOP_K,
+            reserved0: 0,
+            reserved1: 0,
+            input_bf16: 0,
+            expert_value_base: 0,
+            expert_scale_base: 0,
+            expert_global_scales: 0,
+            route_experts_u16: 0,
+            route_tokens_u32: 0,
+            route_slots_u8: 0,
+            route_weights_f32: 0,
+            expert_offsets_u32: 0,
+            activation_values: 0,
+            activation_scales: 0,
+            activation_global_scales: 0,
+            assignment_down_f32: 0,
+            token_output_f32: 0,
+            slot_assignment_u32: 0,
+            validation_error_u32: 0,
+            workspace_bytes: 0,
+            sequence: 0,
+            reserved: [0; 4],
+        }
+    }
+}
+
 impl Fc1Descriptor {
     #[must_use]
     pub fn new(geometry: LaunchGeometry) -> Self {
@@ -207,6 +282,83 @@ pub fn validate_descriptor(descriptor: &Fc1Descriptor) -> Result<(), KernelError
     Ok(())
 }
 
+pub fn validate_fc2_descriptor(descriptor: &Fc2Descriptor) -> Result<(), KernelError> {
+    if descriptor.abi_version != ABI_VERSION
+        || descriptor.struct_bytes as usize != std::mem::size_of::<Fc2Descriptor>()
+        || descriptor.hidden != HIDDEN
+        || descriptor.local_intermediate != LOCAL_INTERMEDIATE
+        || descriptor.experts != EXPERTS
+        || descriptor.top_k != TOP_K
+        || descriptor.flags != 0
+        || descriptor.reserved0 != 0
+        || descriptor.reserved1 != 0
+        || descriptor.reserved.iter().any(|&value| value != 0)
+    {
+        return Err(KernelError::Abi);
+    }
+    let path = match descriptor.path {
+        1 => KernelPath::DecodePersistent,
+        2 => KernelPath::PrefillGrouped,
+        _ => return Err(KernelError::Path),
+    };
+    let max_rows = match path {
+        KernelPath::DecodePersistent => 128,
+        KernelPath::PrefillGrouped => 65_536,
+    };
+    if descriptor.rows == 0
+        || descriptor.rows > max_rows
+        || descriptor.assignments == 0
+        || descriptor.assignments > 65_535
+        || descriptor.assignments
+            > descriptor
+                .rows
+                .checked_mul(TOP_K)
+                .ok_or(KernelError::Overflow)?
+    {
+        return Err(KernelError::Shape);
+    }
+    let required = [
+        descriptor.input_bf16,
+        descriptor.expert_value_base,
+        descriptor.expert_scale_base,
+        descriptor.expert_global_scales,
+        descriptor.route_experts_u16,
+        descriptor.route_tokens_u32,
+        descriptor.route_slots_u8,
+        descriptor.route_weights_f32,
+        descriptor.expert_offsets_u32,
+        descriptor.activation_values,
+        descriptor.activation_scales,
+        descriptor.activation_global_scales,
+        descriptor.assignment_down_f32,
+        descriptor.token_output_f32,
+        descriptor.slot_assignment_u32,
+        descriptor.validation_error_u32,
+    ];
+    if required.contains(&0) {
+        return Err(KernelError::Null);
+    }
+    if !descriptor.expert_value_base.is_multiple_of(256)
+        || !descriptor.expert_scale_base.is_multiple_of(256)
+        || !descriptor.activation_values.is_multiple_of(16)
+        || !descriptor.activation_scales.is_multiple_of(16)
+        || !descriptor.assignment_down_f32.is_multiple_of(4)
+        || !descriptor.token_output_f32.is_multiple_of(4)
+        || !descriptor.slot_assignment_u32.is_multiple_of(4)
+        || !descriptor.validation_error_u32.is_multiple_of(4)
+    {
+        return Err(KernelError::Alignment);
+    }
+    let required_workspace = fc2_workspace_bytes(descriptor.rows, descriptor.assignments)?;
+    if descriptor.workspace_bytes < required_workspace {
+        return Err(KernelError::Workspace {
+            required: required_workspace,
+            provided: descriptor.workspace_bytes,
+        });
+    }
+    Ok(())
+}
+
 fn required_pointers(descriptor: &Fc1Descriptor) -> [&u64; 15] {
     [
         &descriptor.input_bf16,
@@ -269,6 +421,41 @@ pub fn grouped_workspace_bytes(assignments: u32) -> Result<u64, KernelError> {
         .ok_or(KernelError::Overflow)
 }
 
+pub fn fc2_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, KernelError> {
+    if rows == 0
+        || assignments == 0
+        || assignments > rows.checked_mul(TOP_K).ok_or(KernelError::Overflow)?
+    {
+        return Err(KernelError::Shape);
+    }
+    let rows = u64::from(rows);
+    let assignments = u64::from(assignments);
+    let padded_assignments = assignments
+        .checked_add(127)
+        .map(|value| value / 128 * 128)
+        .ok_or(KernelError::Overflow)?;
+    let activation_values = padded_assignments.checked_mul(u64::from(LOCAL_INTERMEDIATE) / 2);
+    let activation_scales = padded_assignments.checked_mul(u64::from(LOCAL_INTERMEDIATE) / 16);
+    let activation_globals = assignments.checked_mul(4);
+    let assignment_down = assignments.checked_mul(u64::from(HIDDEN) * 4);
+    let token_output = rows.checked_mul(u64::from(HIDDEN) * 4);
+    let slot_assignment = rows.checked_mul(u64::from(TOP_K) * 4);
+    [
+        activation_values,
+        activation_scales,
+        activation_globals,
+        assignment_down,
+        token_output,
+        slot_assignment,
+        Some(4),
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, value| {
+        sum.checked_add(value.ok_or(KernelError::Overflow)?)
+            .ok_or(KernelError::Overflow)
+    })
+}
+
 #[cfg(any(feature = "cuda-ffi", test))]
 pub(crate) fn active_experts_for_grouped(
     route_experts: &[u16],
@@ -329,6 +516,51 @@ mod tests {
     fn descriptor_layout_is_frozen() {
         assert_eq!(std::mem::size_of::<Fc1Descriptor>(), 224);
         assert_eq!(std::mem::align_of::<Fc1Descriptor>(), 16);
+        assert_eq!(std::mem::size_of::<Fc2Descriptor>(), 224);
+        assert_eq!(std::mem::align_of::<Fc2Descriptor>(), 16);
+    }
+
+    #[test]
+    fn every_required_fc2_decode_m_validates() {
+        for rows in [1, 2, 4, 8, 16, 32, 64, 128] {
+            let assignments = rows * TOP_K;
+            let mut descriptor = Fc2Descriptor::new(LaunchGeometry {
+                rows,
+                assignments,
+                path: KernelPath::DecodePersistent,
+            });
+            let mut pointer = 0x1000_u64;
+            for field in [
+                &mut descriptor.input_bf16,
+                &mut descriptor.expert_value_base,
+                &mut descriptor.expert_scale_base,
+                &mut descriptor.expert_global_scales,
+                &mut descriptor.route_experts_u16,
+                &mut descriptor.route_tokens_u32,
+                &mut descriptor.route_slots_u8,
+                &mut descriptor.route_weights_f32,
+                &mut descriptor.expert_offsets_u32,
+                &mut descriptor.activation_values,
+                &mut descriptor.activation_scales,
+                &mut descriptor.activation_global_scales,
+                &mut descriptor.assignment_down_f32,
+                &mut descriptor.token_output_f32,
+                &mut descriptor.slot_assignment_u32,
+                &mut descriptor.validation_error_u32,
+            ] {
+                *field = pointer;
+                pointer += 0x100;
+            }
+            descriptor.workspace_bytes = fc2_workspace_bytes(rows, assignments).unwrap();
+            validate_fc2_descriptor(&descriptor).unwrap();
+        }
+    }
+
+    #[test]
+    fn fc2_workspace_includes_deterministic_scatter_state() {
+        assert_eq!(fc2_workspace_bytes(1, 8).unwrap(), 258_116);
+        assert_eq!(fc2_workspace_bytes(0, 8), Err(KernelError::Shape));
+        assert_eq!(fc2_workspace_bytes(1, 9), Err(KernelError::Shape));
     }
 
     #[test]

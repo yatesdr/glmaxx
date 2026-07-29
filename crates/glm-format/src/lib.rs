@@ -46,4 +46,4 @@ pub use stream::{
 };
 
 pub const CUTLASS_COMMIT: &str = "e05f953a5b3d38adc240df2ff928e0421c2abba3";
-pub const KERNEL_ABI: &str = "glmaxx.sm120.nvfp4.routed_fc1.v1";
+pub const KERNEL_ABI: &str = "glmaxx.sm120.nvfp4.routed_moe.v2";

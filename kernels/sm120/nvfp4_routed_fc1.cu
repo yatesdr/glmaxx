@@ -366,7 +366,7 @@ extern "C" uint64_t glmaxx_nvfp4_grouped_workspace_bytes(
 }
 
 extern "C" const char* glmaxx_kernel_abi(void) {
-  return "glmaxx.sm120.nvfp4.routed_fc1.v1";
+  return "glmaxx.sm120.nvfp4.routed_moe.v2";
 }
 
 extern "C" int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer) {

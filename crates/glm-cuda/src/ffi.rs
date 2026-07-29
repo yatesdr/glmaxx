@@ -5,9 +5,9 @@ use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 
 use crate::abi::active_experts_for_grouped;
 use crate::{
-    CudaDriver, Fc1Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor,
-    workspace_bytes,
+    CudaDriver, Fc1Descriptor, Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE,
+    LaunchGeometry, fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan,
+    grouped_workspace_bytes, validate_descriptor, workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -68,6 +68,11 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_routed_fc2_launch(
+        descriptor: *const Fc2Descriptor,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -77,6 +82,7 @@ unsafe extern "C" {
     fn glmaxx_event_destroy(event: u64) -> i32;
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_grouped_workspace_bytes(assignments: u32) -> u64;
+    fn glmaxx_nvfp4_routed_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
@@ -115,6 +121,27 @@ impl CudaDriver for NativeKernelDriver {
         // reads the POD descriptor and enqueues work on the caller-owned stream.
         let status = unsafe {
             glmaxx_nvfp4_routed_fc1_launch(
+                std::ptr::from_ref(descriptor),
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        if status != 0 {
+            Err(KernelError::Driver(status))
+        } else if async_error != 0 {
+            Err(KernelError::Async(async_error))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn launch_fc2(&self, descriptor: &Fc2Descriptor, stream: u64) -> Result<(), KernelError> {
+        validate_native_fc2_library(descriptor.rows, descriptor.assignments)?;
+        let mut async_error = 0_i32;
+        // SAFETY: `Fc2LaunchTicket` validates the POD descriptor and all
+        // referenced allocations remain caller-owned through stream completion.
+        let status = unsafe {
+            glmaxx_nvfp4_routed_fc2_launch(
                 std::ptr::from_ref(descriptor),
                 stream as *mut c_void,
                 std::ptr::from_mut(&mut async_error),
@@ -1163,8 +1190,26 @@ fn validate_native_library(assignments: u32) -> Result<(), KernelError> {
     Ok(())
 }
 
+fn validate_native_fc2_library(rows: u32, assignments: u32) -> Result<(), KernelError> {
+    validate_native_library(assignments)?;
+    // SAFETY: this pure ABI helper neither initializes CUDA nor touches a
+    // device; it mirrors Rust's checked workspace arithmetic.
+    if unsafe { glmaxx_nvfp4_routed_fc2_workspace_bytes(rows, assignments) }
+        != fc2_workspace_bytes(rows, assignments)?
+    {
+        return Err(KernelError::Abi);
+    }
+    Ok(())
+}
+
 /// Verifies the loaded native library's ABI identifier and workspace formula
 /// without creating a CUDA context or touching a device.
 pub fn validate_native_abi(assignments: u32) -> Result<(), KernelError> {
     validate_native_library(assignments)
+}
+
+/// Verifies both routed FC1 and FC2 workspace formulas for a concrete step
+/// shape without creating a CUDA context or touching a device.
+pub fn validate_native_moe_abi(rows: u32, assignments: u32) -> Result<(), KernelError> {
+    validate_native_fc2_library(rows, assignments)
 }
