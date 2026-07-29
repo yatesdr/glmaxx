@@ -6,6 +6,7 @@ members = [
     "crates/glm-engine",
     "crates/glm-format",
     "crates/glm-reference",
+    "crates/glm-scheduler",
 ]
 resolver = "2"
 

@@ -1,13 +1,12 @@
 [package]
-name = "glm-cache"
+name = "glm-scheduler"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-glm-format = { path = "../glm-format" }
-sha2.workspace = true
+glm-engine = { path = "../glm-engine" }
 
 [lints]
 workspace = true

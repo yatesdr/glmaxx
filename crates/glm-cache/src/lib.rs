@@ -6,11 +6,19 @@ mod budget;
 mod kv;
 mod mtp;
 mod page;
+mod prefix;
+mod tier;
 
 pub use budget::{Budget, BudgetError, CacheCapacity};
 pub use kv::{IndexerKeyRecord, KvError, KvRecord};
 pub use mtp::{MtpError, SpeculativeTail, VerifyOutcome};
 pub use page::{AttachmentError, PageAttachments, PageState, PageTransitionError, owner_rank};
+pub use prefix::{
+    NamespaceInputs, PrefixError, PrefixIndex, PrefixMatch, PrefixNamespace, PrefixPageKey,
+};
+pub use tier::{
+    JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord,
+};
 
 pub const PAGE_TOKENS: u64 = 64;
 pub const MODEL_POSITIONS: u64 = 1_048_576;

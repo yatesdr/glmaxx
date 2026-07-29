@@ -9,7 +9,10 @@ use glm_engine::{
     GraphKey, GraphProfile, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
     StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, plan_system_memory,
 };
-use glm_format::{Codec, KERNEL_ABI, PackedNvfp4, RankFile, RankFileBuilder, TensorRecord};
+use glm_format::{
+    Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4, RankFile,
+    RankFileBuilder, TensorRecord,
+};
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
     generate_numerical_fixture, generate_routes, operation_manifest_json,
@@ -77,6 +80,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", String::from_utf8(json)?);
             }
         }
+        Some("exl3-proof") => {
+            let path = arguments
+                .get(2)
+                .ok_or("exl3-proof requires a source payload path")?;
+            exl3_proof(Path::new(path))?;
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -95,11 +104,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|gpu-smoke [rows]|gpu-matrix evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir>"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct Exl3Proof {
+    schema: &'static str,
+    model_revision: &'static str,
+    source_revision: &'static str,
+    source_version: &'static str,
+    tensor: &'static str,
+    logical_shape_k_n: [u32; 2],
+    payload_bytes: usize,
+    payload_sha256: String,
+    reconstructed_f16_bytes: usize,
+    reconstructed_sha256: String,
+}
+
+fn exl3_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let payload = fs::read(path)?;
+    let metadata = Exl3Metadata::new(Exl3Projection::Gate, 3, 0, 0, 3, 6_144, 512)?;
+    let tensor = Exl3Trellis::from_source_payload(metadata, &payload)?;
+    let reconstructed = tensor.reconstruct_native_f16()?;
+    let mut reconstructed_bytes = Vec::with_capacity(reconstructed.len() * 2);
+    for word in reconstructed {
+        reconstructed_bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    let report = Exl3Proof {
+        schema: "glmaxx.exl3-source-payload-proof.v1",
+        model_revision: glm_format::EXL3_MODEL_REVISION,
+        source_revision: glm_format::EXL3_SOURCE_REVISION,
+        source_version: glm_format::EXL3_SOURCE_VERSION,
+        tensor: "model.layers.3.mlp.experts.0.gate_proj.rank0",
+        logical_shape_k_n: [6_144, 512],
+        payload_bytes: payload.len(),
+        payload_sha256: hex(&sha256(&payload)),
+        reconstructed_f16_bytes: reconstructed_bytes.len(),
+        reconstructed_sha256: hex(&sha256(&reconstructed_bytes)),
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

@@ -1,10 +1,10 @@
 # GLM-5.2 native rank and cache format v0
 
-Status: **DRAFT — FABLE V2 CONDITIONS PLUS PHASE-A IMPLEMENTATION AMENDMENT**
+Status: **DRAFT — FABLE V2 CONDITIONS PLUS EXL3 CPU CANDIDATE**
 
-Specification revision: 0.2.2
+Specification revision: 0.2.3
 
-Date: 2026-07-28
+Date: 2026-07-29
 
 Implementation order: NVFP4 first, EXL3 extension second
 
@@ -498,20 +498,39 @@ public prose alone. The upstream project describes it as a QTIP variant with
 procedural codebooks and tail-biting trellises and explicitly refers
 implementers to its quantizer and kernels for the current definition.
 
-Therefore codec `0x0200` SHALL be frozen only after:
+The CPU reconstruction candidate is now pinned by
+`docs/exl3-trellis-cpu-contract.md` and implemented by
+`crates/glm-format/src/exl3.rs`. Its source payload consists of one scalar
+MCG marker, FP16 `suh[K]`, FP16 `svh[N]`, and native I16 trellis
+`[K/16,N/16,16×bits]`. The v0 candidate accepts only `bits=3`,
+MCG `0xCBAC1FED`, K/N multiples of 128, and the GLM-5.2 TP4 projection
+shapes. It does not accept legacy or alternate codebooks.
 
-1. pinning the exact quantizer and inference kernel revisions;
-2. inventorying every component tensor in the pinned TR3 checkpoint;
-3. defining bit order, trellis state, codebook generation, scale/normalizer,
-   padding, permutation, and accumulation arithmetic;
-4. implementing a Rust CPU decoder;
-5. reproducing control payload reconstruction byte-for-byte or
-   value-for-value under an exact tolerance;
-6. defining a direct SM120 payload layout that avoids runtime repack;
-7. recording the MIT license attribution for reused source.
+The candidate has reproduced one pinned real checkpoint projection
+byte-for-byte through independent Rust and NumPy reconstructions. The
+payload and reconstruction digests are recorded in the contract document;
+the source weight bytes remain outside Git.
 
-Until then, the container MAY carry opaque EXL3 source components for
-inspection, but an engine MUST NOT report codec `0x0200` load support.
+Codec `0x0200` SHALL be frozen only after:
+
+1. ~~pinning the exact quantizer and inference kernel revisions~~
+   satisfied by the CPU contract candidate;
+2. ~~inventorying every component tensor in the pinned TR3 checkpoint~~
+   satisfied for the GLM rank-sliced projection schema and MTP overlay;
+3. ~~defining bit order, trellis state, codebook generation,
+   scale/normalizer, padding, permutation, and accumulation arithmetic~~
+   satisfied for the accepted MCG decoder and H128 execution path;
+4. ~~implementing a Rust CPU decoder~~ satisfied;
+5. ~~reproducing control payload reconstruction byte-for-byte or
+   value-for-value under an exact tolerance~~ satisfied for the first real
+   projection and deterministic synthetic fixtures;
+6. defining and measuring the direct SM120 consuming layout with no runtime
+   repack;
+7. independently reviewing the candidate contract and source attribution.
+
+Until items 6–7 pass, the container MAY carry EXL3 source components for
+inspection and CPU proof, but a serving engine MUST NOT report codec
+`0x0200` healthy or GPU load support.
 
 This OPEN item does not block NVFP4-first engine bring-up.
 

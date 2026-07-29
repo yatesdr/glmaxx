@@ -6,15 +6,24 @@
 
 mod graph;
 mod memory;
+mod startup;
 mod step;
+mod weight;
 
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use memory::{
     GIB, MemoryPlanError, MemoryTerms, ProfileClass, RankMemoryInput, RankMemoryPlan,
     SystemMemoryPlan, plan_system_memory,
 };
+pub use startup::{
+    MockFault, RankStartupReport, StartupCoordinator, StartupError, StartupState, run_mock_startup,
+};
 pub use step::{
     AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, PlanError, STEP_PLAN_ABI,
     STEP_PLAN_HASH_INPUT_BYTES, STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest,
     TP_RANK_MASK,
+};
+pub use weight::{
+    EXL3_PROJECTION_BYTES, ExpertCodec, ExpertKey, ExpertTensorRole, NVFP4_PROJECTION_BYTES,
+    ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
 };

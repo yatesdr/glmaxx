@@ -138,7 +138,8 @@ admission result.
 
 ## CPU evidence
 
-The workspace now has 58 tests. The 17 `glm-engine` tests cover:
+At this candidate's freeze, the workspace had 58 tests and 17
+`glm-engine` tests covering:
 
 - stable plan bytes and hashes;
 - rank-local schedule divergence;
@@ -155,6 +156,9 @@ The workspace now has 58 tests. The 17 `glm-engine` tests cover:
 `glmaxx engine-proof` regenerates
 `fixtures/engine-contract-proof-v1.json`, and `scripts/local-checks.sh`
 requires byte identity.
+
+The current workspace has expanded beyond this historical count; see
+`offline-serving-foundation.md` and its hash-pinned review handoff.
 
 ## Review and implementation boundary
 

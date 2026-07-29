@@ -2,6 +2,10 @@
 
 Date: 2026-07-28
 
+Status: historical snapshot. Its hashes intentionally identify the Phase-A
+bytes and are expected to be stale after later implementation. Use
+`fable-offline-foundation-handoff.md` for the current review candidate.
+
 Review target: post-v2 Phase-A artifacts plus the CPU-only execution-contract
 candidate
 

@@ -62,6 +62,9 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Phase A CPU preparation proof](docs/phase-a-proof.md)
 - [cn0 SM86 non-acceptance compile/link bring-up](docs/cn0-sm86-bringup.md)
 - [Offline StepPlan, graph admission, and memory-contract candidate](docs/offline-engine-contract.md)
+- [Offline serving foundation: scheduler, sampling, tiers, startup, and FC2](docs/offline-serving-foundation.md)
+- [Pinned EXL3/Trellis CPU reconstruction candidate](docs/exl3-trellis-cpu-contract.md)
+- [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
 - [Fable Phase-A and engine-contract review handoff](docs/fable-phase-a-engine-handoff.md)
 - [Quantization and checkpoint workflow](docs/quantization-workflow.md)
 - [Benchmark and quality contract](docs/benchmark-contract.md)
@@ -93,9 +96,16 @@ blocked on independent review of the generated manifest/v0.2.2 amendment and
 a separately authorized cn4 session. The first performance task is to replace
 the retained CUDA-core control with CUTLASS block-scaled MMA.
 
-While SM120 execution is pending, `glm-engine` now supplies a deterministic
-CPU candidate for the rank-invariant `StepPlan`, collective digest, graph
-admission profile, and four-rank physical-memory planner. Mixed prefill/decode
-fails closed because the current logical ABI has only one attention-transport
-field; that choice is preserved as an explicit review question rather than
-silently frozen in code.
+While SM120 execution is pending, the CPU workspace now also includes the
+pinned EXL3/Trellis decoder, immutable per-tensor hybrid policy, four-rank
+startup consensus, continuous-batching scheduler simulation, distributed
+sampling, crash-consistent DRAM/NVMe tier journal, prefix index, routed FC2,
+and full sparse-layer reduction descriptors. The EXL3 decoder reproduced one
+real pinned checkpoint projection exactly against an independent NumPy
+oracle; model bytes remain outside Git.
+
+These are reference and control-plane contracts, not a serving claim. Mixed
+prefill/decode still fails closed because the current logical ABI has only
+one attention-transport field. SM120 kernel qualification, full-checkpoint
+conversion, model quality, and end-to-end service remain gated in the
+specified sequence.
