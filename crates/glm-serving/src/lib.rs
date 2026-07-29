@@ -36,6 +36,7 @@ pub use http::{
 pub struct ServingConfig {
     pub epoch: u64,
     pub event_capacity: usize,
+    pub maximum_retained_prompt_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +92,8 @@ pub struct ServingCoordinator {
     workers: Tp4WorkerPool,
     sequence_table_generation: u64,
     event_capacity: usize,
+    maximum_retained_prompt_bytes: u64,
+    retained_prompt_bytes: u64,
     events: VecDeque<RequestEvent>,
     terminal_events: BTreeSet<u64>,
     prefix_cache: Option<PrefixRestoreCoordinator>,
@@ -113,7 +116,9 @@ impl ServingCoordinator {
         routes: RouteCatalog,
         workers: Tp4WorkerPool,
     ) -> Result<Self, ServingError> {
-        if config.event_capacity < MAXIMUM_STEP_EVENTS {
+        if config.event_capacity < MAXIMUM_STEP_EVENTS
+            || config.maximum_retained_prompt_bytes < u64::from(u32::BITS / 8)
+        {
             return Err(ServingError::Config);
         }
         Ok(Self {
@@ -122,6 +127,8 @@ impl ServingCoordinator {
             workers,
             sequence_table_generation: 1,
             event_capacity: config.event_capacity,
+            maximum_retained_prompt_bytes: config.maximum_retained_prompt_bytes,
+            retained_prompt_bytes: 0,
             events: VecDeque::new(),
             terminal_events: BTreeSet::new(),
             prefix_cache: None,
@@ -147,9 +154,10 @@ impl ServingCoordinator {
     /// prefix pages inside this coordinator.
     pub fn admit_prevalidated(&mut self, request: ServingRequest) -> Result<(), ServingError> {
         self.require_event_space(1)?;
+        let next_generation = self.next_sequence_generation()?;
         self.scheduler
             .admit_with_prefix(request.spec, request.cached_prompt_tokens)?;
-        self.bump_sequence_generation()?;
+        self.sequence_table_generation = next_generation;
         self.events.push_back(RequestEvent::Admitted {
             request_id: request.spec.id,
             cached_prompt_tokens: request.cached_prompt_tokens,
@@ -184,11 +192,23 @@ impl ServingCoordinator {
         {
             return Err(ServingError::Backpressure);
         }
+        let prompt_bytes = prompt_bytes(tokens.len())?;
+        if self
+            .retained_prompt_bytes
+            .checked_add(prompt_bytes)
+            .is_none_or(|bytes| bytes > self.maximum_retained_prompt_bytes)
+        {
+            return Err(ServingError::Backpressure);
+        }
         let status = self
             .prefix_cache
             .as_mut()
             .ok_or(ServingError::CacheUnavailable)?
             .begin_restore_longest(spec.id, tokens)?;
+        self.retained_prompt_bytes = self
+            .retained_prompt_bytes
+            .checked_add(prompt_bytes)
+            .ok_or(ServingError::Overflow)?;
         match status {
             PrefixRestoreStatus::Pending => {
                 self.pending_admissions.insert(
@@ -218,7 +238,9 @@ impl ServingCoordinator {
         {
             Ok(status) => status,
             Err(error) => {
-                self.pending_admissions.remove(&request_id);
+                if let Some(pending) = self.pending_admissions.remove(&request_id) {
+                    self.release_prompt_reservation(pending.tokens.len())?;
+                }
                 return Err(error.into());
             }
         };
@@ -250,10 +272,15 @@ impl ServingCoordinator {
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
                 .release(&page_keys)?;
+            self.release_prompt_reservation(tokens.len())?;
             return Err(error);
         }
         self.prefix_leases.insert(spec.id, page_keys);
-        self.request_tokens.insert(spec.id, tokens);
+        if restored.matched_tokens == spec.prompt_tokens {
+            self.release_prompt_reservation(tokens.len())?;
+        } else {
+            self.request_tokens.insert(spec.id, tokens);
+        }
         Ok(AdmissionStatus::Admitted {
             cached_prompt_tokens: restored.matched_tokens,
         })
@@ -266,14 +293,20 @@ impl ServingCoordinator {
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
                 .cancel_restore(request_id)?;
-            self.pending_admissions.remove(&request_id);
+            let pending = self
+                .pending_admissions
+                .remove(&request_id)
+                .ok_or(ServingError::UnknownAdmission)?;
+            self.release_prompt_reservation(pending.tokens.len())?;
             self.events
                 .push_back(RequestEvent::Cancelled { request_id });
             self.terminal_events.insert(request_id);
             return Ok(());
         }
+        let next_generation = self.next_sequence_generation()?;
         self.scheduler.cancel(request_id)?;
-        self.bump_sequence_generation()
+        self.sequence_table_generation = next_generation;
+        Ok(())
     }
 
     /// Executes at most one collective-safe scheduler iteration. Events must
@@ -385,6 +418,11 @@ impl ServingCoordinator {
                     }
                 }
             }
+            if matches!(batch.kind, BatchKind::Prefill)
+                && progress.prompt_done == progress.prompt_tokens
+            {
+                self.release_request_tokens(row.request_id)?;
+            }
             if progress.state == RequestState::Finished {
                 let stopped = output_rows
                     .get(row_index)
@@ -428,6 +466,11 @@ impl ServingCoordinator {
     #[must_use]
     pub fn request_progress(&self, request_id: u64) -> Option<RequestProgress> {
         self.scheduler.request_progress(request_id)
+    }
+
+    #[must_use]
+    pub const fn retained_prompt_bytes(&self) -> u64 {
+        self.retained_prompt_bytes
     }
 
     fn emit_terminal_transitions(&mut self) -> Result<(), ServingError> {
@@ -477,16 +520,14 @@ impl ServingCoordinator {
         Ok(())
     }
 
-    fn bump_sequence_generation(&mut self) -> Result<(), ServingError> {
-        self.sequence_table_generation = self
-            .sequence_table_generation
+    fn next_sequence_generation(&self) -> Result<u64, ServingError> {
+        self.sequence_table_generation
             .checked_add(1)
-            .ok_or(ServingError::Overflow)?;
-        Ok(())
+            .ok_or(ServingError::Overflow)
     }
 
     fn release_request_prefix(&mut self, request_id: u64) -> Result<(), ServingError> {
-        self.request_tokens.remove(&request_id);
+        self.release_request_tokens(request_id)?;
         let Some(page_keys) = self.prefix_leases.remove(&request_id) else {
             return Ok(());
         };
@@ -496,6 +537,28 @@ impl ServingCoordinator {
             .release(&page_keys)?;
         Ok(())
     }
+
+    fn release_request_tokens(&mut self, request_id: u64) -> Result<(), ServingError> {
+        if let Some(tokens) = self.request_tokens.remove(&request_id) {
+            self.release_prompt_reservation(tokens.len())?;
+        }
+        Ok(())
+    }
+
+    fn release_prompt_reservation(&mut self, token_count: usize) -> Result<(), ServingError> {
+        self.retained_prompt_bytes = self
+            .retained_prompt_bytes
+            .checked_sub(prompt_bytes(token_count)?)
+            .ok_or(ServingError::Overflow)?;
+        Ok(())
+    }
+}
+
+fn prompt_bytes(token_count: usize) -> Result<u64, ServingError> {
+    u64::try_from(token_count)
+        .ok()
+        .and_then(|count| count.checked_mul(u64::from(u32::BITS / 8)))
+        .ok_or(ServingError::Overflow)
 }
 
 fn output_has_valid_termination(output: &glm_engine::CommittedTokens) -> bool {
@@ -647,6 +710,7 @@ mod tests {
             ServingConfig {
                 epoch: 1,
                 event_capacity: 1024,
+                maximum_retained_prompt_bytes: 64 * 1024 * 1024,
             },
             SchedulerConfig {
                 maximum_batch_sequences: 4,
@@ -983,6 +1047,23 @@ mod tests {
         prefix.register_prefix(&tokens, vec![record]).unwrap();
         let mut serving = coordinator(None);
         serving.attach_prefix_cache(prefix).unwrap();
+        serving.maximum_retained_prompt_bytes = 255;
+        assert!(matches!(
+            serving.begin_admit_tokens(
+                RequestSpec {
+                    id: 76,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                &tokens,
+            ),
+            Err(ServingError::Backpressure)
+        ));
+        assert_eq!(serving.retained_prompt_bytes(), 0);
+        serving.maximum_retained_prompt_bytes = 64 * 1024 * 1024;
         assert_eq!(
             serving
                 .begin_admit_tokens(
@@ -999,6 +1080,7 @@ mod tests {
                 .unwrap(),
             AdmissionStatus::Pending
         );
+        assert_eq!(serving.retained_prompt_bytes(), 256);
         assert!(serving.drain_events().is_empty());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1018,6 +1100,7 @@ mod tests {
                 }
             }
         }
+        assert_eq!(serving.retained_prompt_bytes(), 0);
         assert_eq!(
             serving.drain_events(),
             vec![RequestEvent::Admitted {

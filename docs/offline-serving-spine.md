@@ -53,7 +53,10 @@ roll every page back to its prior unpinned/NVMe state. `admit_tokens` retains
 a blocking wrapper for deterministic command-line proofs, while production
 integration uses `begin_admit_tokens` and `poll_admission`. The current HBM
 promotion remains a byte-owning CPU residency proof, not a qualified CUDA
-transfer.
+transfer. Tokenized prompts have a separate checked host-byte budget that
+includes restore-pending and prefill-active requests. Fully restored prompts
+release that reservation at admission; cold/partial prompts release it after
+their final prefill chunk.
 
 ## Durable page store
 

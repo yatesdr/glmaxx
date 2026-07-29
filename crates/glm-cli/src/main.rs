@@ -1166,6 +1166,7 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
         ServingConfig {
             epoch: 1,
             event_capacity: 1024,
+            maximum_retained_prompt_bytes: 64 * 1024 * 1024,
         },
         SchedulerConfig {
             maximum_batch_sequences: 4,
