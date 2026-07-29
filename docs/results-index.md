@@ -3,16 +3,16 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`dc16273b019cf3a3dd8eb810cf9caeb26c99bced`
+`c84da2a4686c37227de5a0dd4694409fdf42f25b`
 
-The complete local gate most recently ran against the asynchronous
-restore-identity implementation bytes committed as
-`4b60040566d530ddd12d8a72e10adb9d0fcdb22f`; its provenance record was then
-committed at `dc16273b019cf3a3dd8eb810cf9caeb26c99bced`. The target CUDA/kernel
-and strict production-manifest baseline remains `4bf7bb5`; the later CPU
+The complete local gate most recently ran against the atomic residency
+admission candidate `94f8d572668ec84d1f77ec2b6949a6bcca3b1e15`; its provenance
+record was then committed at
+`c84da2a4686c37227de5a0dd4694409fdf42f25b`. The target CUDA/kernel and
+strict production-manifest baseline remains `4bf7bb5`; the later CPU
 candidates add review integrity, cache-lifecycle evidence, bit-exact
-indexer-scale handling, atomic publication, finite KV reconstruction, and
-exact restore-result identity.
+indexer-scale handling, atomic publication, finite KV reconstruction, exact
+restore-result identity, and all-or-nothing HBM admission.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -20,12 +20,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at restore-identity candidate `4b60040`
+The latest local run at atomic residency candidate `94f8d57`
 passed:
 
-- `scripts/local-checks.sh`: 232 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 234 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 33 then-present candidate-based review-handoff hash proofs;
+  and all 34 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -47,7 +47,7 @@ Pinned inputs:
 | Artifact | SHA-256 |
 |---|---|
 | `scripts/local-checks.sh` | `839ec27e61aff8249ffa5b586621e6a1fa316221dd50eddf3ee467d096a1d18f` |
-| `fixtures/cache-lifecycle-proof-v1.json` | `d8fb9505f7c2af912554d59f9dd3b84e32d5f2492fa8a3539a9ea908ae7d1dab` |
+| `fixtures/cache-lifecycle-proof-v1.json` | `8d75a281e127f669f52065c7ca2fa0945a4d090e3624f17f857410122dde0dfc` |
 | `fixtures/cpu-serving-proof-v1.json` | `fb76dd1cdc83501ff35ef192dc2be012b5e5cc52ced9a7f8ff4b0b1313698db1` |
 | `fixtures/engine-contract-proof-v1.json` | `a28686829ae46d62ab449eacae3a1b64bf965c43c22699bb4c9130ecedc9c1a2` |
 | `fixtures/nvfp4-actual-shape-v1.json` | `56bca55ab3489fe6f50cd864f73a21f3b83367d79faa8bc70cb26f325f9b1099` |
@@ -100,6 +100,13 @@ The asynchronous restore-identity correction is pinned in
 ID, logical ordinal, and full durable-record equality before adoption. Its
 dedicated handoff passed local provenance validation; independent acceptance
 is absent.
+
+The HBM residency admission correction is pinned in
+`docs/residency-admission-atomicity-proof-v1.md`. It precomputes the complete
+deterministic multi-victim plan and final counters before any target or
+victim mutation, so pinned-capacity and arithmetic failures cannot leave
+partial demotions. Its dedicated handoff passed local provenance validation;
+independent acceptance is absent.
 
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
@@ -206,6 +213,7 @@ verdicts:
 | finite target/draft KV and indexer reconstruction | `757d5cf` | `docs/fable-kv-finite-reconstruction-v1-handoff.md` |
 | current-tree-bound review acceptance and qualification re-pin | `60311cf` | `docs/fable-current-tree-review-acceptance-v3-handoff.md` |
 | exact asynchronous restore request/result identity | `dc16273` | `docs/fable-restore-identity-v1-handoff.md` |
+| all-or-nothing HBM residency admission | `c84da2a` | `docs/fable-residency-admission-atomicity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
