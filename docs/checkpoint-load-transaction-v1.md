@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: design candidate; implementation token withheld pending adversarial
-review
+Status: corrected r2 design candidate; implementation token withheld pending
+adversarial review
 
 GPU claim: none
 
@@ -82,6 +82,7 @@ file_uuid
 manifest_sha256
 descriptor_sha256
 payload_sha256
+rank_manifest_tensor_contract_sha256
 tensor_count
 file payload bytes
 device weight-arena bytes
@@ -112,7 +113,7 @@ preimage is:
 
 ```text
 416-byte RankSetLoadPlanHeader.v1
-4 × 216-byte RankLoadEntry.v1, rank order
+4 × 248-byte RankLoadEntry.v1, rank order
 rank 0 TensorArenaEntry.v1 records, tensor-ID order
 rank 1 TensorArenaEntry.v1 records, tensor-ID order
 rank 2 TensorArenaEntry.v1 records, tensor-ID order
@@ -131,7 +132,7 @@ The 416-byte header is:
 | 14 | 1 | rank count `4` |
 | 15 | 1 | reserved |
 | 16 | 4 | common tensor count |
-| 20 | 4 | rank-entry bytes `216` |
+| 20 | 4 | rank-entry bytes `248` |
 | 24 | 4 | tensor-entry bytes `64` |
 | 28 | 4 | reader chunk bytes `8,388,608` |
 | 32 | 16 | conversion UUID |
@@ -149,7 +150,7 @@ The 416-byte header is:
 | 372 | 2 | pinned staging slots per rank; at least `2` |
 | 374 | 42 | reserved |
 
-Each 216-byte rank entry is:
+Each 248-byte rank entry is:
 
 | Offset | Bytes | Field |
 |---:|---:|---|
@@ -166,6 +167,7 @@ Each 216-byte rank entry is:
 | 168 | 8 | device weight-arena bytes |
 | 176 | 8 | device metadata-arena bytes |
 | 184 | 32 | arena-layout SHA-256 |
+| 216 | 32 | rank-manifest tensor-contract SHA-256 |
 
 Each 64-byte tensor entry is:
 
@@ -187,13 +189,87 @@ Each 64-byte tensor entry is:
 The file's names, logical/padded shapes, layer/expert identities, TP axes, and
 codec semantics remain bound through the validated descriptor and tensor
 catalog hashes rather than being duplicated in this physical layout table.
-The tensor-catalog digest is the manifest's common
-`tensor_contract_sha256`, recomputed from the complete canonical manifest
-tensor inventory; the operation-manifest digest must match the compiled
+Each rank's manifest `tensor_contract_sha256` is recomputed from its complete
+canonical tensor inventory and stored in that rank's entry. It is
+intentionally not process-common: EXL3 codec metadata contains the rank, and
+rank-local source component names and slice bounds differ.
+
+The header's common tensor-catalog digest is instead derived independently
+from rank-invariant semantic records defined below. All four ranks must derive
+the same digest. The operation-manifest digest must match the compiled
 GLM-5.2 manifest. A serving profile also requires the exact reviewed
 profile-budget digest with `measurement_status=complete` and
 `conversion_allowed=true`. The laboratory subset uses a separately identified
 non-serving budget and cannot be promoted by changing only the profile byte.
+
+### Rank-invariant tensor catalog
+
+The common catalog does not erase a rank-local mismatch by simply ignoring
+whole manifest objects. For each tensor, the loader first validates the full
+rank-specific manifest record against that rank's descriptor, codec metadata,
+source binding, and physical layout. It then projects exactly the fields below
+into a 128-byte `TensorSemanticEntry.v1`.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 4 | tensor ID |
+| 4 | 2 | role ID |
+| 6 | 2 | codec ID |
+| 8 | 2 | signed layer ID |
+| 10 | 2 | signed expert ID |
+| 12 | 1 | signed TP shard axis |
+| 13 | 1 | ndim |
+| 14 | 1 | manifest tensor flags |
+| 15 | 1 | source-binding kind |
+| 16 | 2 | logical dtype |
+| 18 | 2 | stored dtype |
+| 20 | 4 | quantization-group elements |
+| 24 | 16 | rank logical shape as four u32 values |
+| 40 | 32 | global logical shape as four u64 values |
+| 72 | 32 | SHA-256 of exact UTF-8 tensor name |
+| 104 | 2 | reconstruction ID |
+| 106 | 2 | collective-after ID |
+| 108 | 2 | source-dtype ID |
+| 110 | 1 | signed source axis |
+| 111 | 17 | reserved |
+
+Unused shape entries are one. The enumerations are fixed by the generated
+GLM-5.2 operation manifest and the pinned checkpoint source contract; unknown
+values fail rather than receiving a dynamic ID. The catalog preimage is
+`little_endian_u32(tensor_count)` followed by entries in tensor-ID order:
+
+```text
+tensor_catalog_sha256 = SHA256(
+    "glmaxx.rank-invariant-tensor-catalog.v1\0"
+    || tensor_count
+    || semantic_entry_0
+    || ...
+    || semantic_entry_N
+)
+```
+
+Enumeration values are:
+
+- source binding: `1=replicated`, `2=contiguous_tp_slice`,
+  `3=explicit_rank_components`;
+- reconstruction: `1=byte_exact_source_precision`,
+  `2=exl3_tr3_trellis_v0`;
+- collective-after: `0=none`, `1=tp_embedding_reduce`,
+  `2=distributed_sampling`, `3=tp_all_reduce`; and
+- source dtype: `1..22` in this fixed order:
+  `BOOL,F4,F6_E2M3,F6_E3M2,U8,I8,U16,I16,U32,I32,U64,I64,F16,BF16,F32,F64,`
+  `F8_E4M3,F8_E5M2,F8_E8M0,F8_E4M3FNUZ,F8_E5M2FNUZ,C64`;
+  `0x8000=EXL3_TR3_COMPONENTS`.
+
+No current pinned tensor uses an omitted safetensors dtype. Adding one requires
+a catalog version change rather than reusing an ID.
+
+Rank-local codec-metadata hashes, source component paths, source slice
+start/end, padded shapes, plane byte counts, file offsets, device offsets,
+payload hashes, and alignment gaps are excluded only from this common
+projection. They remain mandatory in the rank manifest, descriptor,
+rank-entry hashes, and physical arena tables. Projection never substitutes
+for validation of the full rank-specific record.
 
 ## Quarantined arena ownership
 
