@@ -34,63 +34,52 @@ pub struct RestoreResult {
 
 pub struct RestoreHandle {
     receiver: Receiver<Result<RestoreResult, RestoreError>>,
-    outstanding: Arc<AtomicUsize>,
-    released: bool,
 }
 
 impl RestoreHandle {
-    pub fn receive(mut self) -> Result<RestoreResult, RestoreError> {
-        let result = self
-            .receiver
+    pub fn receive(self) -> Result<RestoreResult, RestoreError> {
+        self.receiver
             .recv()
-            .map_err(|_| RestoreError::WorkerClosed)?;
-        self.release();
-        result
+            .map_err(|_| RestoreError::WorkerClosed)?
     }
 
-    pub fn receive_timeout(mut self, timeout: Duration) -> Result<RestoreResult, RestoreError> {
-        let result = self
-            .receiver
+    pub fn receive_timeout(self, timeout: Duration) -> Result<RestoreResult, RestoreError> {
+        self.receiver
             .recv_timeout(timeout)
             .map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => RestoreError::Timeout,
                 mpsc::RecvTimeoutError::Disconnected => RestoreError::WorkerClosed,
-            })?;
-        self.release();
-        result
+            })?
     }
 
     pub fn try_receive(&mut self) -> Result<Option<RestoreResult>, RestoreError> {
         match self.receiver.try_recv() {
-            Ok(result) => {
-                self.release();
-                result.map(Some)
-            }
+            Ok(result) => result.map(Some),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.release();
-                Err(RestoreError::WorkerClosed)
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(RestoreError::WorkerClosed),
         }
-    }
-
-    fn release(&mut self) {
-        if !self.released {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
-            self.released = true;
-        }
-    }
-}
-
-impl Drop for RestoreHandle {
-    fn drop(&mut self) {
-        self.release();
     }
 }
 
 struct RestoreCommand {
     request: RestoreRequest,
     response: SyncSender<Result<RestoreResult, RestoreError>>,
+    permit: OutstandingPermit,
+}
+
+struct OutstandingPermit {
+    outstanding: Arc<AtomicUsize>,
+}
+
+impl Drop for OutstandingPermit {
+    fn drop(&mut self) {
+        let released =
+            self.outstanding
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_sub(1)
+                });
+        debug_assert!(released.is_ok(), "restore outstanding counter underflow");
+    }
 }
 
 pub struct RestoreService {
@@ -112,6 +101,10 @@ impl RestoreService {
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
                     let result = restore_one(&mut store, command.request);
+                    // Quota belongs to the queued/running operation, not its
+                    // response handle. Release only after the read and hash
+                    // finish, including when the receiver was abandoned.
+                    drop(command.permit);
                     let _ = command.response.send(result);
                 }
             })
@@ -135,23 +128,23 @@ impl RestoreService {
         }
         self.reserve_slot()?;
         let (response, receiver) = mpsc::sync_channel(1);
-        let command = RestoreCommand { request, response };
+        let command = RestoreCommand {
+            request,
+            response,
+            permit: OutstandingPermit {
+                outstanding: Arc::clone(&self.outstanding),
+            },
+        };
         let Some(sender) = &self.sender else {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
             return Err(RestoreError::WorkerClosed);
         };
         if let Err(error) = sender.try_send(command) {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
             return Err(match error {
                 TrySendError::Full(_) => RestoreError::Saturated,
                 TrySendError::Disconnected(_) => RestoreError::WorkerClosed,
             });
         }
-        Ok(RestoreHandle {
-            receiver,
-            outstanding: Arc::clone(&self.outstanding),
-            released: false,
-        })
+        Ok(RestoreHandle { receiver })
     }
 
     #[must_use]
@@ -803,6 +796,34 @@ mod tests {
         ));
         drop(service);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restore_quota_is_owned_by_operation_after_handle_abandonment() {
+        let outstanding = Arc::new(AtomicUsize::new(1));
+        let (response, receiver) = mpsc::sync_channel(1);
+        let command = RestoreCommand {
+            request: RestoreRequest {
+                request_id: 1,
+                page_key: [0x21; 32],
+                expected_namespace: [0x19; 32],
+                minimum_generation: 1,
+                page_ordinal: 0,
+                worker_rank: 0,
+            },
+            response,
+            permit: OutstandingPermit {
+                outstanding: Arc::clone(&outstanding),
+            },
+        };
+        let handle = RestoreHandle { receiver };
+        assert!(matches!(
+            handle.receive_timeout(Duration::ZERO),
+            Err(RestoreError::Timeout)
+        ));
+        assert_eq!(outstanding.load(Ordering::Acquire), 1);
+        drop(command);
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
     }
 
     #[test]

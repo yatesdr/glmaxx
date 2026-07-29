@@ -1081,6 +1081,20 @@ mod tests {
             Err(PrefixRestoreError::Restore(RestoreError::Saturated))
         ));
         assert_eq!(coordinator.pending_restores(), 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while coordinator
+            .services
+            .iter()
+            .map(RestoreService::outstanding)
+            .sum::<usize>()
+            != 0
+        {
+            assert!(
+                Instant::now() < deadline,
+                "abandoned restore operations did not drain"
+            );
+            thread::yield_now();
+        }
         assert_eq!(
             coordinator
                 .services
