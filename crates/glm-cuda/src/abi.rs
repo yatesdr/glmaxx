@@ -6,6 +6,7 @@ pub const LOCAL_GATE_UP: u32 = 1024;
 pub const LOCAL_INTERMEDIATE: u32 = 512;
 pub const EXPERTS: u32 = 256;
 pub const TOP_K: u32 = 8;
+pub const SFA_BYTES_PER_PADDED_ROW: u64 = HIDDEN as u64 / 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -19,6 +20,46 @@ pub struct LaunchGeometry {
     pub rows: u32,
     pub assignments: u32,
     pub path: KernelPath,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupedSfaPlan {
+    pub expert_byte_offsets: [u64; EXPERTS as usize + 1],
+    pub total_bytes: u64,
+    pub active_experts: u16,
+}
+
+pub fn grouped_sfa_plan(
+    expert_assignment_offsets: &[u32; EXPERTS as usize + 1],
+) -> Result<GroupedSfaPlan, KernelError> {
+    if expert_assignment_offsets[0] != 0 || expert_assignment_offsets[EXPERTS as usize] > 65_535 {
+        return Err(KernelError::Shape);
+    }
+    let mut expert_byte_offsets = [0_u64; EXPERTS as usize + 1];
+    let mut active_experts = 0_u16;
+    for expert in 0..EXPERTS as usize {
+        let begin = expert_assignment_offsets[expert];
+        let end = expert_assignment_offsets[expert + 1];
+        let assignments = end.checked_sub(begin).ok_or(KernelError::Shape)?;
+        let padded = u64::from(assignments)
+            .checked_add(127)
+            .map(|value| value / 128 * 128)
+            .ok_or(KernelError::Overflow)?;
+        let bytes = padded
+            .checked_mul(SFA_BYTES_PER_PADDED_ROW)
+            .ok_or(KernelError::Overflow)?;
+        expert_byte_offsets[expert + 1] = expert_byte_offsets[expert]
+            .checked_add(bytes)
+            .ok_or(KernelError::Overflow)?;
+        if assignments != 0 {
+            active_experts = active_experts.checked_add(1).ok_or(KernelError::Overflow)?;
+        }
+    }
+    Ok(GroupedSfaPlan {
+        total_bytes: expert_byte_offsets[EXPERTS as usize],
+        expert_byte_offsets,
+        active_experts,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -261,5 +302,37 @@ mod tests {
             descriptor.workspace_bytes = workspace_bytes(assignments).unwrap();
             validate_descriptor(&descriptor).unwrap();
         }
+    }
+
+    #[test]
+    fn grouped_sfa_uses_expert_local_padded_slabs() {
+        let mut offsets = [0_u32; EXPERTS as usize + 1];
+        for offset in &mut offsets[1..=8] {
+            *offset = 1;
+        }
+        for offset in &mut offsets[9..] {
+            *offset = 8;
+        }
+        for expert in 1..8 {
+            offsets[expert + 1] = expert as u32 + 1;
+        }
+        let plan = grouped_sfa_plan(&offsets).unwrap();
+        assert_eq!(plan.active_experts, 8);
+        assert_eq!(plan.total_bytes, 8 * 128 * SFA_BYTES_PER_PADDED_ROW);
+        assert_eq!(plan.expert_byte_offsets[1], 128 * SFA_BYTES_PER_PADDED_ROW);
+        assert_eq!(plan.expert_byte_offsets[8], plan.total_bytes);
+        assert_eq!(plan.expert_byte_offsets[256], plan.total_bytes);
+    }
+
+    #[test]
+    fn grouped_sfa_rejects_non_monotonic_or_oversized_offsets() {
+        let mut non_monotonic = [0_u32; EXPERTS as usize + 1];
+        non_monotonic[1] = 2;
+        non_monotonic[2] = 1;
+        assert_eq!(grouped_sfa_plan(&non_monotonic), Err(KernelError::Shape));
+
+        let mut oversized = [0_u32; EXPERTS as usize + 1];
+        oversized[EXPERTS as usize] = 65_536;
+        assert_eq!(grouped_sfa_plan(&oversized), Err(KernelError::Shape));
     }
 }

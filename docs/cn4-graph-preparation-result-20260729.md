@@ -74,3 +74,31 @@ committed independent review artifact containing the exact
 `manifest-abi-v0.2.2-accepted` token. When that gate passes, the prepared
 runner will execute the M1 smoke, 135-case eager matrix, and the two-case,
 20-replay CUDA-graph matrix in that order.
+
+## Follow-up activation-scale proof
+
+Commit `bf24aaf8498a2139d0d27760bf78e1264739174c` added a separate host-only
+probe for the dynamic activation `SFA` layout. A fresh preparation run is
+preserved at:
+
+```text
+/home/derek/glmaxx/evidence/prepare-20260729T062811Z
+```
+
+The pinned CUTLASS
+`Sm1xxBlockScaledConfig<16>::tile_atom_to_shape_SFA` mapping agrees with the
+runtime activation-scale offset for 17 assignment shapes spanning 1 through
+65,535 assignments: 42,564,864 offset comparisons passed. It also agrees that
+storage is `round_up(assignments, 128) * 6144 / 16` bytes. This proves that
+the direct control's activation workspace can feed the later MMA operand
+without a scale transform.
+
+| Follow-up record or artifact | SHA-256 |
+|---|---|
+| `cutlass-activation-layout-probe.txt` | `ab2d8233671a2fd5301db2c45c6edd0255d5a339c55d38aec547b1d5e080d794` |
+| `cargo-test.txt` | `787e6455b97d804b3382c519b3aaf652a01b9dffa1d4e562e37d36016af6212b` |
+| `cmake-build.txt` | `2aad2f1f42f67ad7f78e18d41616a0b27e37a58087bf6269e2c5e15c91e5c5d1` |
+| `build-artifact-sha256.txt` | `6a894b511dd7a3879e8449069c1f06884155eed492e4bd3918dd17d803f610f7` |
+| `verdict.txt` | `3d0e151f9f146ce7d391c425b23ca95d945d4ca0619cb2a59b95fcd42be9dc3b` |
+| `libglmaxx_sm120.so` | `2c6306953bbf52e050f33722018dbaefe7f844096ae2cac1c9dd73f3c900d87a` |
+| `glmaxx_cutlass_activation_layout_probe` | `eb9d5e7ecc68e00d32fc9a9b309405e8e1f6812fa9adff18deea67173bff5dd7` |
