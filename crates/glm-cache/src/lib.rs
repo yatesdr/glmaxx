@@ -20,8 +20,8 @@ pub use prefix::{
     NamespaceInputs, PrefixError, PrefixIndex, PrefixMatch, PrefixNamespace, PrefixPageKey,
 };
 pub use residency::{
-    Residency, ResidencyConfig, ResidencyError, ResidencyManager, RestoreError, RestoreHandle,
-    RestoreRequest, RestoreResult, RestoreService,
+    NvmeRegistrationPlan, Residency, ResidencyConfig, ResidencyError, ResidencyManager,
+    RestoreError, RestoreHandle, RestoreRequest, RestoreResult, RestoreService,
 };
 pub use sequence::{
     MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, SequencePageError,

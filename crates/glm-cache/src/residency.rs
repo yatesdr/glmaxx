@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     path::Path,
     sync::{
@@ -240,6 +240,12 @@ struct HbmAdmissionPlan {
     dram_bytes: u64,
 }
 
+pub struct NvmeRegistrationPlan {
+    records: Vec<TierRecord>,
+    hbm_bytes: u64,
+    dram_bytes: u64,
+}
+
 impl ResidencyManager {
     pub fn new(config: ResidencyConfig) -> Result<Self, ResidencyError> {
         if config.hbm_bytes == 0 {
@@ -255,40 +261,64 @@ impl ResidencyManager {
     }
 
     pub fn register_nvme(&mut self, record: TierRecord) -> Result<(), ResidencyError> {
-        self.validate_nvme_registration(&record)?;
+        let plan = self.plan_nvme_registrations(vec![record])?;
+        self.commit_nvme_registrations(plan);
+        Ok(())
+    }
+
+    pub fn plan_nvme_registrations(
+        &self,
+        records: Vec<TierRecord>,
+    ) -> Result<NvmeRegistrationPlan, ResidencyError> {
         let mut next_hbm_bytes = self.hbm_bytes;
         let mut next_dram_bytes = self.dram_bytes;
-        if let Some(existing) = self.entries.get(&record.page_key) {
-            let bytes = entry_bytes(&existing.record)?;
-            match existing.residency {
-                Residency::Hbm => {
-                    next_hbm_bytes = next_hbm_bytes
-                        .checked_sub(bytes)
-                        .ok_or(ResidencyError::Overflow)?;
+        let mut page_keys = BTreeSet::new();
+        for record in &records {
+            if !page_keys.insert(record.page_key) {
+                return Err(ResidencyError::Record);
+            }
+            self.validate_nvme_registration(record)?;
+            if let Some(existing) = self.entries.get(&record.page_key) {
+                let bytes = entry_bytes(&existing.record)?;
+                match existing.residency {
+                    Residency::Hbm => {
+                        next_hbm_bytes = next_hbm_bytes
+                            .checked_sub(bytes)
+                            .ok_or(ResidencyError::Overflow)?;
+                    }
+                    Residency::Dram => {
+                        next_dram_bytes = next_dram_bytes
+                            .checked_sub(bytes)
+                            .ok_or(ResidencyError::Overflow)?;
+                    }
+                    Residency::Nvme => {}
+                    Residency::Restoring => return Err(ResidencyError::State),
                 }
-                Residency::Dram => {
-                    next_dram_bytes = next_dram_bytes
-                        .checked_sub(bytes)
-                        .ok_or(ResidencyError::Overflow)?;
-                }
-                Residency::Nvme => {}
-                Residency::Restoring => return Err(ResidencyError::State),
             }
         }
-        self.entries.insert(
-            record.page_key,
-            ResidentEntry {
-                record,
-                residency: Residency::Nvme,
-                restored: None,
-                pending_restore: None,
-                pin_count: 0,
-                last_touch: 0,
-            },
-        );
-        self.hbm_bytes = next_hbm_bytes;
-        self.dram_bytes = next_dram_bytes;
-        Ok(())
+        Ok(NvmeRegistrationPlan {
+            records,
+            hbm_bytes: next_hbm_bytes,
+            dram_bytes: next_dram_bytes,
+        })
+    }
+
+    pub fn commit_nvme_registrations(&mut self, plan: NvmeRegistrationPlan) {
+        for record in plan.records {
+            self.entries.insert(
+                record.page_key,
+                ResidentEntry {
+                    record,
+                    residency: Residency::Nvme,
+                    restored: None,
+                    pending_restore: None,
+                    pin_count: 0,
+                    last_touch: 0,
+                },
+            );
+        }
+        self.hbm_bytes = plan.hbm_bytes;
+        self.dram_bytes = plan.dram_bytes;
     }
 
     pub fn validate_nvme_registration(&self, record: &TierRecord) -> Result<(), ResidencyError> {
@@ -495,6 +525,11 @@ impl ResidencyManager {
     #[must_use]
     pub fn location(&self, page_key: [u8; 32]) -> Option<Residency> {
         self.entries.get(&page_key).map(|entry| entry.residency)
+    }
+
+    #[must_use]
+    pub fn record(&self, page_key: [u8; 32]) -> Option<&TierRecord> {
+        self.entries.get(&page_key).map(|entry| &entry.record)
     }
 
     #[must_use]

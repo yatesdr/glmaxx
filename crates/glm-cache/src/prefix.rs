@@ -99,6 +99,11 @@ impl PrefixIndex {
         }
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
     /// Inserts one or more fully sealed 64-token pages. Partial tails are
     /// intentionally not shareable and must remain request-owned.
     pub fn insert(

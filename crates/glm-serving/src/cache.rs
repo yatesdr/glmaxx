@@ -77,6 +77,9 @@ impl PrefixRestoreCoordinator {
         per_rank_capacity: ResidencyConfig,
         maximum_outstanding_per_rank: usize,
     ) -> Result<Self, PrefixRestoreError> {
+        if !index.is_empty() {
+            return Err(PrefixRestoreError::Record);
+        }
         let mut ranks = Vec::with_capacity(4);
         let mut services = Vec::with_capacity(4);
         for _ in 0..4 {
@@ -100,22 +103,33 @@ impl PrefixRestoreCoordinator {
         records: Vec<TierRecord>,
     ) -> Result<Vec<PrefixPageKey>, PrefixRestoreError> {
         let mut candidate_index = self.index.clone();
-        let keys = candidate_index.insert(tokens, records.clone())?;
-        if keys.len() != records.len()
-            || keys
-                .iter()
-                .zip(&records)
-                .any(|(key, record)| key.0 != record.page_key)
-        {
+        let record_count = records.len();
+        let keys = candidate_index.insert(tokens, records)?;
+        if keys.len() != record_count {
             return Err(PrefixRestoreError::Record);
         }
-        for (ordinal, record) in records.iter().enumerate() {
+        let mut updates: [Vec<TierRecord>; 4] = std::array::from_fn(|_| Vec::new());
+        for (ordinal, &key) in keys.iter().enumerate() {
             let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
-            self.ranks[usize::from(owner_rank(ordinal))].validate_nvme_registration(record)?;
+            let rank = usize::from(owner_rank(ordinal));
+            let prior = self.index.record(key);
+            if self.ranks[rank].record(key.0) != prior {
+                return Err(PrefixRestoreError::Record);
+            }
+            let next = candidate_index
+                .record(key)
+                .ok_or(PrefixRestoreError::Record)?;
+            if prior != Some(next) {
+                updates[rank].push(next.clone());
+            }
         }
-        for (ordinal, record) in records.into_iter().enumerate() {
-            let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
-            self.ranks[usize::from(owner_rank(ordinal))].register_nvme(record)?;
+        let plans = updates
+            .into_iter()
+            .zip(&self.ranks)
+            .map(|(records, rank)| rank.plan_nvme_registrations(records))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (rank, plan) in self.ranks.iter_mut().zip(plans) {
+            rank.commit_nvme_registrations(plan);
         }
         self.index = candidate_index;
         Ok(keys)
@@ -588,6 +602,119 @@ mod tests {
             .validate(),
             Err(PrefixRestoreError::Record)
         ));
+    }
+
+    #[test]
+    fn prefix_registration_uses_the_monotonic_index_record_atomically() {
+        let root = temporary_store();
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [21; 32],
+            tokenizer_sha256: [22; 32],
+            chat_template_sha256: [23; 32],
+            weight_policy_hash: [24; 32],
+            target_kv_abi_sha256: [25; 32],
+            draft_kv_abi_sha256: [26; 32],
+            rope_parameters_sha256: [27; 32],
+        })
+        .unwrap();
+        let tokens: Vec<u32> = (0..64).collect();
+        let index = PrefixIndex::new(namespace);
+        let key = index.derive_keys(&tokens)[0];
+        let mut store = FileTierStore::open(&root).unwrap();
+        let target = store
+            .publish(DurablePageRequest {
+                namespace: namespace.0,
+                page_key: key.0,
+                generation: 1,
+                mtp: false,
+                pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                    .into_iter()
+                    .map(|piece| PagePieceBytes {
+                        piece,
+                        bytes: vec![piece as u8; piece.expected_bytes() as usize],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let upgrade = store
+            .publish(DurablePageRequest {
+                namespace: namespace.0,
+                page_key: key.0,
+                generation: 2,
+                mtp: true,
+                pieces: [
+                    TierPiece::TargetKv,
+                    TierPiece::TargetIndexer,
+                    TierPiece::DraftSidecar,
+                ]
+                .into_iter()
+                .map(|piece| PagePieceBytes {
+                    piece,
+                    bytes: vec![piece as u8; piece.expected_bytes() as usize],
+                })
+                .collect(),
+            })
+            .unwrap();
+        let page_bytes = upgrade.pieces.iter().map(|piece| piece.byte_length).sum();
+        drop(store);
+
+        let config = ResidencyConfig {
+            hbm_bytes: page_bytes,
+            dram_bytes: page_bytes,
+        };
+        let mut coordinator = PrefixRestoreCoordinator::new(index, &root, config, 1).unwrap();
+        coordinator
+            .register_prefix(&tokens, vec![target.clone()])
+            .unwrap();
+        coordinator
+            .register_prefix(&tokens, vec![target.clone()])
+            .unwrap();
+        coordinator
+            .register_prefix(&tokens, vec![upgrade.clone()])
+            .unwrap();
+
+        let mut downgrade = target;
+        downgrade.generation = 3;
+        coordinator
+            .register_prefix(&tokens, vec![downgrade])
+            .unwrap();
+        assert_eq!(coordinator.index.references(key), Some(4));
+        assert_eq!(coordinator.index.record(key), Some(&upgrade));
+        assert_eq!(coordinator.ranks[0].record(key.0), Some(&upgrade));
+
+        let mut conflicting_target = upgrade.clone();
+        conflicting_target.generation = 4;
+        conflicting_target.pieces[0].sha256[0] ^= 1;
+        assert!(matches!(
+            coordinator.register_prefix(&tokens, vec![conflicting_target]),
+            Err(PrefixRestoreError::Prefix(PrefixError::Collision))
+        ));
+        assert_eq!(coordinator.index.references(key), Some(4));
+        assert_eq!(coordinator.index.record(key), Some(&upgrade));
+        assert_eq!(coordinator.ranks[0].record(key.0), Some(&upgrade));
+
+        let restored = match coordinator
+            .begin_restore_longest_with_capability(41, &tokens, true)
+            .unwrap()
+        {
+            PrefixRestoreStatus::Ready(restored) => restored,
+            PrefixRestoreStatus::Pending => loop {
+                match coordinator.poll_restore(41).unwrap() {
+                    PrefixRestoreStatus::Ready(restored) => break restored,
+                    PrefixRestoreStatus::Pending => thread::yield_now(),
+                }
+            },
+        };
+        assert_eq!(restored.page_keys, [key]);
+        assert_eq!(restored.page_has_draft, [true]);
+        coordinator.release(&[key]).unwrap();
+
+        assert!(matches!(
+            PrefixRestoreCoordinator::new(coordinator.index.clone(), &root, config, 1),
+            Err(PrefixRestoreError::Record)
+        ));
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
