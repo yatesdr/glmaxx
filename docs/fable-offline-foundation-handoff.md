@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Base commit:
-`7586d0ca9557eecf670f5e9d084e348d6bd6e572`
+`ee3f1f3507ba67b886796126b1cc1e91c5d099e4`
 
 Review scope: the eight CPU/offline workstreams requested after the Phase-A
 engine contract. No cn4 access or GPU execution occurred.
@@ -15,17 +15,18 @@ Hash these files again at review start and finish:
 | File | SHA-256 |
 |---|---|
 | `spec/engine-v0.md` | `efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a` |
-| `spec/format-v0.md` | `1f0af135840b0ed10368f3b5946ad050aa0e6e5195607cb5198a900857dfa0b8` |
+| `spec/format-v0.md` | `9f78f09b1d82f61a0110303b9921d59d614339bcacbec66c7735655a9c5ed01d` |
 | `docs/native-engine-plan.md` | `9662c82bea15c7b336ac3efa41a12a1e627a511a5f8da603ba466d5bcb6ae036` |
 | `docs/exl3-trellis-cpu-contract.md` | `7c5bfa0795aa6b78646b00b029f8d4edc7c15491d69ea19e423f770701b5cdc3` |
 | `docs/offline-serving-foundation.md` | `576932d119332774df2a8a65d85a4f185e804504acca949561689f03b02f28ae` |
-| `crates/glm-format/src/exl3.rs` | `97f361ccb1228ca706fc06d0a078cf033db1edde9c1b7c44e1d22753443caca9` |
+| `crates/glm-format/src/exl3.rs` | `6ba46fa98979711f5ecaaccf9be150045de768648e2a31fb5fbf49d56d95bbe4` |
+| `crates/glm-format/src/container.rs` | `3896cea86554218ec9c19d8090c2cef4956c0ad50bfc4806327c10443980ea7f` |
 | `crates/glm-engine/src/weight.rs` | `d658cefefc17757a28258bafd0e13f5309e8adcbf2b30c4d2bdc97be9899ca19` |
 | `crates/glm-engine/src/startup.rs` | `9634f120a2e01f21aaa5778954053d9a06f1e8d2af6c5abe1f9c6e4cbbd31e87` |
-| `crates/glm-scheduler/src/lib.rs` | `85e233ae7bdc96672a96bcaf26d05d58d0bf652c5bce5b34f90ebc1b914a24f6` |
+| `crates/glm-scheduler/src/lib.rs` | `b6ec68d37d87ba64dead63444972b6334218d6a7fbeceb4e7f685162bf2b43e8` |
 | `crates/glm-reference/src/sampling.rs` | `6d90f43dbf0d2865ef63c001601c9084d6370c168056f883f49ffe7c732d9d13` |
 | `crates/glm-reference/src/routed_fc2.rs` | `4f34f5b89cd542f096269a7442da5289900d1e831e32fcf83462560dc410a40d` |
-| `crates/glm-cache/src/prefix.rs` | `9824d4c9463fb673adbbb9ea9e481a277175f227723ed912de85a8a29f060543` |
+| `crates/glm-cache/src/prefix.rs` | `2334d68914bf01ce1432bd7e4d07500ea9fc374e027deedeeb71972cc514fe68` |
 | `crates/glm-cache/src/tier.rs` | `2730d829c8538e7b10649e0fba6504ee3389adc21c2f557e474a93c6dbee4f97` |
 | prior `fable-adversarial-v2.md` | `f0019b96d5b35bdca6d026691629b56fbeb0c3c4528e1ae4ff9c1aa06817953e` |
 
@@ -51,6 +52,10 @@ Hash these files again at review start and finish:
 8. FC2 and sparse-layer code fixes activation order, route weighting after
    down projection, shared/routed combination, TP4 reduction order, target
    descriptors, and the full layer-78 draft descriptor.
+9. Rank containers now preserve the pinned EXL3 trellis as the primary I16
+   plane and marker/rotations as aux, validate all source arithmetic, reject
+   unknown codecs and false direct-layout flags, and expose only an
+   inspection/CPU-proof API.
 
 ## Reproduction
 
@@ -60,7 +65,7 @@ The complete local gate passes:
 ./scripts/local-checks.sh
 ```
 
-The workspace currently has 98 passing tests. Clippy passes with warnings
+The workspace currently has 125 passing tests. Clippy passes with warnings
 denied. The real EXL3 source proof is external-data dependent:
 
 ```text
@@ -104,6 +109,8 @@ No weights or raw benchmark evidence are in Git.
    pinned model?
 9. Which of these candidates may enter the SM120 qualification path, and
    which require another CPU correction first?
+10. Does the source-container split preserve exact EXL3 component semantics
+    while remaining fail-closed against serving/GPU health claims?
 
 ## Explicit non-claims
 
