@@ -1,6 +1,9 @@
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
 use std::{
+    ffi::OsString,
     fmt,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read},
     os::unix::fs::{FileExt, MetadataExt},
     path::{Path, PathBuf},
@@ -22,7 +25,7 @@ use crate::{
 
 const STREAM_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingTensorIdentity {
     pub tensor_id: u32,
     pub name: String,
@@ -33,7 +36,7 @@ pub struct StreamingTensorIdentity {
     pub flags: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingTensorSpec {
     pub tensor_id: u32,
     pub name: String,
@@ -168,12 +171,65 @@ impl StreamingTensorSpec {
             aux_bytes,
         })
     }
+
+    #[must_use]
+    pub const fn primary_bytes(&self) -> u64 {
+        self.primary_bytes
+    }
+
+    #[must_use]
+    pub const fn aux_bytes(&self) -> u64 {
+        self.aux_bytes
+    }
+
+    #[must_use]
+    pub const fn codec_id(&self) -> u16 {
+        self.codec_id
+    }
+
+    #[must_use]
+    pub const fn logical_dtype(&self) -> u16 {
+        self.logical_dtype
+    }
+
+    #[must_use]
+    pub const fn stored_dtype(&self) -> u16 {
+        self.stored_dtype
+    }
+
+    #[must_use]
+    pub const fn logical_shape(&self) -> [u32; 4] {
+        self.logical_shape
+    }
+
+    #[must_use]
+    pub const fn padded_shape(&self) -> [u32; 4] {
+        self.padded_shape
+    }
+
+    #[must_use]
+    pub const fn quant_group_elements(&self) -> u32 {
+        self.quant_group_elements
+    }
+
+    #[must_use]
+    pub const fn ndim(&self) -> u8 {
+        self.ndim
+    }
+
+    #[must_use]
+    pub fn metadata_sha256(&self) -> [u8; 32] {
+        sha256(&self.metadata)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct StreamingRankConfig {
     pub rank: u32,
     pub manifest: Vec<u8>,
+    /// Optional 64-byte lowercase-hex slot that is sealed to the aggregate
+    /// payload SHA-256 after every tensor is durable.
+    pub manifest_payload_sha256_slot: Option<usize>,
     pub model_config_sha256: [u8; 32],
     pub tokenizer_bundle_sha256: [u8; 32],
     pub chat_template_sha256: [u8; 32],
@@ -232,6 +288,7 @@ impl StreamLayout {
         if config.rank > 3 || config.tensors.is_empty() {
             return Err(StreamRankError::Spec);
         }
+        validate_manifest_payload_slot(config)?;
         let manifest_offset = ALIGNMENT;
         let descriptor_offset = align_up(
             manifest_offset
@@ -370,6 +427,7 @@ pub struct StreamingRankWriter {
     config: StreamingRankConfig,
     layout: StreamLayout,
     completed: Vec<bool>,
+    pending: Vec<(usize, TensorDescriptor)>,
 }
 
 impl StreamingRankWriter {
@@ -417,6 +475,7 @@ impl StreamingRankWriter {
             path,
             file,
             completed: vec![false; config.tensors.len()],
+            pending: Vec::new(),
             config,
             layout,
         };
@@ -437,7 +496,36 @@ impl StreamingRankWriter {
             .count()
     }
 
+    pub fn tensor_complete(&self, index: usize) -> Result<bool, StreamRankError> {
+        self.completed
+            .get(index)
+            .copied()
+            .ok_or(StreamRankError::TensorIndex)
+    }
+
+    #[must_use]
+    pub fn tensor_spec(&self, index: usize) -> Option<&StreamingTensorSpec> {
+        self.config.tensors.get(index)
+    }
+
     pub fn write_tensor(
+        &mut self,
+        index: usize,
+        primary: &mut impl Read,
+        aux: &mut impl Read,
+    ) -> Result<(), StreamRankError> {
+        self.write_tensor_deferred(index, primary, aux)?;
+        self.commit_pending()
+    }
+
+    /// Writes and validates one tensor but defers its durable descriptor
+    /// publication until [`Self::commit_pending`].
+    ///
+    /// This permits a converter to amortize two data syncs over a bounded
+    /// group of small expert tensors. A crash before the commit leaves zero
+    /// descriptors, so the unadvertised payload bytes are safely overwritten
+    /// on resume.
+    pub fn write_tensor_deferred(
         &mut self,
         index: usize,
         primary: &mut impl Read,
@@ -449,7 +537,12 @@ impl StreamingRankWriter {
             .get(index)
             .ok_or(StreamRankError::TensorIndex)?
             .clone();
-        if self.completed[index] {
+        if self.completed[index]
+            || self
+                .pending
+                .iter()
+                .any(|(pending_index, _)| *pending_index == index)
+        {
             return Err(StreamRankError::AlreadyComplete(index));
         }
         let primary_hash = copy_exact_at(
@@ -460,32 +553,46 @@ impl StreamingRankWriter {
         )?;
         let aux_hash = copy_exact_at(&self.file, aux, expected.aux_offset, expected.aux_bytes)?;
         self.validate_planes(index)?;
-        self.file.sync_data().map_err(StreamRankError::Io)?;
 
         let mut completed = expected;
         completed.payload_sha256 = primary_hash;
         completed.aux_sha256 = aux_hash;
-        let descriptor_offset = self
-            .layout
-            .descriptor_offset
-            .checked_add(
-                index
-                    .checked_mul(DESCRIPTOR_BYTES)
-                    .ok_or(StreamRankError::Overflow)?,
-            )
-            .ok_or(StreamRankError::Overflow)?;
-        write_all_at(
-            &self.file,
-            &completed.encode(),
-            u64::try_from(descriptor_offset).map_err(|_| StreamRankError::Overflow)?,
-        )?;
+        self.pending.push((index, completed));
+        Ok(())
+    }
+
+    /// Makes every deferred tensor durable in payload-before-descriptor
+    /// order. An empty commit is a no-op.
+    pub fn commit_pending(&mut self) -> Result<(), StreamRankError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
         self.file.sync_data().map_err(StreamRankError::Io)?;
-        self.completed[index] = true;
+        for (index, completed) in &self.pending {
+            let descriptor_offset = self
+                .layout
+                .descriptor_offset
+                .checked_add(
+                    index
+                        .checked_mul(DESCRIPTOR_BYTES)
+                        .ok_or(StreamRankError::Overflow)?,
+                )
+                .ok_or(StreamRankError::Overflow)?;
+            write_all_at(
+                &self.file,
+                &completed.encode(),
+                u64::try_from(descriptor_offset).map_err(|_| StreamRankError::Overflow)?,
+            )?;
+        }
+        self.file.sync_data().map_err(StreamRankError::Io)?;
+        for (index, _) in self.pending.drain(..) {
+            self.completed[index] = true;
+        }
         Ok(())
     }
 
     pub fn prepare(&self) -> Result<StreamingRankSummary, StreamRankError> {
-        if self.completed.iter().any(|&completed| !completed) {
+        if !self.pending.is_empty() || self.completed.iter().any(|&completed| !completed) {
             return Err(StreamRankError::Incomplete);
         }
         let descriptors = self.read_completed_descriptors()?;
@@ -510,6 +617,37 @@ impl StreamingRankWriter {
         })
     }
 
+    /// Seals the optional canonical-manifest payload slot without changing
+    /// layout. This is deliberately done only after the payload audit, because
+    /// the manifest hash participates in file identity while the payload hash
+    /// does not include the manifest region.
+    pub fn seal_output_payload_sha256(&mut self) -> Result<StreamingRankSummary, StreamRankError> {
+        let mut summary = self.prepare()?;
+        let Some(offset) = self.config.manifest_payload_sha256_slot else {
+            return Ok(summary);
+        };
+        let end = offset.checked_add(64).ok_or(StreamRankError::Overflow)?;
+        let expected = encode_lower_hex(&summary.payload_sha256);
+        let current = self
+            .config
+            .manifest
+            .get(offset..end)
+            .ok_or(StreamRankError::Layout)?;
+        if current == expected.as_bytes() {
+            return Ok(summary);
+        }
+        if current.iter().any(|&byte| byte != b'0') {
+            return Err(StreamRankError::SourceChanged);
+        }
+        let mut sealed = self.config.manifest.clone();
+        sealed[offset..end].copy_from_slice(expected.as_bytes());
+        write_all_at(&self.file, &sealed, self.layout.manifest_offset as u64)?;
+        self.file.sync_data().map_err(StreamRankError::Io)?;
+        self.config.manifest = sealed;
+        summary.manifest_sha256 = sha256(&self.config.manifest);
+        Ok(summary)
+    }
+
     pub fn finalize(
         &mut self,
         expected: &StreamingRankSummary,
@@ -519,9 +657,38 @@ impl StreamingRankWriter {
         if &observed != expected {
             return Err(StreamRankError::SourceChanged);
         }
+        let header = self.final_header(&observed, conversion_uuid)?;
+        write_all_at(&self.file, &header, 0)?;
+        self.file.sync_all().map_err(StreamRankError::Io)
+    }
+
+    fn finalize_prepared(
+        &mut self,
+        prepared: &StreamingRankSummary,
+        conversion_uuid: [u8; 16],
+    ) -> Result<(), StreamRankError> {
+        if prepared.rank != self.config.rank
+            || prepared.tensor_count != self.config.tensors.len()
+            || prepared.total_file_bytes != self.layout.total_bytes as u64
+            || prepared.manifest_sha256 != sha256(&self.config.manifest)
+            || prepared.string_sha256 != sha256(&self.layout.strings)
+            || prepared.metadata_sha256 != sha256(&self.layout.metadata)
+        {
+            return Err(StreamRankError::SourceChanged);
+        }
+        let header = self.final_header(prepared, conversion_uuid)?;
+        write_all_at(&self.file, &header, 0)?;
+        self.file.sync_all().map_err(StreamRankError::Io)
+    }
+
+    fn final_header(
+        &self,
+        observed: &StreamingRankSummary,
+        conversion_uuid: [u8; 16],
+    ) -> Result<[u8; crate::HEADER_BYTES], StreamRankError> {
         let descriptors = self.read_completed_descriptors()?;
         let header_flags = derive_header_flags(&descriptors).map_err(StreamRankError::RankFile)?;
-        let header = encode_rank_header(
+        encode_rank_header(
             &RankHeaderFields {
                 rank: self.config.rank,
                 tensor_count: descriptors.len(),
@@ -556,24 +723,22 @@ impl StreamingRankWriter {
             },
             conversion_uuid,
         )
-        .map_err(StreamRankError::RankFile)?;
-        write_all_at(&self.file, &header, 0)?;
-        self.file.sync_all().map_err(StreamRankError::Io)
+        .map_err(StreamRankError::RankFile)
     }
 
     fn verify_staging(&mut self) -> Result<(), StreamRankError> {
+        if !range_is_zero(&self.file, 0, crate::HEADER_BYTES as u64)? {
+            return Err(StreamRankError::Finalized);
+        }
+        self.verify_body()
+    }
+
+    fn verify_body(&mut self) -> Result<(), StreamRankError> {
         let length = self.file.metadata().map_err(StreamRankError::Io)?.len();
         if length != self.layout.total_bytes as u64 {
             return Err(StreamRankError::Layout);
         }
-        if !range_is_zero(&self.file, 0, crate::HEADER_BYTES as u64)? {
-            return Err(StreamRankError::Finalized);
-        }
-        verify_range(
-            &self.file,
-            self.layout.manifest_offset as u64,
-            &self.config.manifest,
-        )?;
+        self.verify_or_adopt_manifest()?;
         verify_range(
             &self.file,
             self.layout.string_offset as u64,
@@ -609,6 +774,74 @@ impl StreamingRankWriter {
             self.validate_planes(index)?;
         }
         Ok(())
+    }
+
+    fn verify_or_adopt_manifest(&mut self) -> Result<(), StreamRankError> {
+        let observed = read_range_vec(
+            &self.file,
+            self.layout.manifest_offset as u64,
+            self.config.manifest.len() as u64,
+        )?;
+        if observed == self.config.manifest {
+            return Ok(());
+        }
+        let offset = self
+            .config
+            .manifest_payload_sha256_slot
+            .ok_or(StreamRankError::SourceChanged)?;
+        let end = offset.checked_add(64).ok_or(StreamRankError::Overflow)?;
+        if observed.get(..offset) != self.config.manifest.get(..offset)
+            || observed.get(end..) != self.config.manifest.get(end..)
+            || !observed
+                .get(offset..end)
+                .ok_or(StreamRankError::Layout)?
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            return Err(StreamRankError::SourceChanged);
+        }
+        self.config.manifest = observed;
+        Ok(())
+    }
+
+    fn open_for_publication(
+        path: impl AsRef<Path>,
+        config: StreamingRankConfig,
+    ) -> Result<(Self, bool), StreamRankError> {
+        let path = path.as_ref().to_owned();
+        let metadata = path.symlink_metadata().map_err(StreamRankError::Io)?;
+        if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+            return Err(StreamRankError::UnsafePath);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(StreamRankError::Io)?;
+        let header_is_zero = range_is_zero(&file, 0, crate::HEADER_BYTES as u64)?;
+        let layout = StreamLayout::new(&config)?;
+        let mut writer = Self {
+            path,
+            file,
+            completed: vec![false; config.tensors.len()],
+            pending: Vec::new(),
+            config,
+            layout,
+        };
+        writer.verify_body()?;
+        if writer.completed.iter().any(|&completed| !completed) {
+            return Err(StreamRankError::Incomplete);
+        }
+        Ok((writer, header_is_zero))
+    }
+
+    fn verify_final_header(
+        &self,
+        expected: &StreamingRankSummary,
+        conversion_uuid: [u8; 16],
+    ) -> Result<(), StreamRankError> {
+        let expected_header = self.final_header(expected, conversion_uuid)?;
+        verify_range(&self.file, 0, &expected_header)
     }
 
     fn verify_fixed_padding(&self) -> Result<(), StreamRankError> {
@@ -770,6 +1003,258 @@ impl StreamingRankWriter {
         }
         Ok(global.finalize().into())
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingRankSet {
+    final_path: PathBuf,
+    staging_path: PathBuf,
+    configs: [StreamingRankConfig; 4],
+}
+
+impl StreamingRankSet {
+    pub fn create_or_resume(
+        final_path: impl AsRef<Path>,
+        configs: [StreamingRankConfig; 4],
+    ) -> Result<Self, StreamRankError> {
+        validate_rank_configs(&configs)?;
+        let final_path = final_path.as_ref().to_owned();
+        let parent = final_path.parent().ok_or(StreamRankError::RankSetPath)?;
+        let parent_metadata = parent.symlink_metadata().map_err(StreamRankError::Io)?;
+        if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
+            return Err(StreamRankError::UnsafePath);
+        }
+        match final_path.symlink_metadata() {
+            Ok(_) => return Err(StreamRankError::Published),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StreamRankError::Io(error)),
+        }
+        let staging_path = rank_set_staging_path(&final_path)?;
+        match fs::create_dir(&staging_path) {
+            Ok(()) => sync_directory(parent)?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = staging_path
+                    .symlink_metadata()
+                    .map_err(StreamRankError::Io)?;
+                if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                    return Err(StreamRankError::UnsafePath);
+                }
+            }
+            Err(error) => return Err(StreamRankError::Io(error)),
+        }
+        Ok(Self {
+            final_path,
+            staging_path,
+            configs,
+        })
+    }
+
+    #[must_use]
+    pub fn final_path(&self) -> &Path {
+        &self.final_path
+    }
+
+    #[must_use]
+    pub fn staging_path(&self) -> &Path {
+        &self.staging_path
+    }
+
+    #[must_use]
+    pub fn rank_path(&self, rank: u8) -> PathBuf {
+        self.staging_path.join(format!("rank-{rank}.g5n"))
+    }
+
+    pub fn open_rank_writer(
+        &self,
+        rank: u8,
+    ) -> Result<Option<StreamingRankWriter>, StreamRankError> {
+        let config = self
+            .configs
+            .get(usize::from(rank))
+            .ok_or(StreamRankError::RankSet)?
+            .clone();
+        let path = self.rank_path(rank);
+        match StreamingRankWriter::create_or_resume(&path, config.clone()) {
+            Ok(writer) => Ok(Some(writer)),
+            Err(StreamRankError::Finalized) => {
+                let (_, header_is_zero) = StreamingRankWriter::open_for_publication(path, config)?;
+                if header_is_zero {
+                    return Err(StreamRankError::Layout);
+                }
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn publish(&self) -> Result<[StreamingRankSummary; 4], StreamRankError> {
+        match self.final_path.symlink_metadata() {
+            Ok(_) => return Err(StreamRankError::Published),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StreamRankError::Io(error)),
+        }
+        let mut writers = Vec::with_capacity(4);
+        let mut summaries = Vec::with_capacity(4);
+        for rank in 0_u8..4 {
+            let (mut writer, header_is_zero) = StreamingRankWriter::open_for_publication(
+                self.rank_path(rank),
+                self.configs[usize::from(rank)].clone(),
+            )?;
+            summaries.push(writer.seal_output_payload_sha256()?);
+            writers.push((writer, header_is_zero));
+        }
+        let summaries: [StreamingRankSummary; 4] =
+            summaries.try_into().map_err(|_| StreamRankError::RankSet)?;
+        let conversion_uuid = StreamingRankSummary::derive_conversion_uuid(&summaries)?;
+        for (rank, (writer, header_is_zero)) in writers.iter_mut().enumerate() {
+            if *header_is_zero {
+                writer.finalize_prepared(&summaries[rank], conversion_uuid)?;
+            } else {
+                writer.verify_final_header(&summaries[rank], conversion_uuid)?;
+            }
+        }
+        sync_directory(&self.staging_path)?;
+        match self.final_path.symlink_metadata() {
+            Ok(_) => return Err(StreamRankError::Published),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StreamRankError::Io(error)),
+        }
+        rename_directory_no_replace(&self.staging_path, &self.final_path)?;
+        sync_directory(
+            self.final_path
+                .parent()
+                .ok_or(StreamRankError::RankSetPath)?,
+        )?;
+        Ok(summaries)
+    }
+
+    pub fn verify_published(
+        final_path: impl AsRef<Path>,
+        configs: [StreamingRankConfig; 4],
+    ) -> Result<[StreamingRankSummary; 4], StreamRankError> {
+        validate_rank_configs(&configs)?;
+        let final_path = final_path.as_ref();
+        let metadata = final_path.symlink_metadata().map_err(StreamRankError::Io)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(StreamRankError::UnsafePath);
+        }
+        let mut writers = Vec::with_capacity(4);
+        let mut summaries = Vec::with_capacity(4);
+        for rank in 0_u8..4 {
+            let path = final_path.join(format!("rank-{rank}.g5n"));
+            let (mut writer, header_is_zero) = StreamingRankWriter::open_for_publication(
+                path,
+                configs[usize::from(rank)].clone(),
+            )?;
+            if header_is_zero {
+                return Err(StreamRankError::Incomplete);
+            }
+            summaries.push(writer.seal_output_payload_sha256()?);
+            writers.push(writer);
+        }
+        let summaries: [StreamingRankSummary; 4] =
+            summaries.try_into().map_err(|_| StreamRankError::RankSet)?;
+        let conversion_uuid = StreamingRankSummary::derive_conversion_uuid(&summaries)?;
+        for (rank, writer) in writers.iter().enumerate() {
+            writer.verify_final_header(&summaries[rank], conversion_uuid)?;
+        }
+        Ok(summaries)
+    }
+}
+
+fn validate_rank_configs(configs: &[StreamingRankConfig; 4]) -> Result<(), StreamRankError> {
+    for (rank, config) in configs.iter().enumerate() {
+        if config.rank != u32::try_from(rank).map_err(|_| StreamRankError::Overflow)? {
+            return Err(StreamRankError::RankSet);
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_payload_slot(config: &StreamingRankConfig) -> Result<(), StreamRankError> {
+    let Some(offset) = config.manifest_payload_sha256_slot else {
+        return Ok(());
+    };
+    let end = offset.checked_add(64).ok_or(StreamRankError::Overflow)?;
+    let slot = config
+        .manifest
+        .get(offset..end)
+        .ok_or(StreamRankError::Spec)?;
+    if !slot
+        .iter()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    {
+        return Err(StreamRankError::Spec);
+    }
+    Ok(())
+}
+
+fn rank_set_staging_path(final_path: &Path) -> Result<PathBuf, StreamRankError> {
+    let file_name = final_path.file_name().ok_or(StreamRankError::RankSetPath)?;
+    let mut staging_name = OsString::from(file_name);
+    staging_name.push(".partial");
+    Ok(final_path
+        .parent()
+        .ok_or(StreamRankError::RankSetPath)?
+        .join(staging_name))
+}
+
+fn sync_directory(path: &Path) -> Result<(), StreamRankError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(StreamRankError::Io)
+}
+
+#[cfg(target_os = "linux")]
+fn rename_directory_no_replace(source: &Path, destination: &Path) -> Result<(), StreamRankError> {
+    let source =
+        CString::new(source.as_os_str().as_bytes()).map_err(|_| StreamRankError::UnsafePath)?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| StreamRankError::UnsafePath)?;
+    // SAFETY: both pointers are live NUL-terminated path buffers for the
+    // duration of the call; AT_FDCWD resolves them exactly as std::fs does.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        let error = io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(code) if code == libc::EEXIST || code == libc::ENOTEMPTY
+        ) {
+            Err(StreamRankError::Published)
+        } else {
+            Err(StreamRankError::Io(error))
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_directory_no_replace(source: &Path, destination: &Path) -> Result<(), StreamRankError> {
+    match destination.symlink_metadata() {
+        Ok(_) => return Err(StreamRankError::Published),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(StreamRankError::Io(error)),
+    }
+    fs::rename(source, destination).map_err(StreamRankError::Io)
+}
+
+fn encode_lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn copy_exact_at(
@@ -943,6 +1428,8 @@ pub enum StreamRankError {
     SourceChanged,
     Finalized,
     RankSet,
+    RankSetPath,
+    Published,
     UnsafePath,
 }
 
@@ -984,7 +1471,11 @@ mod tests {
 
     impl Drop for TempPath {
         fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
+            if self.0.is_dir() {
+                let _ = fs::remove_dir_all(&self.0);
+            } else {
+                let _ = fs::remove_file(&self.0);
+            }
         }
     }
 
@@ -1094,6 +1585,7 @@ mod tests {
         let config = StreamingRankConfig {
             rank,
             manifest: b"manifest".to_vec(),
+            manifest_payload_sha256_slot: None,
             model_config_sha256: [1; 32],
             tokenizer_bundle_sha256: [2; 32],
             chat_template_sha256: [3; 32],
@@ -1167,6 +1659,71 @@ mod tests {
     }
 
     #[test]
+    fn deferred_batch_is_invisible_until_commit_and_resumes_durably() {
+        let path = TempPath::new();
+        let (config, _, planes) = configs(0);
+        {
+            let mut writer =
+                StreamingRankWriter::create_or_resume(&path.0, config.clone()).unwrap();
+            writer
+                .write_tensor_deferred(0, &mut &planes[0][..], &mut &planes[1][..])
+                .unwrap();
+            assert_eq!(writer.completed_tensors(), 0);
+            assert!(matches!(writer.prepare(), Err(StreamRankError::Incomplete)));
+        }
+        {
+            let mut writer =
+                StreamingRankWriter::create_or_resume(&path.0, config.clone()).unwrap();
+            assert_eq!(writer.completed_tensors(), 0);
+            writer
+                .write_tensor_deferred(0, &mut &planes[0][..], &mut &planes[1][..])
+                .unwrap();
+            writer
+                .write_tensor_deferred(1, &mut &planes[2][..], &mut &planes[3][..])
+                .unwrap();
+            writer.commit_pending().unwrap();
+            assert_eq!(writer.completed_tensors(), 2);
+        }
+        let writer = StreamingRankWriter::create_or_resume(&path.0, config).unwrap();
+        assert_eq!(writer.completed_tensors(), 2);
+    }
+
+    #[test]
+    fn payload_hash_manifest_slot_seals_and_is_resume_stable() {
+        let path = TempPath::new();
+        let (mut config, _, planes) = configs(0);
+        config.manifest = vec![b'0'; 64];
+        config.manifest_payload_sha256_slot = Some(0);
+        let template = config.clone();
+        let first_summary = {
+            let mut writer =
+                StreamingRankWriter::create_or_resume(&path.0, config.clone()).unwrap();
+            writer
+                .write_tensor(0, &mut &planes[0][..], &mut &planes[1][..])
+                .unwrap();
+            writer
+                .write_tensor(1, &mut &planes[2][..], &mut &planes[3][..])
+                .unwrap();
+            writer
+                .write_tensor(2, &mut &planes[4][..], &mut &planes[5][..])
+                .unwrap();
+            writer.seal_output_payload_sha256().unwrap()
+        };
+        let bytes = fs::read(&path.0).unwrap();
+        assert_eq!(
+            &bytes[ALIGNMENT..ALIGNMENT + 64],
+            encode_lower_hex(&first_summary.payload_sha256).as_bytes()
+        );
+        assert_eq!(
+            first_summary.manifest_sha256,
+            sha256(&bytes[ALIGNMENT..ALIGNMENT + 64])
+        );
+
+        let mut resumed = StreamingRankWriter::create_or_resume(&path.0, template).unwrap();
+        assert_eq!(resumed.seal_output_payload_sha256().unwrap(), first_summary);
+    }
+
+    #[test]
     fn truncated_trailing_and_corrupt_resume_fail_closed() {
         let path = TempPath::new();
         let (config, _, mut planes) = configs(0);
@@ -1228,5 +1785,87 @@ mod tests {
             StreamingRankSummary::derive_conversion_uuid(&wrong),
             Err(StreamRankError::RankSet)
         ));
+    }
+
+    #[test]
+    fn four_rank_set_recovers_mid_finalize_and_publishes_atomically() {
+        let root = TempPath::new();
+        fs::create_dir(&root.0).unwrap();
+        let final_path = root.0.join("native-ranks");
+        let rank_configs: [StreamingRankConfig; 4] =
+            std::array::from_fn(|rank| configs(rank as u32).0);
+        let set = StreamingRankSet::create_or_resume(&final_path, rank_configs.clone()).unwrap();
+        for rank in 0_u8..4 {
+            let mut writer = set.open_rank_writer(rank).unwrap().unwrap();
+            let planes = configs(u32::from(rank)).2;
+            for tensor in 0..3 {
+                writer
+                    .write_tensor(
+                        tensor,
+                        &mut &planes[tensor * 2][..],
+                        &mut &planes[tensor * 2 + 1][..],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let mut staged_writers = Vec::new();
+        let mut summaries = Vec::new();
+        for rank in 0_u8..4 {
+            let (writer, header_is_zero) = StreamingRankWriter::open_for_publication(
+                set.rank_path(rank),
+                rank_configs[usize::from(rank)].clone(),
+            )
+            .unwrap();
+            assert!(header_is_zero);
+            summaries.push(writer.prepare().unwrap());
+            staged_writers.push(writer);
+        }
+        let summaries: [StreamingRankSummary; 4] = summaries.try_into().unwrap();
+        let conversion_uuid = StreamingRankSummary::derive_conversion_uuid(&summaries).unwrap();
+        staged_writers[0]
+            .finalize(&summaries[0], conversion_uuid)
+            .unwrap();
+        drop(staged_writers);
+
+        assert!(set.open_rank_writer(0).unwrap().is_none());
+        let published = set.publish().unwrap();
+        assert!(!set.staging_path().exists());
+        assert!(set.final_path().is_dir());
+        assert_eq!(
+            published,
+            StreamingRankSet::verify_published(&final_path, rank_configs.clone()).unwrap()
+        );
+        assert!(matches!(
+            StreamingRankSet::create_or_resume(&final_path, rank_configs),
+            Err(StreamRankError::Published)
+        ));
+    }
+
+    #[test]
+    fn rank_set_never_replaces_a_destination_created_during_conversion() {
+        let root = TempPath::new();
+        fs::create_dir(&root.0).unwrap();
+        let final_path = root.0.join("native-ranks");
+        let rank_configs: [StreamingRankConfig; 4] =
+            std::array::from_fn(|rank| configs(rank as u32).0);
+        let set = StreamingRankSet::create_or_resume(&final_path, rank_configs).unwrap();
+        for rank in 0_u8..4 {
+            let mut writer = set.open_rank_writer(rank).unwrap().unwrap();
+            let planes = configs(u32::from(rank)).2;
+            for tensor in 0..3 {
+                writer
+                    .write_tensor(
+                        tensor,
+                        &mut &planes[tensor * 2][..],
+                        &mut &planes[tensor * 2 + 1][..],
+                    )
+                    .unwrap();
+            }
+        }
+        fs::create_dir(&final_path).unwrap();
+        assert!(matches!(set.publish(), Err(StreamRankError::Published)));
+        assert!(set.staging_path().is_dir());
+        assert_eq!(fs::read_dir(&final_path).unwrap().count(), 0);
     }
 }

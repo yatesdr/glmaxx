@@ -10,11 +10,15 @@ mod safetensors;
 mod stream;
 
 pub use checkpoint::{
-    CheckpointError, CheckpointInventoryReport, CheckpointTensorContract, Exl3Component,
-    Exl3ComponentContract, PINNED_EXL3_COMPONENT_COUNT, PINNED_EXL3_INDEX_SHA256,
-    PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY, PINNED_EXL3_SHARD_COUNT,
-    PINNED_EXL3_TENSOR_COUNT, PINNED_PROTECTED_TENSOR_COUNT, ProtectedTensorContract, TP_DEGREE,
-    parse_exl3_component, protected_tensor_contracts, validate_pinned_exl3_checkpoint,
+    CheckpointConversionError, CheckpointError, CheckpointInventoryReport,
+    CheckpointTensorContract, Exl3Component, Exl3ComponentContract, PINNED_EXL3_COMPONENT_COUNT,
+    PINNED_EXL3_INDEX_SHA256, PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY,
+    PINNED_EXL3_SHARD_COUNT, PINNED_EXL3_TENSOR_COUNT, PINNED_PROTECTED_TENSOR_COUNT,
+    PINNED_RANK_TENSOR_COUNT, PINNED_SOURCE_FILE_COUNT, PINNED_SOURCE_MANIFEST_SHA256,
+    PinnedConversionProgress, PinnedRankManifestTensor, PinnedRankPlan, PinnedSourceBinding,
+    PinnedSourceError, PinnedSourceVerification, ProtectedTensorContract, TP_DEGREE,
+    parse_exl3_component, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
+    protected_tensor_contracts, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 pub use container::{
     HEADER_BYTES, PlainDtype, PlainTensor, RankFile, RankFileBuilder, RankFileError,
@@ -37,8 +41,8 @@ pub use safetensors::{
     load_exl3_projection_sharded,
 };
 pub use stream::{
-    StreamRankError, StreamingRankConfig, StreamingRankSummary, StreamingRankWriter,
-    StreamingTensorIdentity, StreamingTensorSpec,
+    StreamRankError, StreamingRankConfig, StreamingRankSet, StreamingRankSummary,
+    StreamingRankWriter, StreamingTensorIdentity, StreamingTensorSpec,
 };
 
 pub const CUTLASS_COMMIT: &str = "e05f953a5b3d38adc240df2ff928e0421c2abba3";

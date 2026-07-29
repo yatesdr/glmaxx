@@ -4,11 +4,12 @@ use std::fmt;
 use glm_cache::{
     DRAFT_INDEXER_GROUPS, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES, TARGET_LAYERS,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const GIB: u64 = 1 << 30;
 pub const MIN_LOCAL_CAPACITY_TOKENS: u64 = 262_144;
 pub const MIN_ESCROW_BYTES: u64 = GIB;
+pub const CAPACITY_EXL3_RANK_WEIGHT_BYTES: u64 = 81_590_319_104;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -197,6 +198,208 @@ pub struct SystemMemoryPlan {
     pub admitted_local_committed_slots: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBudgetGlobalCapacity {
+    pub admitted_target_tokens: u64,
+    pub dcp_degree: u8,
+    pub local_target_committed_slots_per_rank: u64,
+    pub mtp_depth_max: u8,
+    pub tp_degree: u8,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBudgetTerms {
+    pub allocator_padding_bytes: u64,
+    pub collective_bytes: u64,
+    pub draft_indexer_key_committed_and_slack_bytes: u64,
+    pub draft_kv_committed_and_slack_bytes: u64,
+    pub emergency_escrow_bytes: u64,
+    pub graph_resident_bytes: u64,
+    pub maximum_workspace_bytes: u64,
+    pub model_metadata_bytes: u64,
+    pub module_and_context_bytes: u64,
+    pub staging_bytes: u64,
+    pub target_draft_indexer_page_table_bytes: u64,
+    pub target_indexer_key_committed_and_slack_bytes: u64,
+    pub target_kv_committed_and_slack_bytes: u64,
+    pub weight_bytes: u64,
+}
+
+impl ProfileBudgetTerms {
+    fn required(self) -> Result<u64, ProfileBudgetError> {
+        [
+            self.allocator_padding_bytes,
+            self.collective_bytes,
+            self.draft_indexer_key_committed_and_slack_bytes,
+            self.draft_kv_committed_and_slack_bytes,
+            self.emergency_escrow_bytes,
+            self.graph_resident_bytes,
+            self.maximum_workspace_bytes,
+            self.model_metadata_bytes,
+            self.module_and_context_bytes,
+            self.staging_bytes,
+            self.target_draft_indexer_page_table_bytes,
+            self.target_indexer_key_committed_and_slack_bytes,
+            self.target_kv_committed_and_slack_bytes,
+            self.weight_bytes,
+        ]
+        .into_iter()
+        .try_fold(0_u64, |sum, term| {
+            sum.checked_add(term).ok_or(ProfileBudgetError::Overflow)
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBudgetRank {
+    pub headroom_against_pre_context_observation_bytes: u64,
+    pub measured_post_context_usable_bytes: Option<u64>,
+    pub observed_pre_context_free_bytes: u64,
+    pub planned_usable_hbm_floor_bytes: u64,
+    pub rank: u8,
+    pub required_bytes: u64,
+    pub terms: ProfileBudgetTerms,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBudgetSource {
+    pub hardware: String,
+    pub inventory_command: String,
+    pub inventory_date: String,
+    pub inventory_host: String,
+    pub weight_contract: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBudgetArtifact {
+    pub conversion_allowed: bool,
+    pub global_capacity: ProfileBudgetGlobalCapacity,
+    pub measurement_status: String,
+    pub profile: String,
+    pub ranks: Vec<ProfileBudgetRank>,
+    pub schema: String,
+    pub source: ProfileBudgetSource,
+    pub unmeasured_blockers: Vec<String>,
+}
+
+impl ProfileBudgetArtifact {
+    pub fn validate(&self) -> Result<(), ProfileBudgetError> {
+        if self.schema != "glmaxx.profile-budget.v0"
+            || self.profile != "capacity-exl3"
+            || self.global_capacity.admitted_target_tokens != 1_048_576
+            || self.global_capacity.dcp_degree != 4
+            || self.global_capacity.local_target_committed_slots_per_rank != 262_144
+            || self.global_capacity.mtp_depth_max != 6
+            || self.global_capacity.tp_degree != 4
+        {
+            return Err(ProfileBudgetError::Identity);
+        }
+        if self.ranks.len() != 4 {
+            return Err(ProfileBudgetError::RankSet);
+        }
+        let mut ranks = self.ranks.iter().collect::<Vec<_>>();
+        ranks.sort_by_key(|rank| rank.rank);
+        if ranks
+            .iter()
+            .enumerate()
+            .any(|(expected, rank)| usize::from(rank.rank) != expected)
+        {
+            return Err(ProfileBudgetError::RankSet);
+        }
+        let mut minimum_floor = u64::MAX;
+        for rank in ranks {
+            let terms = rank.terms;
+            if terms.weight_bytes != CAPACITY_EXL3_RANK_WEIGHT_BYTES
+                || terms.emergency_escrow_bytes < MIN_ESCROW_BYTES
+                || terms.target_kv_committed_and_slack_bytes != 7_524_581_376
+                || terms.target_indexer_key_committed_and_slack_bytes != 726_663_168
+                || terms.draft_kv_committed_and_slack_bytes != 96_633_856
+                || terms.draft_indexer_key_committed_and_slack_bytes != 34_662_144
+                || terms.required()? != rank.required_bytes
+                || rank
+                    .observed_pre_context_free_bytes
+                    .checked_sub(rank.required_bytes)
+                    != Some(rank.headroom_against_pre_context_observation_bytes)
+                || rank.planned_usable_hbm_floor_bytes > rank.observed_pre_context_free_bytes
+            {
+                return Err(ProfileBudgetError::Arithmetic(rank.rank));
+            }
+            minimum_floor = minimum_floor.min(rank.planned_usable_hbm_floor_bytes);
+        }
+        if self
+            .ranks
+            .iter()
+            .any(|rank| rank.planned_usable_hbm_floor_bytes != minimum_floor)
+        {
+            return Err(ProfileBudgetError::Floor);
+        }
+
+        match self.measurement_status.as_str() {
+            "pending-reviewed-sm120-post-context-measurements" => {
+                if self.conversion_allowed
+                    || self.unmeasured_blockers.is_empty()
+                    || self
+                        .ranks
+                        .iter()
+                        .any(|rank| rank.measured_post_context_usable_bytes.is_some())
+                {
+                    return Err(ProfileBudgetError::Status);
+                }
+            }
+            "complete" => {
+                if !self.conversion_allowed || !self.unmeasured_blockers.is_empty() {
+                    return Err(ProfileBudgetError::Status);
+                }
+                let measured_floor = self
+                    .ranks
+                    .iter()
+                    .map(|rank| {
+                        rank.measured_post_context_usable_bytes
+                            .ok_or(ProfileBudgetError::Status)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .min()
+                    .ok_or(ProfileBudgetError::RankSet)?;
+                if measured_floor != minimum_floor
+                    || self.ranks.iter().any(|rank| {
+                        rank.measured_post_context_usable_bytes
+                            .is_none_or(|available| rank.required_bytes > available)
+                    })
+                {
+                    return Err(ProfileBudgetError::DoesNotFit);
+                }
+            }
+            _ => return Err(ProfileBudgetError::Status),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProfileBudgetError {
+    Identity,
+    RankSet,
+    Arithmetic(u8),
+    Floor,
+    Status,
+    DoesNotFit,
+    Overflow,
+}
+
+impl fmt::Display for ProfileBudgetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for ProfileBudgetError {}
+
 pub fn plan_system_memory(
     inputs: Vec<RankMemoryInput>,
 ) -> Result<SystemMemoryPlan, MemoryPlanError> {
@@ -278,6 +481,32 @@ impl std::error::Error for MemoryPlanError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_in_profile_budget_is_arithmetically_valid_but_blocks_conversion() {
+        let artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        artifact.validate().unwrap();
+        assert!(!artifact.conversion_allowed);
+        assert_eq!(
+            artifact.measurement_status,
+            "pending-reviewed-sm120-post-context-measurements"
+        );
+    }
+
+    #[test]
+    fn profile_budget_rejects_hidden_terms_and_false_completion() {
+        let mut artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        artifact.ranks[2].terms.staging_bytes += 1;
+        assert_eq!(artifact.validate(), Err(ProfileBudgetError::Arithmetic(2)));
+
+        let mut artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        artifact.measurement_status = "complete".into();
+        artifact.conversion_allowed = true;
+        assert_eq!(artifact.validate(), Err(ProfileBudgetError::Status));
+    }
 
     fn input(rank: u8) -> RankMemoryInput {
         RankMemoryInput {

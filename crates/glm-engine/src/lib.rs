@@ -13,8 +13,10 @@ mod worker;
 
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use memory::{
-    GIB, MemoryPlanError, MemoryTerms, ProfileClass, RankMemoryInput, RankMemoryPlan,
-    SystemMemoryPlan, plan_system_memory,
+    CAPACITY_EXL3_RANK_WEIGHT_BYTES, GIB, MemoryPlanError, MemoryTerms, ProfileBudgetArtifact,
+    ProfileBudgetError, ProfileBudgetGlobalCapacity, ProfileBudgetRank, ProfileBudgetSource,
+    ProfileBudgetTerms, ProfileClass, RankMemoryInput, RankMemoryPlan, SystemMemoryPlan,
+    plan_system_memory,
 };
 pub use startup::{
     MockFault, RankStartupReport, StartupCoordinator, StartupError, StartupState, run_mock_startup,

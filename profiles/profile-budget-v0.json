@@ -1,0 +1,125 @@
+{
+  "conversion_allowed": false,
+  "global_capacity": {
+    "admitted_target_tokens": 1048576,
+    "dcp_degree": 4,
+    "local_target_committed_slots_per_rank": 262144,
+    "mtp_depth_max": 6,
+    "tp_degree": 4
+  },
+  "measurement_status": "pending-reviewed-sm120-post-context-measurements",
+  "profile": "capacity-exl3",
+  "ranks": [
+    {
+      "headroom_against_pre_context_observation_bytes": 8107793664,
+      "measured_post_context_usable_bytes": null,
+      "observed_pre_context_free_bytes": 101972967424,
+      "planned_usable_hbm_floor_bytes": 101955141632,
+      "rank": 0,
+      "required_bytes": 93865173760,
+      "terms": {
+        "allocator_padding_bytes": 268435456,
+        "collective_bytes": 268435456,
+        "draft_indexer_key_committed_and_slack_bytes": 34662144,
+        "draft_kv_committed_and_slack_bytes": 96633856,
+        "emergency_escrow_bytes": 1073741824,
+        "graph_resident_bytes": 268435456,
+        "maximum_workspace_bytes": 536870912,
+        "model_metadata_bytes": 67108864,
+        "module_and_context_bytes": 1073741824,
+        "staging_bytes": 268435456,
+        "target_draft_indexer_page_table_bytes": 67108864,
+        "target_indexer_key_committed_and_slack_bytes": 726663168,
+        "target_kv_committed_and_slack_bytes": 7524581376,
+        "weight_bytes": 81590319104
+      }
+    },
+    {
+      "headroom_against_pre_context_observation_bytes": 8107793664,
+      "measured_post_context_usable_bytes": null,
+      "observed_pre_context_free_bytes": 101972967424,
+      "planned_usable_hbm_floor_bytes": 101955141632,
+      "rank": 1,
+      "required_bytes": 93865173760,
+      "terms": {
+        "allocator_padding_bytes": 268435456,
+        "collective_bytes": 268435456,
+        "draft_indexer_key_committed_and_slack_bytes": 34662144,
+        "draft_kv_committed_and_slack_bytes": 96633856,
+        "emergency_escrow_bytes": 1073741824,
+        "graph_resident_bytes": 268435456,
+        "maximum_workspace_bytes": 536870912,
+        "model_metadata_bytes": 67108864,
+        "module_and_context_bytes": 1073741824,
+        "staging_bytes": 268435456,
+        "target_draft_indexer_page_table_bytes": 67108864,
+        "target_indexer_key_committed_and_slack_bytes": 726663168,
+        "target_kv_committed_and_slack_bytes": 7524581376,
+        "weight_bytes": 81590319104
+      }
+    },
+    {
+      "headroom_against_pre_context_observation_bytes": 8107793664,
+      "measured_post_context_usable_bytes": null,
+      "observed_pre_context_free_bytes": 101972967424,
+      "planned_usable_hbm_floor_bytes": 101955141632,
+      "rank": 2,
+      "required_bytes": 93865173760,
+      "terms": {
+        "allocator_padding_bytes": 268435456,
+        "collective_bytes": 268435456,
+        "draft_indexer_key_committed_and_slack_bytes": 34662144,
+        "draft_kv_committed_and_slack_bytes": 96633856,
+        "emergency_escrow_bytes": 1073741824,
+        "graph_resident_bytes": 268435456,
+        "maximum_workspace_bytes": 536870912,
+        "model_metadata_bytes": 67108864,
+        "module_and_context_bytes": 1073741824,
+        "staging_bytes": 268435456,
+        "target_draft_indexer_page_table_bytes": 67108864,
+        "target_indexer_key_committed_and_slack_bytes": 726663168,
+        "target_kv_committed_and_slack_bytes": 7524581376,
+        "weight_bytes": 81590319104
+      }
+    },
+    {
+      "headroom_against_pre_context_observation_bytes": 8089967872,
+      "measured_post_context_usable_bytes": null,
+      "observed_pre_context_free_bytes": 101955141632,
+      "planned_usable_hbm_floor_bytes": 101955141632,
+      "rank": 3,
+      "required_bytes": 93865173760,
+      "terms": {
+        "allocator_padding_bytes": 268435456,
+        "collective_bytes": 268435456,
+        "draft_indexer_key_committed_and_slack_bytes": 34662144,
+        "draft_kv_committed_and_slack_bytes": 96633856,
+        "emergency_escrow_bytes": 1073741824,
+        "graph_resident_bytes": 268435456,
+        "maximum_workspace_bytes": 536870912,
+        "model_metadata_bytes": 67108864,
+        "module_and_context_bytes": 1073741824,
+        "staging_bytes": 268435456,
+        "target_draft_indexer_page_table_bytes": 67108864,
+        "target_indexer_key_committed_and_slack_bytes": 726663168,
+        "target_kv_committed_and_slack_bytes": 7524581376,
+        "weight_bytes": 81590319104
+      }
+    }
+  ],
+  "schema": "glmaxx.profile-budget.v0",
+  "source": {
+    "hardware": "four NVIDIA RTX PRO 6000 Blackwell Workstation Edition GPUs",
+    "inventory_command": "nvidia-smi --query-gpu=index,name,pci.bus_id,memory.total,memory.free,memory.used,compute_mode --format=csv,noheader,nounits",
+    "inventory_date": "2026-07-29",
+    "inventory_host": "cn4",
+    "weight_contract": "pinned capacity-exl3 native rank plan"
+  },
+  "unmeasured_blockers": [
+    "smallest post-CUDA-context usable HBM bytes per rank",
+    "graph-resident bytes for every admitted graph bucket",
+    "maximum measured prefill and MTP-verifier workspace bytes",
+    "collective and staging high-water bytes under TP4",
+    "allocator fragmentation and padding high-water bytes"
+  ]
+}

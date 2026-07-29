@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -11,14 +13,17 @@ use glm_cache::{
 use glm_cuda::{Fc1Descriptor, KernelPath, LaunchGeometry, workspace_bytes};
 use glm_engine::{
     AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CpuWorkerPool, GIB,
-    GraphEntry, GraphKey, GraphProfile, ProfileClass, RankMemoryInput, STEP_PLAN_ABI,
-    STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK,
-    plan_system_memory,
+    GraphEntry, GraphKey, GraphProfile, ProfileBudgetArtifact, ProfileClass, RankMemoryInput,
+    STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan,
+    TP_RANK_MASK, plan_system_memory,
 };
 use glm_format::{
-    Codec, EXL3_MODEL_REVISION, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI,
-    PINNED_EXL3_REPOSITORY, PackedNvfp4, RankFile, RankFileBuilder, SafeTensorFile,
-    ShardedSafetensors, TensorPayload, TensorRecord, validate_pinned_exl3_checkpoint,
+    CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
+    Exl3Trellis, KERNEL_ABI, PINNED_EXL3_REPOSITORY, PINNED_SOURCE_MANIFEST_SHA256, PackedNvfp4,
+    PinnedRankPlan, PinnedSourceVerification, RankFile, RankFileBuilder, SafeTensorFile,
+    ShardedSafetensors, StreamingRankConfig, StreamingRankSet, StreamingRankSummary, TensorPayload,
+    TensorRecord, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
+    validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -37,6 +42,12 @@ const ACTUAL_PACKED_SHA256: &str =
     "a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5";
 const ACTUAL_RANK0_SHA256: &str =
     "ea706d83c4aa89fda26f977f03e7fa72862b71cf36c2c77cead70d68bc7b3093";
+const REVIEW_ACCEPTANCE_TOKEN: &str = "manifest-abi-v0.2.2-accepted";
+const CONVERSION_REPOSITORY: &str = "https://github.com/yatesdr/glmaxx.git";
+const CN4_CONVERTER_CONTAINER_DIGEST: &str =
+    "sha256:4eb9de29e5a532c672697762ca7b24e5e82316d6795dfdf616f129d35b794109";
+const FORMAT_SPEC_BYTES: &[u8] = include_bytes!("../../../spec/format-v0.md");
+const ENGINE_SPEC_BYTES: &[u8] = include_bytes!("../../../spec/engine-v0.md");
 
 fn main() {
     if let Err(error) = run() {
@@ -127,6 +138,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("checkpoint-proof requires the pinned safetensors index")?;
             checkpoint_proof(Path::new(path))?;
         }
+        Some("convert-pinned-exl3") => {
+            let index = arguments
+                .get(2)
+                .ok_or("convert-pinned-exl3 requires the pinned safetensors index")?;
+            let output = arguments
+                .get(3)
+                .ok_or("convert-pinned-exl3 requires an output directory")?;
+            let conversion_commit = arguments
+                .get(4)
+                .ok_or("convert-pinned-exl3 requires an exact conversion commit")?;
+            let profile_budget = arguments
+                .get(5)
+                .ok_or("convert-pinned-exl3 requires profile-budget-v0.json")?;
+            let review = arguments
+                .get(6)
+                .ok_or("convert-pinned-exl3 requires the independent review artifact")?;
+            convert_pinned_exl3(
+                Path::new(index),
+                Path::new(output),
+                conversion_commit,
+                Path::new(profile_budget),
+                Path::new(review),
+            )?;
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -180,7 +215,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -227,6 +262,430 @@ fn checkpoint_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         verdict: "PINNED_CHECKPOINT_STRUCTURE_PASS",
     };
     println!("{}", serde_json::to_string_pretty(&proof)?);
+    Ok(())
+}
+
+fn convert_pinned_exl3(
+    index: &Path,
+    output: &Path,
+    conversion_commit: &str,
+    profile_budget_path: &Path,
+    review_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_conversion_commit(conversion_commit)?;
+    let embedded_commit = option_env!("GLMAXX_SOURCE_COMMIT")
+        .ok_or("converter binary lacks GLMAXX_SOURCE_COMMIT build provenance")?;
+    if embedded_commit != conversion_commit {
+        return Err(format!(
+            "converter commit mismatch: embedded {embedded_commit}, requested {conversion_commit}"
+        )
+        .into());
+    }
+
+    let profile_budget = read_bounded_regular(profile_budget_path, 4 * 1024 * 1024)?;
+    let profile_budget_contract: ProfileBudgetArtifact = serde_json::from_slice(&profile_budget)?;
+    profile_budget_contract.validate()?;
+    if profile_budget_contract.measurement_status != "complete"
+        || !profile_budget_contract.conversion_allowed
+    {
+        return Err(
+            "profile budget is not a complete, conversion-approved capacity-exl3 v0 contract"
+                .into(),
+        );
+    }
+    let profile_budget_sha256 = sha256(&profile_budget);
+    let operation_manifest = operation_manifest_json()?;
+    let operation_manifest_sha256 = sha256(&operation_manifest);
+    let format_spec_sha256 = sha256(FORMAT_SPEC_BYTES);
+    let engine_spec_sha256 = sha256(ENGINE_SPEC_BYTES);
+    let review = read_bounded_regular(review_path, 4 * 1024 * 1024)?;
+    require_review_line(&review, REVIEW_ACCEPTANCE_TOKEN)?;
+    require_review_line(
+        &review,
+        &format!("profile-budget-v0-sha256={}", hex(&profile_budget_sha256)),
+    )?;
+    require_review_line(
+        &review,
+        &format!(
+            "operation-manifest-sha256={}",
+            hex(&operation_manifest_sha256)
+        ),
+    )?;
+    require_review_line(
+        &review,
+        &format!("format-v0-sha256={}", hex(&format_spec_sha256)),
+    )?;
+    require_review_line(
+        &review,
+        &format!("engine-v0-sha256={}", hex(&engine_spec_sha256)),
+    )?;
+    let review_sha256 = sha256(&review);
+
+    eprintln!("opening and structurally validating pinned checkpoint");
+    let checkpoint = ShardedSafetensors::open(index)?;
+    validate_pinned_exl3_checkpoint(&checkpoint, EXL3_MODEL_REVISION)?;
+    eprintln!("recomputing all pinned source-file SHA-256 digests");
+    let source =
+        verify_pinned_source_files(&checkpoint, |completed, total, verified_bytes, name| {
+            eprintln!("source-verify {completed}/{total} bytes={verified_bytes} file={name}");
+        })?;
+
+    let plans: [PinnedRankPlan; 4] = (0_u8..4)
+        .map(pinned_exl3_rank_plan)
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| "rank-plan count mismatch")?;
+    let tokenizer_bundle_sha256 = tokenizer_bundle_sha256(&source)?;
+    let model_config_sha256 = required_source_sha256(&source, "config.json")?;
+    let chat_template_sha256 = required_source_sha256(&source, "chat_template.jinja")?;
+    let weight_policy_sha256 = pinned_exl3_weight_policy_sha256();
+    let kernel_abi_sha256 = sha256(KERNEL_ABI.as_bytes());
+    let manifests: [(Vec<u8>, usize); 4] = plans
+        .iter()
+        .map(|plan| {
+            rank_conversion_manifest(
+                plan,
+                &source,
+                conversion_commit,
+                profile_budget_sha256,
+                review_sha256,
+                operation_manifest_sha256,
+                format_spec_sha256,
+                engine_spec_sha256,
+                weight_policy_sha256,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| "rank-manifest count mismatch")?;
+    let configs: [StreamingRankConfig; 4] = plans
+        .iter()
+        .zip(manifests)
+        .map(
+            |(plan, (manifest, manifest_payload_sha256_slot))| StreamingRankConfig {
+                rank: u32::from(plan.rank()),
+                manifest,
+                manifest_payload_sha256_slot: Some(manifest_payload_sha256_slot),
+                model_config_sha256,
+                tokenizer_bundle_sha256,
+                chat_template_sha256,
+                weight_policy_sha256,
+                kernel_abi_sha256,
+                tensors: plan.tensor_specs(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|_| "rank-config count mismatch")?;
+
+    let summaries = if output.exists() {
+        eprintln!("published rank set exists; performing full verification");
+        StreamingRankSet::verify_published(output, configs.clone())?
+    } else {
+        let rank_set = StreamingRankSet::create_or_resume(output, configs.clone())?;
+        eprintln!(
+            "rank staging directory: {}",
+            rank_set.staging_path().display()
+        );
+        for plan in &plans {
+            let rank = plan.rank();
+            let Some(mut writer) = rank_set.open_rank_writer(rank)? else {
+                eprintln!("rank {rank} was already finalized; publication will verify it");
+                continue;
+            };
+            eprintln!(
+                "rank {rank} resume: {}/{} tensors durable",
+                writer.completed_tensors(),
+                plan.tensor_count()
+            );
+            let mut last_reported = writer.completed_tensors() / 1_024;
+            plan.write_incomplete_with_progress(&checkpoint, &mut writer, |progress| {
+                let report_bucket = progress.completed_tensors / 1_024;
+                if report_bucket != last_reported
+                    || progress.completed_tensors == progress.total_tensors
+                {
+                    eprintln!(
+                        "rank {rank} tensors={}/{} payload_bytes={}/{}",
+                        progress.completed_tensors,
+                        progress.total_tensors,
+                        progress.completed_payload_bytes,
+                        progress.total_payload_bytes
+                    );
+                    last_reported = report_bucket;
+                }
+            })?;
+            if writer.completed_tensors() != plan.tensor_count() {
+                return Err(format!("rank {rank} conversion stopped incomplete").into());
+            }
+        }
+        eprintln!("all four rank bodies are durable; auditing and publishing atomically");
+        rank_set.publish()?
+    };
+    print_conversion_result(
+        output,
+        &summaries,
+        &source,
+        profile_budget_sha256,
+        review_sha256,
+    )?;
+    Ok(())
+}
+
+fn validate_conversion_commit(commit: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if commit.len() != 40
+        || !commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("conversion commit must be an exact lowercase 40-hex Git object ID".into());
+    }
+    Ok(())
+}
+
+fn read_bounded_regular(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let before = path.symlink_metadata()?;
+    if !before.file_type().is_file()
+        || before.file_type().is_symlink()
+        || before.nlink() != 1
+        || before.len() == 0
+        || before.len() > maximum_bytes
+    {
+        return Err(format!("unsafe or invalid provenance file: {}", path.display()).into());
+    }
+    let mut file = File::open(path)?;
+    let opened = file.metadata()?;
+    if before.dev() != opened.dev()
+        || before.ino() != opened.ino()
+        || before.len() != opened.len()
+        || before.mtime() != opened.mtime()
+        || before.mtime_nsec() != opened.mtime_nsec()
+    {
+        return Err(format!("provenance file changed while opening: {}", path.display()).into());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(before.len())?);
+    file.read_to_end(&mut bytes)?;
+    let after = path.symlink_metadata()?;
+    let after_opened = file.metadata()?;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || opened.dev() != after_opened.dev()
+        || opened.ino() != after_opened.ino()
+        || opened.len() != after_opened.len()
+        || opened.mtime() != after_opened.mtime()
+        || opened.mtime_nsec() != after_opened.mtime_nsec()
+        || bytes.len() as u64 != before.len()
+    {
+        return Err(format!("provenance file changed while reading: {}", path.display()).into());
+    }
+    Ok(bytes)
+}
+
+fn require_review_line(review: &[u8], required: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::str::from_utf8(review)?;
+    if !text.lines().any(|line| line == required) {
+        return Err(format!("independent review is missing exact line: {required}").into());
+    }
+    Ok(())
+}
+
+fn required_source_sha256(
+    source: &PinnedSourceVerification,
+    name: &str,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    source
+        .file_sha256(name)
+        .ok_or_else(|| format!("pinned source manifest lacks {name}").into())
+}
+
+fn tokenizer_bundle_sha256(
+    source: &PinnedSourceVerification,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"glmaxx-tokenizer-bundle-v0\0");
+    for name in [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+    ] {
+        hasher.update(name.as_bytes());
+        hasher.update([0]);
+        hasher.update(required_source_sha256(source, name)?);
+    }
+    Ok(hasher.finalize().into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rank_conversion_manifest(
+    plan: &PinnedRankPlan,
+    source: &PinnedSourceVerification,
+    conversion_commit: &str,
+    profile_budget_sha256: [u8; 32],
+    review_sha256: [u8; 32],
+    operation_manifest_sha256: [u8; 32],
+    format_spec_sha256: [u8; 32],
+    engine_spec_sha256: [u8; 32],
+    weight_policy_sha256: [u8; 32],
+) -> Result<(Vec<u8>, usize), Box<dyn std::error::Error>> {
+    let tensors = plan.manifest_tensors()?;
+    let tensor_contract = canonical_json(&tensors)?;
+    let tensor_contract_sha256 = sha256(&tensor_contract);
+    let source_files: BTreeMap<_, _> = source
+        .files()
+        .iter()
+        .map(|(name, digest)| (name.clone(), hex(digest)))
+        .collect();
+    let manifest = serde_json::json!({
+        "calibration": {
+            "manifest_file": "calibration_manifest.json",
+            "manifest_sha256": hex(&required_source_sha256(source, "calibration_manifest.json")?),
+            "source_revision": EXL3_MODEL_REVISION
+        },
+        "codec": {
+            "exl3_source_revision": EXL3_SOURCE_REVISION,
+            "format": "g5n-v0.2.2",
+            "profile": "capacity-exl3-v0"
+        },
+        "conversion": {
+            "commit": conversion_commit,
+            "repository": CONVERSION_REPOSITORY
+        },
+        "integrity": {
+            "output_hash_location": "rank-header.payload_sha256-and-descriptor-plane-sha256",
+            "output_payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "source_file_sha256": source_files,
+            "source_verification": "FULL_SHA256",
+            "source_verified_file_bytes": source.verified_file_bytes
+        },
+        "license_provenance": {
+            "license_sha256": hex(&required_source_sha256(source, "LICENSE")?),
+            "readme_sha256": hex(&required_source_sha256(source, "README.md")?),
+            "source_repository": PINNED_EXL3_REPOSITORY
+        },
+        "model": {
+            "config_sha256": hex(&required_source_sha256(source, "config.json")?),
+            "operation_manifest_sha256": hex(&operation_manifest_sha256),
+            "repository": PINNED_EXL3_REPOSITORY,
+            "revision": EXL3_MODEL_REVISION,
+            "source_index_sha256": hex(&required_source_sha256(source, "model.safetensors.index.json")?),
+            "source_manifest_sha256": hex(&PINNED_SOURCE_MANIFEST_SHA256)
+        },
+        "profile": {
+            "name": "capacity-exl3",
+            "profile_budget_sha256": hex(&profile_budget_sha256),
+            "weight_policy_sha256": hex(&weight_policy_sha256)
+        },
+        "rank": plan.rank(),
+        "review": {
+            "acceptance_token": REVIEW_ACCEPTANCE_TOKEN,
+            "artifact_sha256": hex(&review_sha256),
+            "engine_spec_sha256": hex(&engine_spec_sha256),
+            "format_spec_sha256": hex(&format_spec_sha256)
+        },
+        "schema": "glmaxx.rank-manifest.v0.2.2",
+        "tensor_contract_sha256": hex(&tensor_contract_sha256),
+        "tensor_count": plan.tensor_count(),
+        "tensor_source_payload_bytes": plan.source_payload_bytes(),
+        "tensors": tensors,
+        "tokenizer": {
+            "chat_template_sha256": hex(&required_source_sha256(source, "chat_template.jinja")?),
+            "generation_config_sha256": hex(&required_source_sha256(source, "generation_config.json")?),
+            "tokenizer_config_sha256": hex(&required_source_sha256(source, "tokenizer_config.json")?),
+            "tokenizer_sha256": hex(&required_source_sha256(source, "tokenizer.json")?)
+        },
+        "toolchain": {
+            "container_digest": CN4_CONVERTER_CONTAINER_DIGEST,
+            "cuda": "13.3",
+            "cutlass_commit": CUTLASS_COMMIT,
+            "kernel_abi": KERNEL_ABI,
+            "rust": "1.92.0"
+        },
+        "tp_degree": 4
+    });
+    let bytes = canonical_json(&manifest)?;
+    let prefix = b"\"output_payload_sha256\":\"";
+    let matches = bytes
+        .windows(prefix.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == prefix).then_some(offset + prefix.len()))
+        .collect::<Vec<_>>();
+    if matches.len() != 1
+        || bytes.get(matches[0]..matches[0] + 64)
+            != Some(&b"0000000000000000000000000000000000000000000000000000000000000000"[..])
+    {
+        return Err("canonical rank manifest payload-hash slot is not unique".into());
+    }
+    Ok((bytes, matches[0]))
+}
+
+fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json::Error> {
+    let value = serde_json::to_value(value)?;
+    serde_json::to_vec(&value)
+}
+
+#[derive(Serialize)]
+struct ConversionRankResult {
+    descriptor_sha256: String,
+    manifest_sha256: String,
+    metadata_sha256: String,
+    payload_sha256: String,
+    rank: u32,
+    string_sha256: String,
+    tensor_count: usize,
+    total_file_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct ConversionResult {
+    conversion_uuid: String,
+    output: String,
+    profile_budget_sha256: String,
+    ranks: Vec<ConversionRankResult>,
+    review_sha256: String,
+    schema: &'static str,
+    source_manifest_sha256: String,
+    source_verified_file_bytes: u64,
+    verdict: &'static str,
+}
+
+fn print_conversion_result(
+    output: &Path,
+    summaries: &[StreamingRankSummary; 4],
+    source: &PinnedSourceVerification,
+    profile_budget_sha256: [u8; 32],
+    review_sha256: [u8; 32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conversion_uuid = StreamingRankSummary::derive_conversion_uuid(summaries)?;
+    let ranks = summaries
+        .iter()
+        .map(|summary| ConversionRankResult {
+            descriptor_sha256: hex(&summary.descriptor_sha256),
+            manifest_sha256: hex(&summary.manifest_sha256),
+            metadata_sha256: hex(&summary.metadata_sha256),
+            payload_sha256: hex(&summary.payload_sha256),
+            rank: summary.rank,
+            string_sha256: hex(&summary.string_sha256),
+            tensor_count: summary.tensor_count,
+            total_file_bytes: summary.total_file_bytes,
+        })
+        .collect();
+    let result = ConversionResult {
+        conversion_uuid: hex(&conversion_uuid),
+        output: output.display().to_string(),
+        profile_budget_sha256: hex(&profile_budget_sha256),
+        ranks,
+        review_sha256: hex(&review_sha256),
+        schema: "glmaxx.pinned-conversion-result.v1",
+        source_manifest_sha256: hex(&source.manifest_sha256),
+        source_verified_file_bytes: source.verified_file_bytes,
+        verdict: "PINNED_EXL3_FOUR_RANK_CONVERSION_PASS",
+    };
+    println!("{}", String::from_utf8(canonical_json(&result)?)?);
     Ok(())
 }
 

@@ -1,10 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    fs::File,
+    io::{self, Read},
+    os::unix::fs::{FileExt, MetadataExt},
+    path::{Path, PathBuf},
 };
 
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
 use crate::{
-    EXL3_MODEL_REVISION, Exl3Projection, SafeDtype, SafeTensorDescriptor, ShardedSafetensors,
+    EXL3_MODEL_REVISION, Exl3Metadata, Exl3Projection, PlainDtype, SafeDtype, SafeTensorDescriptor,
+    SafeTensorError, ShardedSafetensors, StreamRankError, StreamingRankWriter,
+    StreamingTensorIdentity, StreamingTensorSpec,
 };
 
 pub const PINNED_EXL3_REPOSITORY: &str = "brandonmusic/GLM-5.2-EXL3-TR3-3.0bpw";
@@ -12,12 +21,29 @@ pub const PINNED_EXL3_INDEX_SHA256: [u8; 32] = [
     0x34, 0x62, 0x27, 0xa4, 0xea, 0x44, 0xb6, 0x06, 0x30, 0x17, 0x73, 0x9e, 0xe3, 0x8a, 0x83, 0x03,
     0x19, 0xdc, 0x10, 0x30, 0x5c, 0xcf, 0x71, 0x47, 0x34, 0x09, 0x5e, 0x27, 0xb2, 0x80, 0x64, 0xc2,
 ];
+pub const PINNED_SOURCE_MANIFEST_SHA256: [u8; 32] = [
+    0xbf, 0xb6, 0xdc, 0x39, 0xf2, 0x8d, 0xa0, 0x8c, 0x1c, 0xfc, 0x5b, 0x89, 0x60, 0x34, 0x14, 0x04,
+    0x6a, 0xdf, 0x70, 0x03, 0x15, 0x2d, 0x69, 0xe9, 0xee, 0x35, 0x0e, 0x11, 0xf7, 0xa1, 0xfa, 0x63,
+];
+pub const PINNED_SOURCE_FILE_COUNT: usize = 92;
 pub const PINNED_EXL3_TENSOR_COUNT: usize = 935_105;
 pub const PINNED_EXL3_SHARD_COUNT: usize = 81;
 pub const PINNED_EXL3_PAYLOAD_BYTES: u64 = 316_304_795_648;
 pub const PINNED_EXL3_COMPONENT_COUNT: usize = 933_888;
 pub const PINNED_PROTECTED_TENSOR_COUNT: usize = 1_217;
+pub const PINNED_RANK_TENSOR_COUNT: usize = 59_585;
 pub const TP_DEGREE: u8 = 4;
+const CONVERSION_SYNC_BATCH_TENSORS: usize = 64;
+const SOURCE_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
+const SOURCE_HASH_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+const FLAG_REPLICATED: u8 = 1 << 0;
+const FLAG_COLUMN_PARALLEL: u8 = 1 << 1;
+const FLAG_ROW_PARALLEL: u8 = 1 << 2;
+const FLAG_ROUTED_EXPERT: u8 = 1 << 3;
+const FLAG_SHARED_EXPERT: u8 = 1 << 4;
+const FLAG_MTP: u8 = 1 << 5;
+const FLAG_PROTECTED: u8 = 1 << 6;
 
 pub const ROLE_EMBEDDING: u16 = 0x0001;
 pub const ROLE_LM_HEAD: u16 = 0x0002;
@@ -114,6 +140,734 @@ pub struct CheckpointInventoryReport {
     pub payload_bytes: u64,
     pub exl3_component_count: usize,
     pub protected_tensor_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PinnedSourceVerification {
+    pub manifest_sha256: [u8; 32],
+    pub verified_file_bytes: u64,
+    file_sha256: BTreeMap<String, [u8; 32]>,
+}
+
+impl PinnedSourceVerification {
+    #[must_use]
+    pub fn file_count(&self) -> usize {
+        self.file_sha256.len()
+    }
+
+    #[must_use]
+    pub fn file_sha256(&self, name: &str) -> Option<[u8; 32]> {
+        self.file_sha256.get(name).copied()
+    }
+
+    #[must_use]
+    pub fn files(&self) -> &BTreeMap<String, [u8; 32]> {
+        &self.file_sha256
+    }
+}
+
+#[derive(Clone, Debug)]
+enum PinnedTensorSource {
+    Protected { name: String, tp_axis: i8 },
+    Exl3 { stem: String },
+}
+
+#[derive(Clone, Debug)]
+struct PinnedRankTensor {
+    spec: StreamingTensorSpec,
+    source: PinnedTensorSource,
+}
+
+#[derive(Clone, Debug)]
+pub struct PinnedRankPlan {
+    rank: u8,
+    tensors: Vec<PinnedRankTensor>,
+    source_payload_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PinnedSourceBinding {
+    pub axis: i8,
+    pub components: Vec<String>,
+    pub end: u64,
+    pub kind: &'static str,
+    pub start: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PinnedRankManifestTensor {
+    pub aux_bytes: u64,
+    pub codec_id: u16,
+    pub codec_metadata_sha256: String,
+    pub collective_after: &'static str,
+    pub expert_id: i16,
+    pub flags: u8,
+    pub global_shape: Vec<u64>,
+    pub layer_id: i16,
+    pub logical_dtype: u16,
+    pub name: String,
+    pub ndim: u8,
+    pub padded_shape: Vec<u32>,
+    pub primary_bytes: u64,
+    pub quant_group_elements: u32,
+    pub rank_shape: Vec<u32>,
+    pub reconstruction: &'static str,
+    pub role_id: u16,
+    pub source: PinnedSourceBinding,
+    pub source_dtype: &'static str,
+    pub source_shape: Vec<u64>,
+    pub stored_dtype: u16,
+    pub tensor_id: u32,
+    pub tp_shard_axis: i8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PinnedConversionProgress {
+    pub completed_tensors: usize,
+    pub total_tensors: usize,
+    pub completed_payload_bytes: u64,
+    pub total_payload_bytes: u64,
+}
+
+impl PinnedRankPlan {
+    #[must_use]
+    pub const fn rank(&self) -> u8 {
+        self.rank
+    }
+
+    #[must_use]
+    pub fn tensor_specs(&self) -> Vec<StreamingTensorSpec> {
+        self.tensors
+            .iter()
+            .map(|tensor| tensor.spec.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        self.tensors.len()
+    }
+
+    #[must_use]
+    pub const fn source_payload_bytes(&self) -> u64 {
+        self.source_payload_bytes
+    }
+
+    pub fn manifest_tensors(&self) -> Result<Vec<PinnedRankManifestTensor>, CheckpointError> {
+        let protected = protected_tensor_contracts();
+        self.tensors
+            .iter()
+            .map(|tensor| {
+                let spec = &tensor.spec;
+                let rank_shape = spec.logical_shape()[..usize::from(spec.ndim())].to_vec();
+                let padded_shape = spec.padded_shape()[..usize::from(spec.ndim())].to_vec();
+                let (global_shape, source_shape, source_dtype, source, reconstruction) =
+                    match &tensor.source {
+                        PinnedTensorSource::Protected { name, tp_axis } => {
+                            let contract = protected.get(name).ok_or(CheckpointError::Internal)?;
+                            let (kind, start, end) = if *tp_axis < 0 {
+                                ("replicated", 0, 0)
+                            } else {
+                                let axis = usize::try_from(*tp_axis)
+                                    .map_err(|_| CheckpointError::Internal)?;
+                                let extent = *contract
+                                    .source_shape
+                                    .get(axis)
+                                    .ok_or(CheckpointError::Internal)?;
+                                let shard = extent
+                                    .checked_div(u64::from(TP_DEGREE))
+                                    .ok_or(CheckpointError::Overflow)?;
+                                let start = shard
+                                    .checked_mul(u64::from(self.rank))
+                                    .ok_or(CheckpointError::Overflow)?;
+                                (
+                                    "contiguous_tp_slice",
+                                    start,
+                                    start.checked_add(shard).ok_or(CheckpointError::Overflow)?,
+                                )
+                            };
+                            (
+                                contract.source_shape.clone(),
+                                contract.source_shape.clone(),
+                                contract.dtype.name(),
+                                PinnedSourceBinding {
+                                    axis: *tp_axis,
+                                    components: vec![name.clone()],
+                                    end,
+                                    kind,
+                                    start,
+                                },
+                                "byte_exact_source_precision",
+                            )
+                        }
+                        PinnedTensorSource::Exl3 { stem } => {
+                            let mut global_shape = rank_shape
+                                .iter()
+                                .map(|&extent| u64::from(extent))
+                                .collect::<Vec<_>>();
+                            let axis = usize::try_from(spec.tp_shard_axis)
+                                .map_err(|_| CheckpointError::Internal)?;
+                            global_shape[axis] = global_shape[axis]
+                                .checked_mul(u64::from(TP_DEGREE))
+                                .ok_or(CheckpointError::Overflow)?;
+                            (
+                                global_shape,
+                                Vec::new(),
+                                "EXL3_TR3_COMPONENTS",
+                                PinnedSourceBinding {
+                                    axis: spec.tp_shard_axis,
+                                    components: ["mcg", "suh", "svh", "trellis"]
+                                        .into_iter()
+                                        .map(|component| format!("{stem}.{component}"))
+                                        .collect(),
+                                    end: u64::from(self.rank) + 1,
+                                    kind: "explicit_rank_components",
+                                    start: u64::from(self.rank),
+                                },
+                                "exl3_tr3_trellis_v0",
+                            )
+                        }
+                    };
+                Ok(PinnedRankManifestTensor {
+                    aux_bytes: spec.aux_bytes(),
+                    codec_id: spec.codec_id(),
+                    codec_metadata_sha256: encode_hex(&spec.metadata_sha256()),
+                    collective_after: collective_after(spec.role_id),
+                    expert_id: spec.expert_id,
+                    flags: spec.flags,
+                    global_shape,
+                    layer_id: spec.layer_id,
+                    logical_dtype: spec.logical_dtype(),
+                    name: spec.name.clone(),
+                    ndim: spec.ndim(),
+                    padded_shape,
+                    primary_bytes: spec.primary_bytes(),
+                    quant_group_elements: spec.quant_group_elements(),
+                    rank_shape,
+                    reconstruction,
+                    role_id: spec.role_id,
+                    source,
+                    source_dtype,
+                    source_shape,
+                    stored_dtype: spec.stored_dtype(),
+                    tensor_id: spec.tensor_id,
+                    tp_shard_axis: spec.tp_shard_axis,
+                })
+            })
+            .collect()
+    }
+
+    pub fn write_incomplete(
+        &self,
+        checkpoint: &ShardedSafetensors,
+        writer: &mut StreamingRankWriter,
+    ) -> Result<(), CheckpointConversionError> {
+        self.write_incomplete_with_progress(checkpoint, writer, |_| {})
+    }
+
+    pub fn write_incomplete_with_progress(
+        &self,
+        checkpoint: &ShardedSafetensors,
+        writer: &mut StreamingRankWriter,
+        mut progress: impl FnMut(PinnedConversionProgress),
+    ) -> Result<(), CheckpointConversionError> {
+        let mut completed_payload_bytes = 0_u64;
+        let mut pending_payload_bytes = 0_u64;
+        let mut pending_tensors = 0_usize;
+        for (index, tensor) in self.tensors.iter().enumerate() {
+            if writer.tensor_spec(index) != Some(&tensor.spec) {
+                return Err(CheckpointConversionError::Plan);
+            }
+            if writer.tensor_complete(index)? {
+                completed_payload_bytes = completed_payload_bytes
+                    .checked_add(tensor_payload_bytes(&tensor.spec)?)
+                    .ok_or(CheckpointConversionError::Plan)?;
+                continue;
+            }
+            match &tensor.source {
+                PinnedTensorSource::Protected { name, tp_axis } => {
+                    let mut primary: Box<dyn Read> = if *tp_axis < 0 {
+                        Box::new(checkpoint.tensor_reader(name)?)
+                    } else {
+                        Box::new(checkpoint.tensor_shard_reader(
+                            name,
+                            u8::try_from(*tp_axis).map_err(|_| CheckpointConversionError::Plan)?,
+                            self.rank,
+                            TP_DEGREE,
+                        )?)
+                    };
+                    let mut aux = io::empty();
+                    writer.write_tensor_deferred(index, &mut primary, &mut aux)?;
+                }
+                PinnedTensorSource::Exl3 { stem } => {
+                    let mut primary = checkpoint.tensor_reader(&format!("{stem}.trellis"))?;
+                    let marker = checkpoint.tensor_reader(&format!("{stem}.mcg"))?;
+                    let suh = checkpoint.tensor_reader(&format!("{stem}.suh"))?;
+                    let svh = checkpoint.tensor_reader(&format!("{stem}.svh"))?;
+                    let mut aux = marker.chain(suh).chain(svh);
+                    writer.write_tensor_deferred(index, &mut primary, &mut aux)?;
+                }
+            }
+            pending_payload_bytes = pending_payload_bytes
+                .checked_add(tensor_payload_bytes(&tensor.spec)?)
+                .ok_or(CheckpointConversionError::Plan)?;
+            pending_tensors += 1;
+            if pending_tensors == CONVERSION_SYNC_BATCH_TENSORS {
+                writer.commit_pending()?;
+                completed_payload_bytes = completed_payload_bytes
+                    .checked_add(pending_payload_bytes)
+                    .ok_or(CheckpointConversionError::Plan)?;
+                pending_payload_bytes = 0;
+                pending_tensors = 0;
+                progress(PinnedConversionProgress {
+                    completed_tensors: writer.completed_tensors(),
+                    total_tensors: self.tensor_count(),
+                    completed_payload_bytes,
+                    total_payload_bytes: self.source_payload_bytes,
+                });
+            }
+        }
+        writer.commit_pending()?;
+        completed_payload_bytes = completed_payload_bytes
+            .checked_add(pending_payload_bytes)
+            .ok_or(CheckpointConversionError::Plan)?;
+        progress(PinnedConversionProgress {
+            completed_tensors: writer.completed_tensors(),
+            total_tensors: self.tensor_count(),
+            completed_payload_bytes,
+            total_payload_bytes: self.source_payload_bytes,
+        });
+        Ok(())
+    }
+}
+
+#[must_use]
+pub fn pinned_exl3_weight_policy_sha256() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"glmaxx-weight-policy-v0\0capacity-exl3-v0\0");
+    let protected = protected_tensor_contracts();
+    for contract in protected.values() {
+        hasher.update(contract.name.as_bytes());
+        hasher.update([0]);
+        hasher.update(contract.role_id.to_le_bytes());
+        hasher.update([contract.tp_axis as u8]);
+        hasher.update(contract.dtype.name().as_bytes());
+        hasher.update([0]);
+    }
+    for layer in 3_u16..=78 {
+        for expert in 0_u16..256 {
+            for (projection, role_id, tp_axis) in [
+                ("gate", ROLE_ROUTED_GATE_UP, 0_i8),
+                ("up", ROLE_ROUTED_GATE_UP, 0_i8),
+                ("down", ROLE_ROUTED_DOWN, 1_i8),
+            ] {
+                hasher.update(
+                    format!("model.layers.{layer}.mlp.experts.{expert}.{projection}_proj.weight")
+                        .as_bytes(),
+                );
+                hasher.update([0]);
+                hasher.update(role_id.to_le_bytes());
+                hasher.update([tp_axis as u8]);
+                hasher.update(0x0200_u16.to_le_bytes());
+            }
+        }
+    }
+    hasher.finalize().into()
+}
+
+const fn collective_after(role_id: u16) -> &'static str {
+    match role_id {
+        ROLE_EMBEDDING => "tp_embedding_reduce",
+        ROLE_LM_HEAD => "distributed_sampling",
+        ROLE_O_PROJ | ROLE_DENSE_DOWN | ROLE_ROUTED_DOWN | ROLE_SHARED_DOWN => "tp_all_reduce",
+        _ => "none",
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn tensor_payload_bytes(spec: &StreamingTensorSpec) -> Result<u64, CheckpointConversionError> {
+    spec.primary_bytes()
+        .checked_add(spec.aux_bytes())
+        .ok_or(CheckpointConversionError::Plan)
+}
+
+/// Recomputes the SHA-256 of every file named by the checkpoint's immutable
+/// source manifest. Weight shards are hashed through the descriptors already
+/// opened by [`ShardedSafetensors`], closing the verify-then-reopen race.
+pub fn verify_pinned_source_files(
+    checkpoint: &ShardedSafetensors,
+    mut progress: impl FnMut(usize, usize, u64, &str),
+) -> Result<PinnedSourceVerification, PinnedSourceError> {
+    let source_path = checkpoint.source_path();
+    if source_path.file_name().and_then(|name| name.to_str())
+        != Some("model.safetensors.index.json")
+    {
+        return Err(PinnedSourceError::Inventory);
+    }
+    let root = source_path.parent().ok_or(PinnedSourceError::Inventory)?;
+    verify_source_marker(
+        &root.join("glmaxx-source-repository.txt"),
+        PINNED_EXL3_REPOSITORY,
+    )?;
+    verify_source_marker(
+        &root.join("glmaxx-source-revision.txt"),
+        EXL3_MODEL_REVISION,
+    )?;
+
+    let manifest_path = root.join("MANIFEST.sha256");
+    let (manifest_bytes, manifest_fingerprint) =
+        read_small_regular_file(&manifest_path, SOURCE_MANIFEST_MAX_BYTES)?;
+    if Sha256::digest(&manifest_bytes).as_slice() != PINNED_SOURCE_MANIFEST_SHA256 {
+        return Err(PinnedSourceError::ManifestIdentity);
+    }
+    verify_regular_fingerprint(&manifest_path, &manifest_fingerprint)?;
+    let expected = parse_source_manifest(&manifest_bytes)?;
+    if expected.len() != PINNED_SOURCE_FILE_COUNT
+        || expected.get("model.safetensors.index.json") != Some(&PINNED_EXL3_INDEX_SHA256)
+        || checkpoint
+            .shards()
+            .iter()
+            .any(|shard| !expected.contains_key(&shard.to_string_lossy().into_owned()))
+    {
+        return Err(PinnedSourceError::Inventory);
+    }
+
+    let mut verified_file_bytes = 0_u64;
+    for (completed, (name, expected_sha256)) in expected.iter().enumerate() {
+        let path = root.join(name);
+        let (observed_sha256, bytes) = if checkpoint.shards().contains(Path::new(name)) {
+            let digest = checkpoint.hash_shard_file(name)?;
+            let metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
+            (digest, metadata.len())
+        } else {
+            hash_regular_file(&path)?
+        };
+        if &observed_sha256 != expected_sha256 {
+            return Err(PinnedSourceError::FileDigest(name.clone()));
+        }
+        verified_file_bytes = verified_file_bytes
+            .checked_add(bytes)
+            .ok_or(PinnedSourceError::Overflow)?;
+        progress(completed + 1, expected.len(), verified_file_bytes, name);
+    }
+    Ok(PinnedSourceVerification {
+        manifest_sha256: PINNED_SOURCE_MANIFEST_SHA256,
+        verified_file_bytes,
+        file_sha256: expected,
+    })
+}
+
+fn parse_source_manifest(bytes: &[u8]) -> Result<BTreeMap<String, [u8; 32]>, PinnedSourceError> {
+    if bytes.last() != Some(&b'\n') {
+        return Err(PinnedSourceError::ManifestSyntax);
+    }
+    let mut files = BTreeMap::new();
+    for line in bytes[..bytes.len() - 1].split(|&byte| byte == b'\n') {
+        if line.len() < 67 || &line[64..66] != b"  " {
+            return Err(PinnedSourceError::ManifestSyntax);
+        }
+        let name =
+            std::str::from_utf8(&line[66..]).map_err(|_| PinnedSourceError::ManifestSyntax)?;
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            return Err(PinnedSourceError::ManifestSyntax);
+        }
+        let digest = decode_sha256(&line[..64])?;
+        if files.insert(name.to_owned(), digest).is_some() {
+            return Err(PinnedSourceError::ManifestSyntax);
+        }
+    }
+    Ok(files)
+}
+
+fn decode_sha256(bytes: &[u8]) -> Result<[u8; 32], PinnedSourceError> {
+    if bytes.len() != 64 {
+        return Err(PinnedSourceError::ManifestSyntax);
+    }
+    let mut digest = [0_u8; 32];
+    for (output, pair) in digest.iter_mut().zip(bytes.chunks_exact(2)) {
+        *output = decode_hex_nibble(pair[0])
+            .and_then(|high| decode_hex_nibble(pair[1]).map(|low| high << 4 | low))
+            .ok_or(PinnedSourceError::ManifestSyntax)?;
+    }
+    Ok(digest)
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceFingerprint {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+}
+
+impl SourceFingerprint {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            bytes: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+        }
+    }
+}
+
+fn open_regular_file(path: &Path) -> Result<(File, SourceFingerprint), PinnedSourceError> {
+    let path_metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.nlink() != 1
+    {
+        return Err(PinnedSourceError::UnsafePath(path.to_owned()));
+    }
+    let file = File::open(path).map_err(PinnedSourceError::Io)?;
+    let file_metadata = file.metadata().map_err(PinnedSourceError::Io)?;
+    let fingerprint = SourceFingerprint::from_metadata(&path_metadata);
+    if SourceFingerprint::from_metadata(&file_metadata) != fingerprint {
+        return Err(PinnedSourceError::UnsafePath(path.to_owned()));
+    }
+    Ok((file, fingerprint))
+}
+
+fn read_small_regular_file(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<(Vec<u8>, SourceFingerprint), PinnedSourceError> {
+    let (file, fingerprint) = open_regular_file(path)?;
+    if fingerprint.bytes == 0 || fingerprint.bytes > maximum_bytes {
+        return Err(PinnedSourceError::ManifestSyntax);
+    }
+    let mut bytes =
+        vec![0_u8; usize::try_from(fingerprint.bytes).map_err(|_| PinnedSourceError::Overflow)?];
+    read_exact_source_at(&file, &mut bytes, 0)?;
+    verify_regular_fingerprint(path, &fingerprint)?;
+    Ok((bytes, fingerprint))
+}
+
+fn hash_regular_file(path: &Path) -> Result<([u8; 32], u64), PinnedSourceError> {
+    let (file, fingerprint) = open_regular_file(path)?;
+    let mut buffer =
+        vec![
+            0_u8;
+            usize::try_from(fingerprint.bytes.clamp(1, SOURCE_HASH_BUFFER_BYTES as u64))
+                .map_err(|_| PinnedSourceError::Overflow)?
+        ];
+    let mut hasher = Sha256::new();
+    let mut consumed = 0_u64;
+    while consumed < fingerprint.bytes {
+        let chunk = usize::try_from((fingerprint.bytes - consumed).min(buffer.len() as u64))
+            .map_err(|_| PinnedSourceError::Overflow)?;
+        read_exact_source_at(&file, &mut buffer[..chunk], consumed)?;
+        hasher.update(&buffer[..chunk]);
+        consumed += chunk as u64;
+    }
+    let file_metadata = file.metadata().map_err(PinnedSourceError::Io)?;
+    if SourceFingerprint::from_metadata(&file_metadata) != fingerprint {
+        return Err(PinnedSourceError::SourceChanged(path.to_owned()));
+    }
+    verify_regular_fingerprint(path, &fingerprint)?;
+    Ok((hasher.finalize().into(), fingerprint.bytes))
+}
+
+fn verify_regular_fingerprint(
+    path: &Path,
+    expected: &SourceFingerprint,
+) -> Result<(), PinnedSourceError> {
+    let metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.nlink() != 1
+        || &SourceFingerprint::from_metadata(&metadata) != expected
+    {
+        return Err(PinnedSourceError::SourceChanged(path.to_owned()));
+    }
+    Ok(())
+}
+
+fn verify_source_marker(path: &Path, expected: &str) -> Result<(), PinnedSourceError> {
+    let (bytes, fingerprint) = read_small_regular_file(path, 1024)?;
+    if bytes != format!("{expected}\n").as_bytes() {
+        return Err(PinnedSourceError::SourceMarker(path.to_owned()));
+    }
+    verify_regular_fingerprint(path, &fingerprint)
+}
+
+fn read_exact_source_at(
+    file: &File,
+    mut output: &mut [u8],
+    mut offset: u64,
+) -> Result<(), PinnedSourceError> {
+    while !output.is_empty() {
+        let read = file
+            .read_at(output, offset)
+            .map_err(PinnedSourceError::Io)?;
+        if read == 0 {
+            return Err(PinnedSourceError::Io(io::Error::from(
+                io::ErrorKind::UnexpectedEof,
+            )));
+        }
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or(PinnedSourceError::Overflow)?;
+        output = &mut output[read..];
+    }
+    Ok(())
+}
+
+pub fn pinned_exl3_rank_plan(rank: u8) -> Result<PinnedRankPlan, CheckpointError> {
+    if rank >= TP_DEGREE {
+        return Err(CheckpointError::Rank(rank));
+    }
+    let mut sources = BTreeMap::new();
+    for contract in protected_tensor_contracts().into_values() {
+        let mut flags = FLAG_PROTECTED;
+        flags |= match contract.tp_axis {
+            -1 => FLAG_REPLICATED,
+            0 => FLAG_COLUMN_PARALLEL,
+            1 => FLAG_ROW_PARALLEL,
+            _ => return Err(CheckpointError::Internal),
+        };
+        if contract.role_id & 0xff00 == 0x0600 {
+            flags |= FLAG_SHARED_EXPERT;
+        }
+        if contract.is_mtp {
+            flags |= FLAG_MTP;
+        }
+        let shape = shape4(&contract.rank_shape)?;
+        let dtype = match contract.dtype {
+            SafeDtype::Bf16 => PlainDtype::Bf16,
+            SafeDtype::F16 => PlainDtype::Fp16,
+            SafeDtype::F32 => PlainDtype::Fp32,
+            _ => return Err(CheckpointError::Internal),
+        };
+        let identity = StreamingTensorIdentity {
+            tensor_id: 0,
+            name: contract.name.clone(),
+            role_id: contract.role_id,
+            layer_id: contract.layer_id,
+            expert_id: -1,
+            tp_shard_axis: contract.tp_axis,
+            flags,
+        };
+        let spec = StreamingTensorSpec::plain(
+            identity,
+            dtype,
+            u8::try_from(contract.rank_shape.len()).map_err(|_| CheckpointError::Overflow)?,
+            shape,
+            shape,
+        )
+        .map_err(CheckpointError::Stream)?;
+        if sources
+            .insert(
+                contract.name.clone(),
+                (
+                    spec,
+                    PinnedTensorSource::Protected {
+                        name: contract.name,
+                        tp_axis: contract.tp_axis,
+                    },
+                ),
+            )
+            .is_some()
+        {
+            return Err(CheckpointError::Internal);
+        }
+    }
+
+    for layer in 3_u16..=78 {
+        for expert in 0_u16..256 {
+            for projection in [
+                Exl3Projection::Gate,
+                Exl3Projection::Up,
+                Exl3Projection::Down,
+            ] {
+                let projection_name = match projection {
+                    Exl3Projection::Gate => "gate",
+                    Exl3Projection::Up => "up",
+                    Exl3Projection::Down => "down",
+                };
+                let (logical_k, logical_n, role_id, tp_axis, parallel_flag) = match projection {
+                    Exl3Projection::Gate | Exl3Projection::Up => {
+                        (6_144, 512, ROLE_ROUTED_GATE_UP, 0, FLAG_COLUMN_PARALLEL)
+                    }
+                    Exl3Projection::Down => (512, 6_144, ROLE_ROUTED_DOWN, 1, FLAG_ROW_PARALLEL),
+                };
+                let name = format!(
+                    "model.layers.{layer}.mlp.experts.{expert}.{projection_name}_proj.weight"
+                );
+                let stem = format!(
+                    "model.layers.{layer}.mlp.experts.{expert}.{projection_name}_proj.rank{rank}"
+                );
+                let metadata =
+                    Exl3Metadata::new(projection, layer, expert, rank, 3, logical_k, logical_n)
+                        .map_err(|_| CheckpointError::Internal)?;
+                let spec = StreamingTensorSpec::exl3_source(
+                    StreamingTensorIdentity {
+                        tensor_id: 0,
+                        name: name.clone(),
+                        role_id,
+                        layer_id: layer as i16,
+                        expert_id: expert as i16,
+                        tp_shard_axis: tp_axis,
+                        flags: parallel_flag
+                            | FLAG_ROUTED_EXPERT
+                            | if layer == 78 { FLAG_MTP } else { 0 },
+                    },
+                    metadata,
+                )
+                .map_err(CheckpointError::Stream)?;
+                if sources
+                    .insert(name, (spec, PinnedTensorSource::Exl3 { stem }))
+                    .is_some()
+                {
+                    return Err(CheckpointError::Internal);
+                }
+            }
+        }
+    }
+
+    if sources.len() != PINNED_RANK_TENSOR_COUNT {
+        return Err(CheckpointError::Internal);
+    }
+    let mut source_payload_bytes = 0_u64;
+    let mut tensors = Vec::with_capacity(sources.len());
+    for (index, (_, (mut spec, source))) in sources.into_iter().enumerate() {
+        spec.tensor_id = u32::try_from(index).map_err(|_| CheckpointError::Overflow)?;
+        source_payload_bytes = source_payload_bytes
+            .checked_add(spec.primary_bytes())
+            .and_then(|bytes| bytes.checked_add(spec.aux_bytes()))
+            .ok_or(CheckpointError::Overflow)?;
+        tensors.push(PinnedRankTensor { spec, source });
+    }
+    Ok(PinnedRankPlan {
+        rank,
+        tensors,
+        source_payload_bytes,
+    })
 }
 
 pub fn validate_pinned_exl3_checkpoint(
@@ -695,6 +1449,17 @@ fn parse_canonical_u8(value: &str) -> Option<u8> {
     (parsed.to_string() == value).then_some(parsed)
 }
 
+fn shape4(shape: &[u64]) -> Result<[u32; 4], CheckpointError> {
+    if shape.is_empty() || shape.len() > 4 {
+        return Err(CheckpointError::Internal);
+    }
+    let mut output = [1_u32; 4];
+    for (destination, &source) in output.iter_mut().zip(shape) {
+        *destination = u32::try_from(source).map_err(|_| CheckpointError::Overflow)?;
+    }
+    Ok(output)
+}
+
 #[derive(Debug)]
 pub enum CheckpointError {
     Revision(String),
@@ -707,6 +1472,8 @@ pub enum CheckpointError {
     Descriptor(String),
     ByteInventory,
     Overflow,
+    Rank(u8),
+    Stream(StreamRankError),
     Internal,
 }
 
@@ -718,9 +1485,88 @@ impl fmt::Display for CheckpointError {
 
 impl std::error::Error for CheckpointError {}
 
+#[derive(Debug)]
+pub enum PinnedSourceError {
+    Io(io::Error),
+    SafeTensor(SafeTensorError),
+    ManifestIdentity,
+    ManifestSyntax,
+    Inventory,
+    FileDigest(String),
+    SourceMarker(PathBuf),
+    UnsafePath(PathBuf),
+    SourceChanged(PathBuf),
+    Overflow,
+}
+
+impl From<SafeTensorError> for PinnedSourceError {
+    fn from(error: SafeTensorError) -> Self {
+        Self::SafeTensor(error)
+    }
+}
+
+impl fmt::Display for PinnedSourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for PinnedSourceError {}
+
+#[derive(Debug)]
+pub enum CheckpointConversionError {
+    SafeTensor(SafeTensorError),
+    Stream(StreamRankError),
+    Plan,
+}
+
+impl From<SafeTensorError> for CheckpointConversionError {
+    fn from(error: SafeTensorError) -> Self {
+        Self::SafeTensor(error)
+    }
+}
+
+impl From<StreamRankError> for CheckpointConversionError {
+    fn from(error: StreamRankError) -> Self {
+        Self::Stream(error)
+    }
+}
+
+impl fmt::Display for CheckpointConversionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for CheckpointConversionError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_manifest_parser_is_canonical_and_fail_closed() {
+        let valid = concat!(
+            "0000000000000000000000000000000000000000000000000000000000000000  a.json\n",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  model-0.safetensors\n"
+        );
+        let parsed = parse_source_manifest(valid.as_bytes()).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed["a.json"], [0; 32]);
+        assert_eq!(parsed["model-0.safetensors"], [0xff; 32]);
+
+        for malformed in [
+            valid.trim_end(),
+            "0000000000000000000000000000000000000000000000000000000000000000  ../a\n",
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF  a\n",
+            "0000000000000000000000000000000000000000000000000000000000000000 a\n",
+        ] {
+            assert!(matches!(
+                parse_source_manifest(malformed.as_bytes()),
+                Err(PinnedSourceError::ManifestSyntax)
+            ));
+        }
+    }
 
     #[test]
     fn protected_inventory_count_shapes_and_tp_rules_are_exact() {
@@ -815,5 +1661,69 @@ mod tests {
         let i32 = 933_888_u64;
         assert_eq!(bf16 + fp32 + fp16 + i16 + i32, PINNED_EXL3_PAYLOAD_BYTES);
         assert_eq!(76_usize * 256 * 3 * 4 * 4, PINNED_EXL3_COMPONENT_COUNT);
+    }
+
+    #[test]
+    fn four_rank_native_plans_have_identical_names_and_exact_source_bytes() {
+        let plans: Vec<_> = (0_u8..4)
+            .map(|rank| pinned_exl3_rank_plan(rank).unwrap())
+            .collect();
+        for plan in &plans {
+            assert_eq!(plan.tensor_count(), PINNED_RANK_TENSOR_COUNT);
+            assert_eq!(plan.source_payload_bytes(), 81_590_319_104);
+        }
+        let names: Vec<_> = plans[0]
+            .tensors
+            .iter()
+            .map(|tensor| tensor.spec.name.as_str())
+            .collect();
+        for plan in &plans[1..] {
+            assert_eq!(
+                names,
+                plan.tensors
+                    .iter()
+                    .map(|tensor| tensor.spec.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(plans[0].tensors[0].spec.name, "lm_head.weight");
+        assert_eq!(
+            plans[0].tensors.last().unwrap().spec.name,
+            "model.norm.weight"
+        );
+        assert!(matches!(
+            pinned_exl3_rank_plan(4),
+            Err(CheckpointError::Rank(4))
+        ));
+    }
+
+    #[test]
+    fn rank_manifest_inventory_and_weight_policy_are_stable() {
+        let rank0 = pinned_exl3_rank_plan(0).unwrap();
+        let rank3 = pinned_exl3_rank_plan(3).unwrap();
+        let rank0_manifest = rank0.manifest_tensors().unwrap();
+        let rank3_manifest = rank3.manifest_tensors().unwrap();
+        assert_eq!(rank0_manifest.len(), PINNED_RANK_TENSOR_COUNT);
+        assert_eq!(rank3_manifest.len(), PINNED_RANK_TENSOR_COUNT);
+        assert_eq!(
+            rank0_manifest
+                .iter()
+                .map(|tensor| (&tensor.name, tensor.codec_id, tensor.role_id))
+                .collect::<Vec<_>>(),
+            rank3_manifest
+                .iter()
+                .map(|tensor| (&tensor.name, tensor.codec_id, tensor.role_id))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rank0_manifest
+                .iter()
+                .map(|tensor| tensor.primary_bytes + tensor.aux_bytes)
+                .sum::<u64>(),
+            rank0.source_payload_bytes()
+        );
+        let policy = pinned_exl3_weight_policy_sha256();
+        assert_ne!(policy, [0; 32]);
+        assert_eq!(policy, pinned_exl3_weight_policy_sha256());
     }
 }

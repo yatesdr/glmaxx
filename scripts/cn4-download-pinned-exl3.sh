@@ -62,6 +62,10 @@ download_file() {
 }
 
 for file in \
+  .gitattributes \
+  LICENSE \
+  README.md \
+  calibration_manifest.json \
   config.json \
   generation_config.json \
   chat_template.jinja \
@@ -79,6 +83,11 @@ for layer in {0..78}; do
   printf -v file 'model-layer-%03d.safetensors' "${layer}"
   download_file "${file}"
 done
+
+(
+  cd "${destination}"
+  sha256sum --check --strict MANIFEST.sha256
+)
 
 printf '%s\n' \
   "${repository}" > "${destination}/glmaxx-source-repository.txt"

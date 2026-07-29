@@ -9,6 +9,7 @@ version.workspace = true
 glm-cache = { path = "../glm-cache" }
 glm-format = { path = "../glm-format" }
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 
 [lints]

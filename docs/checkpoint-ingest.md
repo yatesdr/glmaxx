@@ -4,7 +4,8 @@ Date: 2026-07-29
 
 Status: strict structural reader, exact pinned checkpoint manifest,
 role-specific TP slice readers, protected-tensor and EXL3 payload definitions,
-and resumable bounded-memory native rank writer implemented.
+resumable bounded-memory native rank writer, full source-file verification,
+and atomic four-rank publication implemented.
 
 ## Scope
 
@@ -24,8 +25,8 @@ The reader:
   sub-byte F4/F6 byte accounting;
 - exposes positional bounded reads, streaming copies, per-tensor SHA-256,
   and complete-file SHA-256;
-- reopens and revalidates a shard header and tensor descriptor before every
-  sharded tensor read;
+- retains the validated shard descriptors and verifies both open-descriptor
+  and pathname fingerprints before every sharded tensor read;
 - imports the pinned EXL3 `mcg`, `suh`, `svh`, and `trellis` tensors without
   transposition or an intermediate packed representation; and
 - validates the exact GLM-5.2 layer, expert, rank, projection, shape, dtype,
@@ -57,6 +58,8 @@ payloads in memory. It:
 - rejects short and overlong plane readers;
 - syncs payload bytes before publishing a tensor descriptor as its durable
   completion marker;
+- amortizes that ordering over bounded 64-tensor commit groups without making
+  an uncommitted payload visible;
 - resumes only descriptors whose geometry and payload/aux hashes revalidate;
 - rejects changed completed payloads, nonzero padding, incompatible plans,
   symlinks, hard links, and finalized files;
@@ -65,6 +68,21 @@ payloads in memory. It:
 - derives the same deterministic conversion and file UUIDs as the in-memory
   reference builder; and
 - produces byte-for-byte identical files to the reference builder in tests.
+
+`glm-format::checkpoint::PinnedRankPlan` now freezes all 59,585 native
+tensors per rank and exactly 81,590,319,104 source-plane bytes per rank.
+Protected tensors are streamed as replicated, contiguous axis-0, or row-wise
+axis-1 slices. Routed expert tensors chain `mcg+suh+svh` into the auxiliary
+plane and copy trellis bytes directly into the primary plane. The generated
+canonical rank manifest contains every tensor identity, role, codec, global
+and rank shape, source binding, TP slice, reconstruction rule, collective
+boundary, and physical plane byte count.
+
+`StreamingRankSet` stages exactly four `rank-N.g5n` files in a deterministic
+sibling directory. It derives one content identity, finalizes all four
+headers, fsyncs the staging directory, and atomically publishes the directory.
+Restart handles incomplete rank bodies and the case where only a subset of
+rank headers was finalized before a crash.
 
 The rank format carries protected BF16, FP16, and FP32 tensors directly with
 their exact logical rank and shape. Plain payloads have no auxiliary or
@@ -114,18 +132,54 @@ cargo run -p glm-cli --release -- \
 ```
 
 The repository includes `scripts/cn4-download-pinned-exl3.sh` for an external,
-resumable, per-file SHA-256-verified download. It never places weights in Git.
+resumable download. It fetches all 92 files in the immutable upstream
+`MANIFEST.sha256`, verifies each file independently, then runs a complete
+manifest check before publishing source revision markers. It never places
+weights in Git.
+
+The production conversion command is:
+
+```text
+GLMAXX_SOURCE_COMMIT=<exact-40-hex-commit> \
+  cargo build -p glm-cli --release
+
+target/release/glmaxx convert-pinned-exl3 \
+  /external/model/model.safetensors.index.json \
+  /external/native/capacity-exl3 \
+  <exact-40-hex-commit> \
+  profiles/profile-budget-v0.json \
+  fable-manifest-abi-v022.md
+```
+
+Before allocating the rank files, the command requires:
+
+- a binary with matching embedded Git provenance;
+- a complete, conversion-approved `capacity-exl3` profile budget;
+- exact independent-review lines pinning both specs, the operation manifest,
+  and the profile budget;
+- exact pinned checkpoint structure; and
+- full SHA-256 verification of all 92 source files, with weight shards hashed
+  through the descriptors already held by the converter.
+
+Conversion resumes at durable tensor-group boundaries. Publication is atomic,
+and an already-published directory is accepted only after a full four-file
+cryptographic audit.
 
 ## Fail-closed boundary
 
 This code proves source discovery, the complete pinned structural inventory,
 byte-exact EXL3 and protected-tensor payload definitions, role-specific
-bounded TP slicing, and a bounded-memory rank-file write primitive. It does
-not claim that a complete model has been loaded or that codec `0x0200` is
-GPU-loadable. The next conversion gate must add four-rank staging-directory
-publication and an external real-checkpoint smoke. The in-memory
-`RankFileBuilder` remains a fixture oracle rather than a production
-conversion path.
+bounded TP slicing, complete source authentication, and the production
+four-rank write/publication path. It does not claim that a complete model has
+been converted or loaded, or that codec `0x0200` is GPU-loadable.
+
+The checked-in `profiles/profile-budget-v0.json` is deliberately a blocked
+review candidate: its arithmetic proves that the exact source-plane weight
+bytes plus the 1M local DCP share fit against the pre-context observation, but
+the required post-context, graph, workspace, collective, staging, and
+fragmentation high-water measurements are not complete. The converter rejects
+that candidate until those measurements are filled in, its status changes to
+`complete`, and an independent hash-pinned review accepts it.
 
 Raw checkpoints, conversion scratch, and proof output remain external to
 Git.
