@@ -2,7 +2,7 @@
 //
 // This control proves direct consumption of the frozen FC2 value/SFA/SFB
 // planes by native block-scaled MMA. It materializes the unscaled projection
-// in BF16 in the upper half of the assignment accumulator allocation, expands
+// in a BF16 scratch plane after the live FP32 assignment accumulator, expands
 // it to FP32 with the two global scales, and invokes the deterministic
 // slot-ordered route-weight reduction. The production grouped operator must
 // fuse the scaling and weighted scatter into its epilogue.
@@ -257,7 +257,7 @@ __global__ void initialize_grouped_scratch(
       uint64_t{descriptor.assignments} * kHidden;
   ptr_d[group] = reinterpret_cast<GroupedElementD*>(
       descriptor.assignment_down_f32 +
-      projection_elements * sizeof(uint16_t) +
+      projection_elements * sizeof(float) +
       uint64_t{begin} * kHidden * sizeof(uint16_t));
   stride_a[group] =
       cutlass::make_cute_packed_stride(
@@ -340,7 +340,7 @@ int32_t enqueue_dense_control(const glmaxx_fc2_descriptor& descriptor,
       uint64_t{descriptor.assignments} * kHidden;
   auto* materialized = reinterpret_cast<ElementD*>(
       descriptor.assignment_down_f32 +
-      projection_elements * sizeof(uint16_t));
+      projection_elements * sizeof(float));
 
   typename Gemm::Arguments arguments{
       cutlass::gemm::GemmUniversalMode::kGemm,
@@ -465,7 +465,7 @@ int32_t enqueue_grouped_prepared(
       required_blocks < 4096 ? required_blocks : 4096);
   const auto* materialized = reinterpret_cast<const __nv_bfloat16*>(
       descriptor.assignment_down_f32 +
-      projection_elements * sizeof(uint16_t));
+      projection_elements * sizeof(float));
   expand_scaled_projection_grouped<<<blocks, kThreads, 0, stream>>>(
       descriptor, materialized);
   return static_cast<int32_t>(cudaPeekAtLastError());

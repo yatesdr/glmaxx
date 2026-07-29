@@ -351,7 +351,7 @@ fn decode_journal_event(bytes: &[u8]) -> Result<JournalEvent, StoreError> {
                 _ => return Err(StoreError::JournalEncoding),
             };
             let piece_count = usize::from(bytes[93]);
-            if piece_count == 0 || piece_count > 4 {
+            if piece_count == 0 || piece_count > 3 {
                 return Err(StoreError::JournalEncoding);
             }
             let mut pieces = Vec::with_capacity(piece_count);
@@ -426,8 +426,7 @@ fn decode_piece(bytes: &[u8], ordinal: usize) -> Result<TierPieceRecord, StoreEr
     let piece = match bytes.get(offset).copied() {
         Some(1) => TierPiece::TargetKv,
         Some(2) => TierPiece::TargetIndexer,
-        Some(3) => TierPiece::DraftKv,
-        Some(4) => TierPiece::DraftIndexer,
+        Some(3) => TierPiece::DraftSidecar,
         _ => return Err(StoreError::JournalEncoding),
     };
     let sha256 = bytes
@@ -541,15 +540,14 @@ mod tests {
         let pieces = [
             TierPiece::TargetKv,
             TierPiece::TargetIndexer,
-            TierPiece::DraftKv,
-            TierPiece::DraftIndexer,
+            TierPiece::DraftSidecar,
         ];
         DurablePageRequest {
             namespace: [0x11; 32],
             page_key: [key; 32],
             generation,
             mtp,
-            pieces: pieces[..if mtp { 4 } else { 2 }]
+            pieces: pieces[..if mtp { 3 } else { 2 }]
                 .iter()
                 .enumerate()
                 .map(|(ordinal, &piece)| PagePieceBytes {
@@ -565,7 +563,7 @@ mod tests {
         let root = temporary_store("durable");
         let mut store = FileTierStore::open(&root).unwrap();
         let record = store.publish(request(0x22, 7, true)).unwrap();
-        assert_eq!(record.pieces.len(), 4);
+        assert_eq!(record.pieces.len(), 3);
         assert!(
             record
                 .pieces
@@ -577,10 +575,10 @@ mod tests {
         let mut reopened = FileTierStore::open(&root).unwrap();
         let restored = reopened.restore([0x22; 32]).unwrap().unwrap();
         assert_eq!(restored.record.generation, 7);
-        assert_eq!(restored.pieces.len(), 4);
+        assert_eq!(restored.pieces.len(), 3);
         assert_eq!(
-            restored.pieces[&TierPiece::DraftIndexer][0],
-            0x22_u8.wrapping_add(3)
+            restored.pieces[&TierPiece::DraftSidecar][0],
+            0x22_u8.wrapping_add(2)
         );
         fs::remove_dir_all(root).unwrap();
     }

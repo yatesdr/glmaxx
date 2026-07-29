@@ -3,7 +3,10 @@ use std::{
     fmt,
 };
 
-use crate::{INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES, PAGE_TOKENS, TARGET_LAYERS};
+use crate::{
+    DRAFT_COMMITTED_RECORD_BYTES, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES,
+    PAGE_TOKENS, TARGET_LAYERS,
+};
 
 type RecoveryState = (TierRecord, BTreeMap<TierPiece, [u8; 32]>, bool);
 
@@ -11,6 +14,7 @@ pub const TARGET_KV_PAGE_BYTES: u64 = PAGE_TOKENS * TARGET_LAYERS * KV_RECORD_BY
 pub const TARGET_INDEXER_PAGE_BYTES: u64 = PAGE_TOKENS * INDEXER_GROUPS * INDEXER_RECORD_BYTES;
 pub const DRAFT_KV_PAGE_BYTES: u64 = PAGE_TOKENS * KV_RECORD_BYTES;
 pub const DRAFT_INDEXER_PAGE_BYTES: u64 = PAGE_TOKENS * INDEXER_RECORD_BYTES;
+pub const DRAFT_SIDECAR_PAGE_BYTES: u64 = PAGE_TOKENS * DRAFT_COMMITTED_RECORD_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -24,8 +28,7 @@ pub enum Tier {
 pub enum TierPiece {
     TargetKv = 1,
     TargetIndexer = 2,
-    DraftKv = 3,
-    DraftIndexer = 4,
+    DraftSidecar = 3,
 }
 
 impl TierPiece {
@@ -34,8 +37,7 @@ impl TierPiece {
         match self {
             Self::TargetKv => TARGET_KV_PAGE_BYTES,
             Self::TargetIndexer => TARGET_INDEXER_PAGE_BYTES,
-            Self::DraftKv => DRAFT_KV_PAGE_BYTES,
-            Self::DraftIndexer => DRAFT_INDEXER_PAGE_BYTES,
+            Self::DraftSidecar => DRAFT_SIDECAR_PAGE_BYTES,
         }
     }
 }
@@ -67,8 +69,7 @@ impl TierRecord {
             vec![
                 TierPiece::TargetKv,
                 TierPiece::TargetIndexer,
-                TierPiece::DraftKv,
-                TierPiece::DraftIndexer,
+                TierPiece::DraftSidecar,
             ]
         } else {
             vec![TierPiece::TargetKv, TierPiece::TargetIndexer]
@@ -81,6 +82,7 @@ impl TierRecord {
             Tier::Nvme => 4096,
         };
         let mut seen = BTreeSet::new();
+        let mut ranges = Vec::with_capacity(self.pieces.len());
         for piece in &self.pieces {
             if !required.contains(&piece.piece)
                 || !seen.insert(piece.piece)
@@ -90,9 +92,54 @@ impl TierRecord {
             {
                 return Err(TierError::Pieces);
             }
+            let end = piece
+                .storage_offset
+                .checked_add(piece.byte_length)
+                .ok_or(TierError::Overflow)?;
+            if ranges
+                .iter()
+                .any(|&(start, prior_end)| piece.storage_offset < prior_end && start < end)
+            {
+                return Err(TierError::Pieces);
+            }
+            ranges.push((piece.storage_offset, end));
         }
         Ok(())
     }
+}
+
+pub fn encode_draft_sidecar_payload(
+    draft_kv: &[u8],
+    draft_indexer: &[u8],
+) -> Result<Vec<u8>, TierError> {
+    if draft_kv.len() != DRAFT_KV_PAGE_BYTES as usize
+        || draft_indexer.len() != DRAFT_INDEXER_PAGE_BYTES as usize
+    {
+        return Err(TierError::Pieces);
+    }
+    let mut output = Vec::with_capacity(DRAFT_SIDECAR_PAGE_BYTES as usize);
+    for token in 0..PAGE_TOKENS as usize {
+        let kv_start = token * KV_RECORD_BYTES as usize;
+        let indexer_start = token * INDEXER_RECORD_BYTES as usize;
+        output.extend_from_slice(&draft_kv[kv_start..kv_start + KV_RECORD_BYTES as usize]);
+        output.extend_from_slice(
+            &draft_indexer[indexer_start..indexer_start + INDEXER_RECORD_BYTES as usize],
+        );
+    }
+    Ok(output)
+}
+
+pub fn decode_draft_sidecar_payload(payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>), TierError> {
+    if payload.len() != DRAFT_SIDECAR_PAGE_BYTES as usize {
+        return Err(TierError::Pieces);
+    }
+    let mut draft_kv = Vec::with_capacity(DRAFT_KV_PAGE_BYTES as usize);
+    let mut draft_indexer = Vec::with_capacity(DRAFT_INDEXER_PAGE_BYTES as usize);
+    for token_record in payload.chunks_exact(DRAFT_COMMITTED_RECORD_BYTES as usize) {
+        draft_kv.extend_from_slice(&token_record[..KV_RECORD_BYTES as usize]);
+        draft_indexer.extend_from_slice(&token_record[KV_RECORD_BYTES as usize..]);
+    }
+    Ok((draft_kv, draft_indexer))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -337,8 +384,7 @@ mod tests {
         let pieces = [
             TierPiece::TargetKv,
             TierPiece::TargetIndexer,
-            TierPiece::DraftKv,
-            TierPiece::DraftIndexer,
+            TierPiece::DraftSidecar,
         ];
         TierRecord {
             namespace: [0x11; 32],
@@ -346,7 +392,7 @@ mod tests {
             generation: 7,
             tier: Tier::Nvme,
             mtp,
-            pieces: pieces[..if mtp { 4 } else { 2 }]
+            pieces: pieces[..if mtp { 3 } else { 2 }]
                 .iter()
                 .enumerate()
                 .map(|(ordinal, &piece)| TierPieceRecord {
@@ -365,7 +411,41 @@ mod tests {
         assert_eq!(TARGET_INDEXER_PAGE_BYTES, 177_408);
         assert_eq!(DRAFT_KV_PAGE_BYTES, 23_552);
         assert_eq!(DRAFT_INDEXER_PAGE_BYTES, 8_448);
+        assert_eq!(DRAFT_SIDECAR_PAGE_BYTES, 32_000);
         record(true).validate().unwrap();
+    }
+
+    #[test]
+    fn draft_sidecar_is_one_token_major_round_trip_payload() {
+        let draft_kv: Vec<_> = (0..DRAFT_KV_PAGE_BYTES)
+            .map(|index| (index / KV_RECORD_BYTES) as u8)
+            .collect();
+        let draft_indexer: Vec<_> = (0..DRAFT_INDEXER_PAGE_BYTES)
+            .map(|index| 0x80 | (index / INDEXER_RECORD_BYTES) as u8)
+            .collect();
+        let payload = encode_draft_sidecar_payload(&draft_kv, &draft_indexer).unwrap();
+        assert_eq!(payload.len(), 32_000);
+        for token in 0..PAGE_TOKENS as usize {
+            let record = &payload[token * 500..(token + 1) * 500];
+            assert!(record[..368].iter().all(|&byte| byte == token as u8));
+            assert!(
+                record[368..]
+                    .iter()
+                    .all(|&byte| byte == (0x80 | token as u8))
+            );
+        }
+        assert_eq!(
+            decode_draft_sidecar_payload(&payload).unwrap(),
+            (draft_kv, draft_indexer)
+        );
+        assert!(decode_draft_sidecar_payload(&payload[..payload.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn tier_piece_ranges_must_not_overlap() {
+        let mut record = record(true);
+        record.pieces[2].storage_offset = record.pieces[1].storage_offset;
+        assert_eq!(record.validate(), Err(TierError::Pieces));
     }
 
     #[test]

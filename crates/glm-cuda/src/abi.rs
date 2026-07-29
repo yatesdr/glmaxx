@@ -510,6 +510,7 @@ pub fn fc2_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, KernelErr
     let activation_scales = padded_assignments.checked_mul(u64::from(LOCAL_INTERMEDIATE) / 16);
     let activation_globals = assignments.checked_mul(4);
     let assignment_down = assignments.checked_mul(u64::from(HIDDEN) * 4);
+    let materialized_down_bf16 = assignments.checked_mul(u64::from(HIDDEN) * 2);
     let token_output = rows.checked_mul(u64::from(HIDDEN) * 4);
     let slot_assignment = rows.checked_mul(u64::from(TOP_K) * 4);
     [
@@ -517,6 +518,7 @@ pub fn fc2_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, KernelErr
         activation_scales,
         activation_globals,
         assignment_down,
+        materialized_down_bf16,
         token_output,
         slot_assignment,
         Some(4),
@@ -837,11 +839,8 @@ mod tests {
 
     #[test]
     fn fc2_workspace_includes_deterministic_scatter_state() {
-        assert_eq!(fc2_workspace_bytes(1, 8).unwrap(), 258_116);
-        assert_eq!(
-            fc2_grouped_workspace_bytes(1, 8).unwrap(),
-            8 * 128 * (LOCAL_INTERMEDIATE / 16) as u64 + 254_020
-        );
+        assert_eq!(fc2_workspace_bytes(1, 8).unwrap(), 356_420);
+        assert_eq!(fc2_grouped_workspace_bytes(1, 8).unwrap(), 385_092);
         assert!(
             fc2_grouped_workspace_bytes(128, 1_024).unwrap()
                 > fc2_workspace_bytes(128, 1_024).unwrap()

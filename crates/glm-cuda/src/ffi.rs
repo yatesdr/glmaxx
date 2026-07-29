@@ -1491,7 +1491,7 @@ impl NativeFc2Fixture {
             NativeBuffer::allocate(fc2_grouped_sfa_capacity_bytes(assignments)?)?;
         let activation_globals = NativeBuffer::allocate(u64::from(assignments) * 4)?;
         let assignment_down =
-            NativeBuffer::allocate(u64::from(assignments) * u64::from(HIDDEN) * 4)?;
+            NativeBuffer::allocate(u64::from(assignments) * u64::from(HIDDEN) * (4 + 2))?;
         let output = NativeBuffer::allocate(u64::from(rows) * u64::from(HIDDEN) * 4)?;
         let slot_assignment =
             NativeBuffer::allocate(u64::from(rows) * u64::from(crate::TOP_K) * 4)?;

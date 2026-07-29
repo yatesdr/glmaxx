@@ -24,7 +24,9 @@ pub use residency::{
 };
 pub use store::{DurablePageRequest, FileTierStore, PagePieceBytes, RestoredPage, StoreError};
 pub use tier::{
-    JournalEvent, Tier, TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord,
+    DRAFT_INDEXER_PAGE_BYTES, DRAFT_KV_PAGE_BYTES, DRAFT_SIDECAR_PAGE_BYTES, JournalEvent, Tier,
+    TierError, TierJournal, TierPiece, TierPieceRecord, TierRecord, decode_draft_sidecar_payload,
+    encode_draft_sidecar_payload,
 };
 
 pub const PAGE_TOKENS: u64 = 64;

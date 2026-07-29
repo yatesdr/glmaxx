@@ -520,6 +520,7 @@ extern "C" uint64_t glmaxx_nvfp4_routed_fc2_workspace_bytes(
          padded * kLocalIntermediate / 16 +
          uint64_t{assignments} * sizeof(float) +
          uint64_t{assignments} * kHidden * sizeof(float) +
+         uint64_t{assignments} * kHidden * sizeof(uint16_t) +
          uint64_t{rows} * kHidden * sizeof(float) +
          uint64_t{rows} * kTopK * sizeof(uint32_t) + sizeof(uint32_t);
 }

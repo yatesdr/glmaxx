@@ -42,6 +42,12 @@ slots `0..7` in that fixed order. A `(token,slot) -> assignment` table and a
 device validation word make malformed or duplicate routes observable without
 nondeterministic floating-point atomics.
 
+The CUTLASS development control writes its BF16 projection to a separate
+`assignments * 6,144 * 2` scratch plane immediately after the live
+`assignments * 6,144 * 4` FP32 plane. Expansion reads only the BF16 plane and
+writes only the non-overlapping FP32 plane; in-place widening is forbidden
+because CUDA CTAs have no global execution order.
+
 Gate and up are independently column-sharded, then concatenated gate-first.
 The source tensor is not sliced after concatenation.
 
