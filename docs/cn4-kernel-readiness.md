@@ -25,7 +25,9 @@ proved both CUTLASS scale layouts, linked both 224-byte Rust/native
 descriptors, and ran all 153 Rust tests without creating a CUDA context. The
 four compile-only dense/grouped FC1/FC2 controls contain exactly 256 native
 SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions. There is still no FC2
-device launch, hardware numerical result, counter, or timing evidence.
+device launch, hardware numerical result, counter, or timing evidence. The
+latest compact result is
+`docs/cn4-routed-fc2-preparation-20260729.md`.
 
 The first cn4 session must establish correctness before replacing the
 CUDA-core dot product with the CUTLASS block-scaled MMA path. A source file
