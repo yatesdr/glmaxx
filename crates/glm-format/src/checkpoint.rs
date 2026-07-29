@@ -146,6 +146,7 @@ pub struct CheckpointInventoryReport {
 pub struct PinnedSourceVerification {
     pub manifest_sha256: [u8; 32],
     pub verified_file_bytes: u64,
+    source_markers_verified: bool,
     file_sha256: BTreeMap<String, [u8; 32]>,
 }
 
@@ -163,6 +164,11 @@ impl PinnedSourceVerification {
     #[must_use]
     pub const fn verified_file_bytes(&self) -> u64 {
         self.verified_file_bytes
+    }
+
+    #[must_use]
+    pub const fn source_markers_verified(&self) -> bool {
+        self.source_markers_verified
     }
 
     #[must_use]
@@ -524,14 +530,7 @@ pub fn verify_pinned_source_files(
         return Err(PinnedSourceError::Inventory);
     }
     let root = source_path.parent().ok_or(PinnedSourceError::Inventory)?;
-    verify_source_marker(
-        &root.join("glmaxx-source-repository.txt"),
-        PINNED_EXL3_REPOSITORY,
-    )?;
-    verify_source_marker(
-        &root.join("glmaxx-source-revision.txt"),
-        EXL3_MODEL_REVISION,
-    )?;
+    let source_markers_verified = verify_optional_source_markers(root)?;
 
     let manifest_path = root.join("MANIFEST.sha256");
     let (manifest_bytes, manifest_fingerprint) =
@@ -572,6 +571,7 @@ pub fn verify_pinned_source_files(
     Ok(PinnedSourceVerification {
         manifest_sha256: PINNED_SOURCE_MANIFEST_SHA256,
         verified_file_bytes,
+        source_markers_verified,
         file_sha256: expected,
     })
 }
@@ -724,6 +724,27 @@ fn verify_source_marker(path: &Path, expected: &str) -> Result<(), PinnedSourceE
         return Err(PinnedSourceError::SourceMarker(path.to_owned()));
     }
     verify_regular_fingerprint(path, &fingerprint)
+}
+
+fn verify_optional_source_markers(root: &Path) -> Result<bool, PinnedSourceError> {
+    let repository_marker = root.join("glmaxx-source-repository.txt");
+    let revision_marker = root.join("glmaxx-source-revision.txt");
+    match (
+        repository_marker
+            .try_exists()
+            .map_err(PinnedSourceError::Io)?,
+        revision_marker
+            .try_exists()
+            .map_err(PinnedSourceError::Io)?,
+    ) {
+        (false, false) => Ok(false),
+        (true, true) => {
+            verify_source_marker(&repository_marker, PINNED_EXL3_REPOSITORY)?;
+            verify_source_marker(&revision_marker, EXL3_MODEL_REVISION)?;
+            Ok(true)
+        }
+        _ => Err(PinnedSourceError::SourceMarkerSet),
+    }
 }
 
 fn read_exact_source_at(
@@ -1503,6 +1524,7 @@ pub enum PinnedSourceError {
     ManifestSyntax,
     Inventory,
     FileDigest(String),
+    SourceMarkerSet,
     SourceMarker(PathBuf),
     UnsafePath(PathBuf),
     SourceChanged(PathBuf),
@@ -1552,7 +1574,57 @@ impl std::error::Error for CheckpointConversionError {}
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDirectory(PathBuf);
+
+    impl TempDirectory {
+        fn new() -> Self {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "glmaxx-checkpoint-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn source_markers_are_optional_as_a_complete_exact_pair_only() {
+        let root = TempDirectory::new();
+        assert!(!verify_optional_source_markers(&root.0).unwrap());
+
+        let repository = root.0.join("glmaxx-source-repository.txt");
+        let revision = root.0.join("glmaxx-source-revision.txt");
+        fs::write(&repository, format!("{PINNED_EXL3_REPOSITORY}\n")).unwrap();
+        assert!(matches!(
+            verify_optional_source_markers(&root.0),
+            Err(PinnedSourceError::SourceMarkerSet)
+        ));
+
+        fs::write(&revision, format!("{EXL3_MODEL_REVISION}\n")).unwrap();
+        assert!(verify_optional_source_markers(&root.0).unwrap());
+
+        fs::write(&revision, b"wrong\n").unwrap();
+        assert!(matches!(
+            verify_optional_source_markers(&root.0),
+            Err(PinnedSourceError::SourceMarker(_))
+        ));
+    }
 
     #[test]
     fn source_manifest_parser_is_canonical_and_fail_closed() {

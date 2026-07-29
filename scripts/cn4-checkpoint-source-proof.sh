@@ -51,12 +51,23 @@ if [[ "$(shasum -a 256 "${manifest}" | awk '{print $1}')" != \
   echo "Source manifest identity mismatch" >&2
   exit 65
 fi
-if [[ "$(cat "${model_dir}/glmaxx-source-repository.txt" 2>/dev/null || true)" != \
-      "${expected_repository}" ||
-      "$(cat "${model_dir}/glmaxx-source-revision.txt" 2>/dev/null || true)" != \
-      "${expected_revision}" ]]; then
-  echo "Pinned source markers are absent or incorrect" >&2
+repository_marker="${model_dir}/glmaxx-source-repository.txt"
+revision_marker="${model_dir}/glmaxx-source-revision.txt"
+marker_count=0
+[[ -e "${repository_marker}" ]] && marker_count=$((marker_count + 1))
+[[ -e "${revision_marker}" ]] && marker_count=$((marker_count + 1))
+if [[ "${marker_count}" == "1" ]]; then
+  echo "Pinned source marker set is incomplete" >&2
   exit 65
+fi
+marker_posture="exact-content-addressed-manifest"
+if [[ "${marker_count}" == "2" ]]; then
+  if [[ "$(cat "${repository_marker}")" != "${expected_repository}" ||
+        "$(cat "${revision_marker}")" != "${expected_revision}" ]]; then
+    echo "Pinned source markers are incorrect" >&2
+    exit 65
+  fi
+  marker_posture="exact-manifest-and-optional-source-markers"
 fi
 if find "${model_dir}" -maxdepth 1 -name '*.part' -print -quit | grep -q .; then
   echo "Checkpoint still contains an incomplete download" >&2
@@ -75,6 +86,14 @@ printf '%s\n' "${GLMAXX_CONTAINER_DIGEST}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/container-digest.txt"
 printf '%s\n' "${model_dir}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/checkpoint-path.txt"
+printf '%s\n' \
+  "schema=glmaxx.pinned-source-binding.v1" \
+  "repository=${expected_repository}" \
+  "revision=${expected_revision}" \
+  "manifest_sha256=${expected_manifest_sha256}" \
+  "index_sha256=346227a4ea44b6063017739ee38a830319dc10305ccf714734095e27b28064c2" \
+  "identity_basis=${marker_posture}" \
+  | tee "${GLMAXX_EVIDENCE_DIR}/source-binding.txt"
 shasum -a 256 \
   "${manifest}" \
   "${index}" \
@@ -117,6 +136,8 @@ if ! grep -Fq '"verdict": "PINNED_CHECKPOINT_STRUCTURE_PASS"' \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-structure.json" ||
    ! grep -Fq '"verdict": "PINNED_CHECKPOINT_SOURCE_PASS"' \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
+   ! grep -Fq "\"identity_basis\": \"${marker_posture}\"" \
+    "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" ||
    ! grep -Fq '"verified_file_count": 92' \
     "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json"; then
   echo "Pinned checkpoint proof did not emit all required pass records" >&2
@@ -126,6 +147,7 @@ fi
 shasum -a 256 \
   "${GLMAXX_EVIDENCE_DIR}/checkpoint-structure.json" \
   "${GLMAXX_EVIDENCE_DIR}/checkpoint-source.json" \
+  "${GLMAXX_EVIDENCE_DIR}/source-binding.txt" \
   "${GLMAXX_EVIDENCE_DIR}"/exl3-layer3-expert0-rank0-*.json \
   | tee "${GLMAXX_EVIDENCE_DIR}/proof-sha256.txt"
 

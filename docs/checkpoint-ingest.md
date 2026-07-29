@@ -140,9 +140,13 @@ cargo run -p glm-cli --release -- \
 ```
 
 This second proof is deliberately stronger and slower than the structural
-proof. It requires the exact repository/revision marker files, verifies all
-92 manifest entries, hashes safetensor shards through the already-open
-descriptors, and emits the complete per-file identity map. On cn4,
+proof. The pinned repository and revision are content-bound by the exact
+manifest and index hashes compiled into the verifier. Downloader-created
+repository/revision marker files are verified when both are present; neither
+is required for an existing externally managed checkpoint, and a partial or
+incorrect marker set fails closed. The proof verifies all 92 manifest
+entries, hashes safetensor shards through the already-open descriptors, and
+emits the complete per-file identity map and identity basis. On cn4,
 `scripts/cn4-checkpoint-source-proof.sh` runs both proofs and twice
 reconstructs actual layer-3/expert-0/rank-0 gate, up, and down payloads into a
 fresh external evidence directory without enabling CUDA.

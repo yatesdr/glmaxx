@@ -304,6 +304,8 @@ struct CheckpointSourceProof {
     schema: &'static str,
     repository: &'static str,
     revision: &'static str,
+    identity_basis: &'static str,
+    source_markers_verified: bool,
     source: String,
     structure_sha256: String,
     manifest_sha256: String,
@@ -335,9 +337,15 @@ fn checkpoint_source_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>
         .map(|(name, digest)| (name.clone(), hex(digest)))
         .collect();
     let proof = CheckpointSourceProof {
-        schema: "glmaxx.pinned-checkpoint-source-proof.v1",
+        schema: "glmaxx.pinned-checkpoint-source-proof.v2",
         repository: PINNED_EXL3_REPOSITORY,
         revision: EXL3_MODEL_REVISION,
+        identity_basis: if source.source_markers_verified() {
+            "exact-manifest-and-optional-source-markers"
+        } else {
+            "exact-content-addressed-manifest"
+        },
+        source_markers_verified: source.source_markers_verified(),
         source: path.display().to_string(),
         structure_sha256: hex(&inventory.structure_sha256),
         manifest_sha256: hex(&source.manifest_sha256()),
