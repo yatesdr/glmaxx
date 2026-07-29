@@ -87,17 +87,12 @@ impl FileTierStore {
         let (events, next_transaction) = decode_journal(&journal_bytes)?;
         let journal = TierJournal::from_events(events)?;
         let published = journal.recover()?;
-        let next_data_offset = published
-            .values()
-            .flat_map(|record| &record.pieces)
-            .try_fold(0_u64, |maximum, piece| {
-                piece
-                    .storage_offset
-                    .checked_add(piece.byte_length)
-                    .map(|end| maximum.max(end))
-                    .ok_or(StoreError::Overflow)
-            })
-            .and_then(|end| align_up(end, NVME_ALIGNMENT))?;
+        let data_bytes = data.metadata()?.len();
+        validate_catalog_extents(&published, data_bytes)?;
+        // Never reuse bytes after a crash orphan or an extent retained by an
+        // older snapshot. Segment cleaning is the only future reclamation
+        // authority; the blocking store remains physically append-only.
+        let next_data_offset = align_up(data_bytes, NVME_ALIGNMENT)?;
         if valid_journal_bytes != journal_bytes.len() {
             journal_file
                 .set_len(u64::try_from(valid_journal_bytes).map_err(|_| StoreError::Overflow)?)?;
@@ -286,12 +281,37 @@ impl FileTierReader {
         journal_file.read_to_end(&mut journal_bytes)?;
         let (events, _) = decode_journal(&journal_bytes)?;
         let published = TierJournal::from_events(events)?.recover()?;
+        validate_catalog_extents(&published, data.metadata()?.len())?;
         Ok(Self { data, published })
     }
 
     pub fn restore(&mut self, page_key: [u8; 32]) -> Result<Option<RestoredPage>, StoreError> {
         restore_published(&mut self.data, &self.published, page_key)
     }
+}
+
+fn validate_catalog_extents(
+    published: &BTreeMap<[u8; 32], TierRecord>,
+    data_bytes: u64,
+) -> Result<(), StoreError> {
+    let mut extents = Vec::new();
+    for record in published.values() {
+        for piece in &record.pieces {
+            let end = piece
+                .storage_offset
+                .checked_add(piece.byte_length)
+                .ok_or(StoreError::Overflow)?;
+            if end > data_bytes {
+                return Err(StoreError::CatalogOutOfBounds);
+            }
+            extents.push((piece.storage_offset, end));
+        }
+    }
+    extents.sort_unstable();
+    if extents.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+        return Err(StoreError::CatalogOverlap);
+    }
+    Ok(())
 }
 
 fn restore_published(
@@ -590,6 +610,8 @@ pub enum StoreError {
     JournalSequence,
     JournalEncoding,
     JournalChecksum,
+    CatalogOverlap,
+    CatalogOutOfBounds,
     Overflow,
     InjectedCrash,
     WritePoisoned,
@@ -885,6 +907,102 @@ mod tests {
             Err(StoreError::Checksum)
         ));
         drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_rejects_cross_page_extent_overlap() {
+        let root = temporary_store("catalog-overlap");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let first = store.publish(request(0x51, 1, false)).unwrap();
+        store.publish(request(0x52, 1, false)).unwrap();
+        drop(store);
+
+        let journal_path = root.join("journal.log");
+        let journal_bytes = fs::read(&journal_path).unwrap();
+        let (mut events, _) = decode_journal(&journal_bytes).unwrap();
+        let second = events
+            .iter_mut()
+            .find_map(|event| match event {
+                JournalEvent::Begin {
+                    transaction: 2,
+                    record,
+                } => Some(record),
+                _ => None,
+            })
+            .unwrap();
+        second.pieces[0].storage_offset = first.pieces[0].storage_offset;
+        second.validate().unwrap();
+
+        let mut rewritten = Vec::with_capacity(journal_bytes.len());
+        for event in &events {
+            rewritten.extend_from_slice(&encode_journal_event(event).unwrap());
+        }
+        fs::write(&journal_path, rewritten).unwrap();
+
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::CatalogOverlap)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::CatalogOverlap)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_rejects_catalog_extent_beyond_data_file() {
+        let root = temporary_store("catalog-bounds");
+        let mut store = FileTierStore::open(&root).unwrap();
+        store.publish(request(0x53, 1, false)).unwrap();
+        drop(store);
+
+        let data_path = root.join("pages.dat");
+        let data = OpenOptions::new().write(true).open(&data_path).unwrap();
+        let truncated_bytes = data.metadata().unwrap().len() - 1;
+        data.set_len(truncated_bytes).unwrap();
+        data.sync_data().unwrap();
+        drop(data);
+
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::CatalogOutOfBounds)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::CatalogOutOfBounds)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resumed_publication_preserves_every_byte_before_physical_eof() {
+        let root = temporary_store("physical-append");
+        let mut store = FileTierStore::open(&root).unwrap();
+        store.publish(request(0x54, 1, false)).unwrap();
+        drop(store);
+
+        let data_path = root.join("pages.dat");
+        let garbage_start = fs::metadata(&data_path).unwrap().len();
+        let garbage = [0xa5_u8; 8192];
+        let mut data = OpenOptions::new().append(true).open(&data_path).unwrap();
+        data.write_all(&garbage).unwrap();
+        data.sync_data().unwrap();
+        drop(data);
+        let prior_physical_eof = fs::metadata(&data_path).unwrap().len();
+
+        let mut reopened = FileTierStore::open(&root).unwrap();
+        let second = reopened.publish(request(0x55, 1, false)).unwrap();
+        assert!(
+            second.pieces[0].storage_offset
+                >= align_up(prior_physical_eof, NVME_ALIGNMENT).unwrap()
+        );
+        let mut preserved = [0_u8; 8192];
+        reopened.data.seek(SeekFrom::Start(garbage_start)).unwrap();
+        reopened.data.read_exact(&mut preserved).unwrap();
+        assert_eq!(preserved, garbage);
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 
