@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Base commit:
-`8eca10a5b69581ce7da4316f9737de0de9c609e8`
+`fc70f6626acae58746c9672482330ae151917b8d`
 
 Review scope: the CPU/offline workstreams requested after the Phase-A engine
 contract. cn4 was used for a no-device compile and test reproduction; no GPU
@@ -16,22 +16,25 @@ Hash these files again at review start and finish:
 | File | SHA-256 |
 |---|---|
 | `spec/engine-v0.md` | `efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a` |
-| `spec/format-v0.md` | `ab6066d5a9ebab8fbc42966f4193f867b7c2c7cec10ec8a1e8be17fcf0f470f6` |
+| `spec/format-v0.md` | `619a3923c18f43edb23ca9de44b51b84c6d2f6432915908db5fa3a2e0e7cf45a` |
 | `docs/native-engine-plan.md` | `9662c82bea15c7b336ac3efa41a12a1e627a511a5f8da603ba466d5bcb6ae036` |
 | `docs/exl3-trellis-cpu-contract.md` | `7c5bfa0795aa6b78646b00b029f8d4edc7c15491d69ea19e423f770701b5cdc3` |
 | `docs/offline-serving-foundation.md` | `576932d119332774df2a8a65d85a4f185e804504acca949561689f03b02f28ae` |
-| `docs/checkpoint-ingest.md` | `cad2020ffe5e87c423cacd7aee5f3e3d251366126adad7cc13b7c8968ece1b79` |
+| `docs/checkpoint-ingest.md` | `b25ce1ba6d9c8406ed9570c95979ded52edb090d05d2f5770cf9eae57f62b6da` |
 | `crates/glm-format/src/exl3.rs` | `6ba46fa98979711f5ecaaccf9be150045de768648e2a31fb5fbf49d56d95bbe4` |
 | `crates/glm-format/src/container.rs` | `c10d36c8a130647a22fc36a59d31337628f40f6e48bfacd916823d3a3f66772a` |
-| `crates/glm-format/src/safetensors.rs` | `a0a026cd76dcd5597e34d44362fac96b44bd7715ea638c60b0db91503a7b6d75` |
-| `crates/glm-format/src/stream.rs` | `3e496ebe852f453597bd022a74381d4a1a979a9711fbf216559e71f6fe02f4d2` |
+| `crates/glm-format/src/safetensors.rs` | `fee787bc1d528b647c05e108f596b2e96df3bb30b7ac09ae4c0904f878e032ea` |
+| `crates/glm-format/src/stream.rs` | `4cd4cb23d68ef4280a9a9a00270fc7dad4091ade058fd1165f353d6c95772c8f` |
+| `crates/glm-format/src/checkpoint.rs` | `eadf86769c220d42a419b2a9c5a78ff0377d98e85cff4d90c5b792894fa7f684` |
 | `crates/glm-engine/src/weight.rs` | `d658cefefc17757a28258bafd0e13f5309e8adcbf2b30c4d2bdc97be9899ca19` |
 | `crates/glm-engine/src/startup.rs` | `9634f120a2e01f21aaa5778954053d9a06f1e8d2af6c5abe1f9c6e4cbbd31e87` |
+| `crates/glm-engine/src/memory.rs` | `7bd39ac4942c29af35bfe7662dc4e78c608c6131acf102558228ff42bc100231` |
 | `crates/glm-scheduler/src/lib.rs` | `b6ec68d37d87ba64dead63444972b6334218d6a7fbeceb4e7f685162bf2b43e8` |
 | `crates/glm-reference/src/sampling.rs` | `6d90f43dbf0d2865ef63c001601c9084d6370c168056f883f49ffe7c732d9d13` |
 | `crates/glm-reference/src/routed_fc2.rs` | `4f34f5b89cd542f096269a7442da5289900d1e831e32fcf83462560dc410a40d` |
 | `crates/glm-cache/src/prefix.rs` | `2334d68914bf01ce1432bd7e4d07500ea9fc374e027deedeeb71972cc514fe68` |
 | `crates/glm-cache/src/tier.rs` | `2730d829c8538e7b10649e0fba6504ee3389adc21c2f557e474a93c6dbee4f97` |
+| `profiles/profile-budget-v0.json` | `028516adc04d454317e1b76a3147be4807c3ed3ce371e1d43aead3396270400d` |
 | prior `fable-adversarial-v2.md` | `f0019b96d5b35bdca6d026691629b56fbeb0c3c4528e1ae4ff9c1aa06817953e` |
 
 ## What changed
@@ -74,6 +77,16 @@ Hash these files again at review start and finish:
 13. Safetensors discovery also supports strict flat per-layer shard
     directories, rejects duplicate tensor names and symlinks, and computes a
     deterministic structure digest.
+14. The exact pinned source inventory now expands to 59,585 deterministic
+    native tensors and 81,590,319,104 source-plane bytes per rank, including
+    every protected TP slice and direct EXL3 rank component.
+15. Conversion hashes all 92 immutable source files, batches durable
+    payload-before-descriptor commits, seals the aggregate payload digest into
+    each canonical manifest, and atomically publishes four ranks without
+    replacing an existing destination.
+16. The checked-in profile budget is parsed and arithmetically validated by
+    Rust. It remains fail-closed until post-context and high-water SM120
+    measurements are complete and independently reviewed.
 
 ## Reproduction
 
@@ -83,7 +96,7 @@ The complete local gate passes:
 ./scripts/local-checks.sh
 ```
 
-The workspace currently has 138 passing tests. Clippy passes with warnings
+The workspace currently has 151 passing tests. Clippy passes with warnings
 denied. The real EXL3 source proof is external-data dependent:
 
 ```text
@@ -93,6 +106,9 @@ cargo run -p glm-cli --release -- \
 cargo run -p glm-cli --release -- \
   exl3-safetensors-proof \
   /external/model 3 0 0 gate
+cargo run -p glm-cli --release -- \
+  checkpoint-proof \
+  /external/model/model.safetensors.index.json
 ```
 
 Pinned real-payload result:
@@ -144,6 +160,14 @@ No weights or raw benchmark evidence are in Git.
 13. Do plain protected tensors or flat shard-directory discovery introduce
     an ambiguous dtype, rank, shape, empty-plane, duplicate-name, or symlink
     interpretation?
+14. Can full source verification be redirected to replaced shard paths, omit
+    a manifest entry, or accept a same-shape payload with a different digest?
+15. Can grouped durability, manifest sealing, crash resume, four-rank
+    identity, or destination races expose a partial or overwritten
+    conversion?
+16. Can the profile-budget parser hide a term, accept false arithmetic, or
+    change the blocked candidate into a conversion-approved artifact without
+    complete per-rank measurements?
 
 ## Explicit non-claims
 
@@ -151,6 +175,7 @@ No weights or raw benchmark evidence are in Git.
 - no CUDA graph capture or real four-process worker;
 - no measured fairness/SLO tuning;
 - no filesystem I/O, fsync, io_uring, or GDS implementation;
-- no complete-model conversion or atomic four-rank directory publication;
+- no completed real-model conversion, despite the implemented and
+  CPU-tested atomic four-rank publication path;
 - no model logit/quality result;
 - no serving API or end-to-end throughput claim.
