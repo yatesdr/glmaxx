@@ -3,16 +3,17 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`c84da2a4686c37227de5a0dd4694409fdf42f25b`
+`9bdb2084619f0ede4425da3c626993b96fc3e6f8`
 
-The complete local gate most recently ran against the atomic residency
-admission candidate `94f8d572668ec84d1f77ec2b6949a6bcca3b1e15`; its provenance
-record was then committed at
-`c84da2a4686c37227de5a0dd4694409fdf42f25b`. The target CUDA/kernel and
+The complete local gate most recently ran against the captured-shape prefill
+candidate `4c421615120de9e73edfdf36b3ebedf60c28a693`; its provenance and
+adjacent graph-key limitation were then committed through
+`9bdb2084619f0ede4425da3c626993b96fc3e6f8`. The target CUDA/kernel and
 strict production-manifest baseline remains `4bf7bb5`; the later CPU
 candidates add review integrity, cache-lifecycle evidence, bit-exact
 indexer-scale handling, atomic publication, finite KV reconstruction, exact
-restore-result identity, and all-or-nothing HBM admission.
+restore-result identity, all-or-nothing HBM admission, and captured-shape
+prefill progress.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -20,12 +21,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at atomic residency candidate `94f8d57`
+The latest local run at captured-shape prefill candidate `4c42161`
 passed:
 
-- `scripts/local-checks.sh`: 234 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 236 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 34 then-present candidate-based review-handoff hash proofs;
+  and all 35 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -107,6 +108,15 @@ deterministic multi-victim plan and final counters before any target or
 victim mutation, so pinned-capacity and arithmetic failures cannot leave
 partial demotions. Its dedicated handoff passed local provenance validation;
 independent acceptance is absent.
+
+The captured-shape prefill correction is pinned in
+`docs/prefill-captured-shape-proof-v1.md`. The scheduler now evaluates legal
+profile entries and chunks work to the highest-work fitting shape instead of
+stalling when configuration limits exceed every capture. The same proof
+records the adjacent `GraphKey` inability to encode multiple prefill
+prompt-row buckets under one sequence/transport key. The correction handoff
+passes local provenance validation; independent acceptance and the separate
+ABI extension are absent.
 
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
@@ -214,6 +224,7 @@ verdicts:
 | current-tree-bound review acceptance and qualification re-pin | `60311cf` | `docs/fable-current-tree-review-acceptance-v3-handoff.md` |
 | exact asynchronous restore request/result identity | `dc16273` | `docs/fable-restore-identity-v1-handoff.md` |
 | all-or-nothing HBM residency admission | `c84da2a` | `docs/fable-residency-admission-atomicity-v1-handoff.md` |
+| captured-shape prefill progress | `9bdb208` | `docs/fable-prefill-captured-shape-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
