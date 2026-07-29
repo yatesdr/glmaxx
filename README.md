@@ -101,6 +101,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Quality acceptance adversarial handoff](docs/fable-quality-acceptance-v1-handoff.md)
 - [Quality corpus source and materialization candidate](docs/quality-corpus-manifest-v1.md)
 - [Pinned quality corpus source recipe](manifests/quality-corpus-sources-v1.json)
+- [Quality corpus source adversarial handoff](docs/fable-quality-corpus-sources-v1-handoff.md)
 - [Fail-closed review provenance verifier](docs/review-provenance-verifier-v1.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
@@ -118,7 +119,7 @@ kernel, and engine work stays here.
 
 The current local gate passes 227 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
-It also verifies all 27 candidate-based Fable handoffs against their exact
+It also verifies all 28 candidate-based Fable handoffs against their exact
 committed inputs and can classify an explicit review artifact by exact
 acceptance-token presence only after the review attests the exact candidate,
 every pinned input hash, and any required result path. Declared Fable results
