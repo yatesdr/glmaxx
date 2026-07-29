@@ -486,3 +486,9 @@ fn validate_native_library(assignments: u32) -> Result<(), KernelError> {
     }
     Ok(())
 }
+
+/// Verifies the loaded native library's ABI identifier and workspace formula
+/// without creating a CUDA context or touching a device.
+pub fn validate_native_abi(assignments: u32) -> Result<(), KernelError> {
+    validate_native_library(assignments)
+}

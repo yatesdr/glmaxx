@@ -680,13 +680,23 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         assignments,
         path: KernelPath::DecodePersistent,
     });
+    #[cfg(feature = "cuda-ffi")]
+    glm_cuda::validate_native_abi(assignments)?;
+    let native_abi_verified = cfg!(feature = "cuda-ffi");
+    let reason = if native_abi_verified {
+        "native library linked; ABI and workspace formula verified without a GPU launch"
+    } else {
+        "CUDA FFI not linked; build with --features cuda-ffi and GLMAXX_KERNEL_LIB_DIR"
+    };
     let report = serde_json::json!({
         "kernel_abi": KERNEL_ABI,
         "descriptor_bytes": std::mem::size_of::<Fc1Descriptor>(),
         "descriptor_alignment": std::mem::align_of::<Fc1Descriptor>(),
         "m128_workspace_bytes": workspace_bytes(assignments)?,
-        "cuda_compiled": false,
-        "reason": "Phase A host has no nvcc; run the pinned cn4 harness after authorization"
+        "cuda_ffi_feature": cfg!(feature = "cuda-ffi"),
+        "native_abi_verified": native_abi_verified,
+        "gpu_launched": false,
+        "reason": reason,
     });
     let _ = descriptor;
     println!("{}", serde_json::to_string_pretty(&report)?);
