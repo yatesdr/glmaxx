@@ -20,13 +20,21 @@ produce a production health claim.
 
 Chat completions support buffered JSON or server-sent events, deterministic
 seeds, temperature, top-p, bounded top-k, output limits, stop strings, tool
-schema values, and user identity forwarding. Bearer keys map to fixed tenant
-IDs before backend admission. Unknown request fields fail closed.
+schema values, configurable `mtp_depth` in `0..=6`, and user identity
+forwarding. Bearer keys map to fixed tenant IDs before backend admission.
+Unknown request fields fail closed.
 
 As required by `spec/engine-v0.md`, `top_p < 1` without an explicit
 `top_k` in `1..=256` returns
 `UNBOUNDED_TOP_P_UNSUPPORTED`. The server never silently substitutes a
 candidate bound.
+
+Sampling is a per-request execution property. Decode scheduling cohorts
+requests by MTP depth and collective route: greedy, bounded top-k, or
+distributed mass. The compiler derives the collective directly from the
+selected batch, so a process-wide setting cannot silently apply one user's
+sampling route to another user and one TP rank cannot select a local
+fallback.
 
 ## Bounds and failure behavior
 

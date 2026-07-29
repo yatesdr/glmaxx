@@ -15,6 +15,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use glm_scheduler::SamplingCollective;
+
 pub const GLMAXX_MODEL_ID: &str = "glm-5.2";
 const MAXIMUM_MESSAGES: usize = 4_096;
 const MAXIMUM_STOP_SEQUENCES: usize = 16;
@@ -106,6 +108,8 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub seed: Option<u64>,
     #[serde(default)]
+    pub mtp_depth: Option<u8>,
+    #[serde(default)]
     pub stop: Option<StopSequences>,
     #[serde(default)]
     pub stream: bool,
@@ -125,11 +129,25 @@ pub struct SamplingParameters {
     pub seed: Option<u64>,
 }
 
+impl SamplingParameters {
+    #[must_use]
+    pub fn collective(self) -> SamplingCollective {
+        if self.temperature == 0.0 {
+            SamplingCollective::Greedy
+        } else if self.top_k.is_some() {
+            SamplingCollective::TopK
+        } else {
+            SamplingCollective::Mass
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedChatRequest {
     pub messages: Vec<ChatMessage>,
     pub maximum_output_tokens: u32,
     pub sampling: SamplingParameters,
+    pub mtp_depth: u8,
     pub stop: Vec<String>,
     pub stream: bool,
     pub tools: Option<Value>,
@@ -213,6 +231,15 @@ impl ChatCompletionRequest {
                 "top_p below 1 requires an explicit top_k in 1..=256",
             ));
         }
+        let mtp_depth = self.mtp_depth.unwrap_or(0);
+        if mtp_depth > 6 {
+            return Err(ApiRequestError::new(
+                400,
+                "INVALID_MTP_DEPTH",
+                Some("mtp_depth"),
+                "mtp_depth must be in 0..=6",
+            ));
+        }
         let stop = self.stop.map_or_else(Vec::new, StopSequences::into_vec);
         if stop.len() > MAXIMUM_STOP_SEQUENCES
             || stop
@@ -235,6 +262,7 @@ impl ChatCompletionRequest {
                 top_k: self.top_k,
                 seed: self.seed,
             },
+            mtp_depth,
             stop,
             stream: self.stream,
             tools: self.tools,
@@ -1155,7 +1183,14 @@ mod tests {
             serde_json::from_str(&chat_json(false, r#","top_p":0.9,"top_k":256"#)).unwrap();
         let validated = request.validate().unwrap();
         assert_eq!(validated.sampling.top_k, Some(256));
+        assert_eq!(validated.sampling.collective(), SamplingCollective::TopK);
         assert_eq!(validated.maximum_output_tokens, 1_024);
+
+        let greedy: ChatCompletionRequest =
+            serde_json::from_str(&chat_json(false, r#","temperature":0,"mtp_depth":6"#)).unwrap();
+        let greedy = greedy.validate().unwrap();
+        assert_eq!(greedy.sampling.collective(), SamplingCollective::Greedy);
+        assert_eq!(greedy.mtp_depth, 6);
     }
 
     #[test]

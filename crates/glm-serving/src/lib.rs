@@ -10,10 +10,13 @@ use std::{
 use glm_cache::PrefixPageKey;
 use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
 use glm_scheduler::{
-    BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog, SamplingCollective,
-    Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
+    BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog, Scheduler,
+    SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
 };
 use sha2::{Digest, Sha256};
+
+#[cfg(test)]
+use glm_scheduler::SamplingCollective;
 
 const TOKEN_DOMAIN: &[u8] = b"glmaxx.mock-token.v1\0";
 const GLM_52_VOCABULARY: u32 = 154_880;
@@ -33,7 +36,6 @@ pub use http::{
 pub struct ServingConfig {
     pub epoch: u64,
     pub event_capacity: usize,
-    pub sampling: SamplingCollective,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,7 +76,6 @@ pub struct ServingCoordinator {
     scheduler: Scheduler,
     compiler: StepPlanCompiler,
     workers: Tp4WorkerPool,
-    sampling: SamplingCollective,
     sequence_table_generation: u64,
     event_capacity: usize,
     events: VecDeque<RequestEvent>,
@@ -99,7 +100,6 @@ impl ServingCoordinator {
             scheduler: Scheduler::new(scheduler_config, profile, tenants)?,
             compiler: StepPlanCompiler::new(config.epoch, routes)?,
             workers,
-            sampling: config.sampling,
             sequence_table_generation: 1,
             event_capacity: config.event_capacity,
             events: VecDeque::new(),
@@ -179,12 +179,9 @@ impl ServingCoordinator {
             .graph_entry(batch.graph_id)
             .cloned()
             .ok_or(ServingError::Graph)?;
-        let compiled = self.compiler.compile(
-            &batch,
-            &entry,
-            self.sampling,
-            self.sequence_table_generation,
-        )?;
+        let compiled = self
+            .compiler
+            .compile(&batch, &entry, self.sequence_table_generation)?;
         let starting_progress: Vec<_> = batch
             .rows
             .iter()
@@ -502,7 +499,6 @@ mod tests {
             ServingConfig {
                 epoch: 1,
                 event_capacity: 1024,
-                sampling: SamplingCollective::Greedy,
             },
             SchedulerConfig {
                 maximum_batch_sequences: 4,
@@ -547,6 +543,7 @@ mod tests {
                     prompt_tokens: 128,
                     maximum_new_tokens: 2,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 },
                 cached_prompt_tokens: 64,
             })
@@ -559,6 +556,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 2,
                     mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
                 },
                 cached_prompt_tokens: 64,
             })
@@ -611,6 +609,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 2,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 },
                 cached_prompt_tokens: 0,
             })
@@ -638,6 +637,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 1,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 },
                 cached_prompt_tokens: 0,
             })
@@ -709,6 +709,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 1,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 },
                 &tokens,
             )

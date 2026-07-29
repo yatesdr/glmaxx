@@ -88,7 +88,6 @@ impl StepPlanCompiler {
         self,
         batch: &ScheduledBatch,
         entry: &GraphEntry,
-        sampling: SamplingCollective,
         sequence_table_generation: u64,
     ) -> Result<CompiledStep, CompileError> {
         if sequence_table_generation == 0
@@ -105,7 +104,7 @@ impl StepPlanCompiler {
         if entry.key.mode != mode || entry.key.mtp_depth != mtp_depth {
             return Err(CompileError::Graph);
         }
-        if mode == StepMode::Prefill && sampling != SamplingCollective::Greedy {
+        if mode == StepMode::Prefill && batch.sampling != SamplingCollective::Greedy {
             return Err(CompileError::Sampling);
         }
 
@@ -165,7 +164,7 @@ impl StepPlanCompiler {
         let sampling_route_id = if mode == StepMode::Prefill {
             0
         } else {
-            let (kind, route, bytes) = match sampling {
+            let (kind, route, bytes) = match batch.sampling {
                 SamplingCollective::Greedy => (
                     CollectiveKind::LogitsArgmax,
                     self.routes.greedy_route_id,
@@ -368,15 +367,12 @@ mod tests {
                 })
                 .collect(),
             query_rows: 56,
+            sampling: SamplingCollective::TopK,
         };
         let compiler = StepPlanCompiler::new(9, routes()).unwrap();
-        let expected = compiler
-            .compile(&batch, &entry(), SamplingCollective::TopK, 11)
-            .unwrap();
+        let expected = compiler.compile(&batch, &entry(), 11).unwrap();
         for _rank in 0..4 {
-            let compiled = compiler
-                .compile(&batch, &entry(), SamplingCollective::TopK, 11)
-                .unwrap();
+            let compiled = compiler.compile(&batch, &entry(), 11).unwrap();
             assert_eq!(compiled, expected);
             assert_eq!(compiled.schedule.operations().len(), 5);
             compiled.plan.verify(&compiled.schedule).unwrap();
@@ -394,16 +390,14 @@ mod tests {
                 prompt_tokens: 0,
             }],
             query_rows: 7,
+            sampling: SamplingCollective::Greedy,
         };
         let mut graph = entry();
         graph.compatible_dcp_routes = vec![21, 23];
         assert_eq!(
-            StepPlanCompiler::new(1, routes()).unwrap().compile(
-                &batch,
-                &graph,
-                SamplingCollective::Greedy,
-                1
-            ),
+            StepPlanCompiler::new(1, routes())
+                .unwrap()
+                .compile(&batch, &graph, 1),
             Err(CompileError::Route)
         );
     }

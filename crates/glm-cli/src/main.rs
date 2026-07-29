@@ -48,7 +48,7 @@ use sha2::{Digest, Sha256};
 const ACTUAL_PACKED_SHA256: &str =
     "a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5";
 const ACTUAL_RANK0_SHA256: &str =
-    "ea706d83c4aa89fda26f977f03e7fa72862b71cf36c2c77cead70d68bc7b3093";
+    "aa9df44c04d503b58fcd861c27b434b4fe0908233333b92bd8c4cc133bb7c392";
 const REVIEW_ACCEPTANCE_TOKEN: &str = "manifest-abi-v0.2.2-accepted";
 const CONVERSION_REPOSITORY: &str = "https://github.com/yatesdr/glmaxx.git";
 const CN4_CONVERTER_CONTAINER_DIGEST: &str =
@@ -1146,7 +1146,6 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
         ServingConfig {
             epoch: 1,
             event_capacity: 1024,
-            sampling: SamplingCollective::Greedy,
         },
         SchedulerConfig {
             maximum_batch_sequences: 4,
@@ -1177,6 +1176,7 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
             prompt_tokens: 128,
             maximum_new_tokens: 4,
             mtp_depth: 0,
+            sampling: SamplingCollective::Greedy,
         },
         &first_tokens,
     )?;
@@ -1187,6 +1187,7 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
             prompt_tokens: 64,
             maximum_new_tokens: 7,
             mtp_depth: 6,
+            sampling: SamplingCollective::Greedy,
         },
         &second_tokens,
     )?;

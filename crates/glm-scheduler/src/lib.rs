@@ -29,6 +29,7 @@ pub struct RequestSpec {
     pub prompt_tokens: u32,
     pub maximum_new_tokens: u32,
     pub mtp_depth: u8,
+    pub sampling: SamplingCollective,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +71,7 @@ pub struct ScheduledBatch {
     pub graph_id: u32,
     pub rows: Vec<BatchRow>,
     pub query_rows: u32,
+    pub sampling: SamplingCollective,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -398,7 +400,7 @@ impl Scheduler {
                 available -= tokens;
             }
         }
-        self.finalize_batch(BatchKind::Prefill, rows)
+        self.finalize_batch(BatchKind::Prefill, SamplingCollective::Greedy, rows)
     }
 
     fn build_decode_batch(&mut self) -> Result<ScheduledBatch, SchedulerError> {
@@ -407,8 +409,10 @@ impl Scheduler {
             .into_iter()
             .next()
             .ok_or(SchedulerError::NoRunnable)?;
-        let depth = self.requests[&first].spec.mtp_depth;
-        let mut eligible = self.ordered_requests(RequestState::Decoding, Some(depth));
+        let first_spec = self.requests[&first].spec;
+        let depth = first_spec.mtp_depth;
+        let sampling = first_spec.sampling;
+        let mut eligible = self.ordered_requests(RequestState::Decoding, Some((depth, sampling)));
         eligible.truncate(usize::from(self.config.maximum_batch_sequences));
         let kind = if depth == 0 {
             BatchKind::Decode
@@ -423,7 +427,7 @@ impl Scheduler {
                     prompt_tokens: 0,
                 })
                 .collect();
-            if let Ok(batch) = self.finalize_batch(kind, rows) {
+            if let Ok(batch) = self.finalize_batch(kind, sampling, rows) {
                 return Ok(batch);
             }
             eligible.pop();
@@ -436,6 +440,7 @@ impl Scheduler {
     fn finalize_batch(
         &mut self,
         kind: BatchKind,
+        sampling: SamplingCollective,
         rows: Vec<BatchRow>,
     ) -> Result<ScheduledBatch, SchedulerError> {
         if rows.is_empty() {
@@ -461,6 +466,7 @@ impl Scheduler {
             graph_id: graph.graph_id,
             rows,
             query_rows,
+            sampling,
         };
         self.next_step_id = self
             .next_step_id
@@ -495,12 +501,19 @@ impl Scheduler {
             })
     }
 
-    fn ordered_requests(&self, state: RequestState, depth: Option<u8>) -> Vec<u64> {
+    fn ordered_requests(
+        &self,
+        state: RequestState,
+        decode_class: Option<(u8, SamplingCollective)>,
+    ) -> Vec<u64> {
         let mut ids: Vec<_> = self
             .requests
             .values()
             .filter(|request| {
-                request.state == state && depth.is_none_or(|depth| request.spec.mtp_depth == depth)
+                request.state == state
+                    && decode_class.is_none_or(|(depth, sampling)| {
+                        request.spec.mtp_depth == depth && request.spec.sampling == sampling
+                    })
             })
             .map(|request| request.spec.id)
             .collect();
@@ -661,6 +674,7 @@ mod tests {
                 prompt_tokens: 8,
                 maximum_new_tokens: 2,
                 mtp_depth: 0,
+                sampling: SamplingCollective::Greedy,
             })
             .unwrap();
         scheduler
@@ -670,6 +684,7 @@ mod tests {
                 prompt_tokens: 12,
                 maximum_new_tokens: 2,
                 mtp_depth: 6,
+                sampling: SamplingCollective::Greedy,
             })
             .unwrap();
         let prefill = scheduler.next_batch().unwrap().unwrap();
@@ -698,6 +713,7 @@ mod tests {
                 prompt_tokens: 8,
                 maximum_new_tokens: 8,
                 mtp_depth: 0,
+                sampling: SamplingCollective::Greedy,
             })
             .unwrap();
         scheduler.next_batch().unwrap().unwrap();
@@ -722,6 +738,7 @@ mod tests {
                 prompt_tokens: 1,
                 maximum_new_tokens: 1,
                 mtp_depth: 3,
+                sampling: SamplingCollective::Greedy,
             }),
             Err(SchedulerError::UncapturedShape)
         );
@@ -737,6 +754,7 @@ mod tests {
                 prompt_tokens: 1,
                 maximum_new_tokens: 8,
                 mtp_depth: 0,
+                sampling: SamplingCollective::Greedy,
             })
             .unwrap();
         scheduler.next_batch().unwrap();
@@ -750,6 +768,7 @@ mod tests {
                 prompt_tokens: 1,
                 maximum_new_tokens: 1,
                 mtp_depth: 0,
+                sampling: SamplingCollective::Greedy,
             })
             .unwrap();
         scheduler.next_batch().unwrap();
@@ -770,6 +789,7 @@ mod tests {
                     prompt_tokens: 1,
                     maximum_new_tokens: 20,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 })
                 .unwrap();
         }
@@ -785,6 +805,39 @@ mod tests {
     }
 
     #[test]
+    fn decode_batches_never_mix_sampling_collective_routes() {
+        let mut scheduler = scheduler();
+        for (id, sampling) in [
+            (1, SamplingCollective::Greedy),
+            (2, SamplingCollective::TopK),
+        ] {
+            scheduler
+                .admit(RequestSpec {
+                    id,
+                    tenant: 1,
+                    prompt_tokens: 1,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling,
+                })
+                .unwrap();
+        }
+        let prefill = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(prefill.rows.len(), 2);
+        assert_eq!(prefill.sampling, SamplingCollective::Greedy);
+        scheduler.complete_batch(true).unwrap();
+
+        let greedy = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(greedy.sampling, SamplingCollective::Greedy);
+        assert_eq!(greedy.rows.len(), 1);
+        scheduler.complete_batch(true).unwrap();
+
+        let top_k = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(top_k.sampling, SamplingCollective::TopK);
+        assert_eq!(top_k.rows.len(), 1);
+    }
+
+    #[test]
     fn restored_full_pages_skip_only_the_proven_prefix() {
         let mut scheduler = scheduler();
         scheduler
@@ -795,6 +848,7 @@ mod tests {
                     prompt_tokens: 96,
                     maximum_new_tokens: 1,
                     mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
                 },
                 64,
             )
@@ -827,6 +881,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 7,
                     mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
                 },
                 64,
             )
@@ -848,6 +903,7 @@ mod tests {
                     prompt_tokens: 64,
                     maximum_new_tokens: 2,
                     mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
                 },
                 64,
             )

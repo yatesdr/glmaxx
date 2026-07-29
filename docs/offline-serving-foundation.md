@@ -66,7 +66,10 @@ The scheduler does not serialize users into a llama.cpp-style single
 request. It forms bounded multi-sequence batches and maintains request state
 across steps. Prefill, MTP0 decode, and a common MTP depth are separately
 batchable. Different MTP depths form deterministic cohorts because they use
-different captured graph shapes.
+different captured graph shapes. Decode cohorts also have one collective
+sampling class. Greedy, bounded top-k, and distributed-mass requests cannot
+share a step; the resulting batch, rather than a process-global option,
+selects the collective route identically for all four ranks.
 
 The first contract deliberately uses separate prefill and decode steps.
 Decode receives priority until its configured burst bound, after which
