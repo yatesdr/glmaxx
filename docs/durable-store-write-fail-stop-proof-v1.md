@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Implementation commit:
-`10a7bca1b6f8d4eeac50b97cc390495918cee3d4`
+`a96f3b1401774289d38815841cc1335038fd31db`
 
 Status: CPU durability correction passed; independent review pending
 
@@ -95,7 +95,7 @@ Relevant hashes:
 
 ```text
 crates/glm-cache/src/store.rs
-99a8c9d2ba049bec36dc8be16571078827371d506a02eeeac15e499a0e458eb3
+8658f495486cfe35e9b7bc9581520201cad30a5704d9be4a2f44b36c09df07ed
 
 docs/online-prefix-publication-v1.md
 67b89027e0e5ae7a3973bb0dfd80e91df6a92afbb9e5ca2c9199bb06adec3873
