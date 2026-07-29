@@ -72,6 +72,9 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Production rank-manifest adversarial handoff](docs/fable-production-rank-manifest-validation-v2-handoff.md)
 - [Complete target-layer execution candidate](docs/target-layer-execution-v1.md)
 - [Target-layer execution adversarial handoff](docs/fable-target-layer-execution-v1-handoff.md)
+- [Recurrent MTP0–6 execution candidate](docs/mtp-layer-execution-v1.md)
+- [Recurrent MTP adversarial handoff](docs/fable-mtp-layer-execution-v1-handoff.md)
+- [Final cn4 release record](docs/cn4-release-20260729.md)
 - [Checkpoint load transaction candidate](docs/checkpoint-load-transaction-v1.md)
 - [Corrected checkpoint load transaction adversarial handoff](docs/fable-checkpoint-load-transaction-v1-r2-handoff.md)
 - [Fable offline-foundation review handoff](docs/fable-offline-foundation-handoff.md)
@@ -109,15 +112,15 @@ kernel, and engine work stays here.
 
 The current local gate passes 225 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
-It also verifies all 25 candidate-based Fable handoffs against their exact
+It also verifies all 26 candidate-based Fable handoffs against their exact
 committed inputs and can classify an explicit review artifact by exact
 acceptance-token presence. The external-tokenizer fixture remains pinned from
 the prior proof; the latest run skipped that external check because
 `GLMAXX_TOKENIZER_DIR` was not set. The CPU/reference workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
 bounded file-backed four-rank verification, typed production-manifest
-validation, a source-pinned complete target execution design, hybrid policy
-machinery, TP4
+validation, source-pinned complete target and recurrent-MTP execution
+designs, hybrid policy machinery, TP4
 startup and step consensus, bounded continuous batching, distributed-sampling
 oracles, transactional prefix storage, HBM/DRAM/NVMe residency simulation,
 active page tables, persistent worker interfaces, request streaming, and
@@ -130,10 +133,11 @@ validated layouts and ABI linkage, and passed 162 Rust tests in a container
 without GPU access. It created no CUDA context and launched no device kernel.
 It therefore proves compileability and artifact presence only.
 
-The prior cn4 authorization has ended and the machine was released to another
-development workload. Do not reconnect or launch GPU work without renewed
-operator authorization. Corrective Fable implementation reviews are also
-pending; an accepted design review is not device-correctness evidence.
+The final cn4 inventory found an existing four-rank vLLM allocation and no
+GLMAXX process. No CUDA work was launched, the session disconnected, and cn4
+was released to that workload. Do not reconnect or launch GPU work without
+renewed operator authorization. Corrective Fable implementation reviews are
+also pending; an accepted design review is not device-correctness evidence.
 
 The exact proved results and exclusions are in the
 [results index](docs/results-index.md). The

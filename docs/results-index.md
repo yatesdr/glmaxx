@@ -15,12 +15,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The implementation remains `4bf7bb5`; the latest local run at design
-candidate `83f5005` plus its target-layer handoff/status delta passed:
+The implementation remains `4bf7bb5`; the latest local run at recurrent-MTP
+candidate `fd80e16` plus its MTP handoff/status delta passed:
 
 - `scripts/local-checks.sh`: 225 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 25 candidate-based review-handoff hash proofs;
+  and all 26 candidate-based review-handoff hash proofs;
 - the external pinned-tokenizer proof was skipped because
   `GLMAXX_TOKENIZER_DIR` was unset; its checked fixture and implementation are
   unchanged from the earlier complete proof;
@@ -88,9 +88,11 @@ Excluded scope:
   one-layer, checkpoint, quality, capacity, or serving claim was made.
 
 The record pins the container digest, toolchains, source state, artifact
-hashes, and raw evidence hashes. cn4 has since been released to another
-workload. This repository currently has no authorization to reconnect or
-launch work there.
+hashes, and raw evidence hashes. A final read-only inventory is recorded in
+`docs/cn4-release-20260729.md`: it found an existing four-rank vLLM allocation
+and no GLMAXX process, launched no CUDA work, and immediately released cn4.
+This repository currently has no authorization to reconnect or launch work
+there.
 
 ## Adversarial gate state
 
@@ -134,6 +136,7 @@ verdicts:
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
+| recurrent MTP0–6 execution design | `fd80e16` | `docs/fable-mtp-layer-execution-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token

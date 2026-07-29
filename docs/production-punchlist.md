@@ -32,7 +32,7 @@ State meanings:
 | C07 | OPEN | Direct EXL3 gate/up/down execution consumes pinned source bytes with no unmeasured repack | CPU source projection and compile control exist; no accepted device result | C01 acceptance, then actual-shape device correctness and inclusive timing |
 | C08 | REVIEW | Complete GLM target layer implements embedding, absorbed MLA/indexer, norms, residuals, routing, experts, final head, pending logits, and exact TP/DCP reductions | Source-pinned execution candidate `83f5005` and adversarial handoff define the complete program; CPU ABI/reference and CUDA layer are intentionally absent | Fable target-layer design verdict, CPU proof/amendments, then one-layer TP4 replay after C06/C07 |
 | C09 | REVIEW | Distributed greedy, bounded top-k/top-p, mass, residual, and bonus sampling execute without full-vocabulary gather | Contract candidate `7c71818` freezes vocabulary padding, filters, SplitMix counter draws, MTP proposal/accept/residual/bonus schedule, composite routes, and `StepOutput.v2`; implementation is intentionally absent | Fable review of `docs/fable-distributed-sampling-abi-v1-handoff.md`, then CPU proof |
-| C10 | OPEN | Real recurrent GLM draft layer supports MTP0–6 proposal, verification, commit/rollback, accepted EOS, residual, and bonus semantics | CPU transition/output metadata exists; no real draft execution | C02/C03, real draft-layer runner, then matched MTP0 equivalence |
+| C10 | REVIEW | Real recurrent GLM draft layer supports MTP0–6 proposal, verification, commit/rollback, accepted EOS, residual, and bonus semantics | Source-derived candidate `fd80e16` specifies successor-aligned teacher sidecars, recurrent scratch, the one-token pipeline, q-state retention, and required ABI amendments; no CPU runner or model evidence exists | Fable review of `docs/fable-mtp-layer-execution-v1-handoff.md`, coordinated ABI amendments, CPU proof, then matched MTP0 equivalence |
 | C11 | OPEN | Strict four-rank checkpoint loader maps a fit-capable rank set into immutable device arenas and reaches healthy startup | File-backed verification plus fixed complete tensor/source manifest authentication pass locally at `4bf7bb5`; corrected two-phase load candidate `4bb0708` and manifest-reader v2 both await review; no transaction implementation, CUDA sink, full-rank proof, or device residency | Fable load-transaction r2 and manifest-reader v2 reviews, CPU/mock transaction proof, then CUDA sink and small-checkpoint smoke |
 | C12 | OPEN | API backend serves checkpoint outputs rather than CPU worker tokens | Bounded adapter at `4cf3a62`; CPU-only and greedy-only | Connect only after C02/C03/C05/C09 |
 
@@ -73,7 +73,7 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| H01 | AUTH | Re-inventory cn4 and reproduce the current source/toolchain/test state without disturbing other workloads | cn4 was explicitly released after prior compile-only work; no current GPU authorization | Obtain new authorization, inventory before any launch |
+| H01 | OPEN | Re-inventory cn4 and reproduce the current source/toolchain/test state without disturbing other workloads | Final read-only inventory found 4×SM120 and an existing four-rank vLLM allocation; no GLMAXX process or launch occurred, `/home/derek/glmaxx` was not a Git worktree, and cn4 was released | After that workload and renewed authorization, pin source/toolchain/container state before any launch |
 | H02 | AUTH | Actual-shape NVFP4 and EXL3 correctness/performance matrix on all required row buckets | Prior records prove `sm_120f` cubins and ABI only | H01 plus C01 |
 | H03 | AUTH | PCIe TP/DCP routes measured pairwise and collectively on the actual topology | Route compiler is CPU-only | H01, then NCCL controls and deterministic alternatives |
 | H04 | OPEN | One complete sparse-layer TP4 replay matches reference activations/logits | No replay artifact | C06–C08 and H03 |
@@ -85,16 +85,17 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Latest local run: 225 Rust tests and 25 candidate-based handoffs verified; external tokenizer was not rerun because its directory variable was unset, and its pinned fixture is unchanged from the prior proof | Keep green at every milestone |
-| D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Latest local run: 225 Rust tests and 26 candidate-based handoffs verified; external tokenizer was not rerun because its directory variable was unset, and its pinned fixture is unchanged from the prior proof | Keep green at every milestone |
+| D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | `docs/cn4-release-20260729.md` pins the final GPU/driver/topology/occupancy observation, but source, container, firmware, clocks, and toolchains were not established because another workload already occupied the host | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
-| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier proves candidate hashes for all 25 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
+| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier proves candidate hashes for all 26 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
 | D05 | OPEN | Full-checkpoint conversion is allowed only after policy fit and quality gates pass | Profile correctly blocks conversion today | Q01/Q02 and measured HBM budget |
 
 ## External state
 
 - cn4 GPU work is not currently authorized. Do not connect or launch until a
-  new operator authorization is given.
+  new operator authorization is given. The final authorized inventory found
+  a four-rank vLLM job already occupying all four GPUs.
 - The user has stated that NVFP4 and EXL3 checkpoints already exist on the
   servers. No checkpoint download is required. Their current paths and hashes
   must be re-inventoried under H01; model bytes remain outside Git.
