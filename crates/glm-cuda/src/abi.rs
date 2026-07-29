@@ -456,6 +456,34 @@ pub fn fc2_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, KernelErr
     })
 }
 
+pub fn fc2_grouped_sfa_capacity_bytes(assignments: u32) -> Result<u64, KernelError> {
+    if assignments == 0 || assignments > 65_535 {
+        return Err(KernelError::Shape);
+    }
+    let assignments = u64::from(assignments);
+    let active_experts = assignments.min(u64::from(EXPERTS));
+    assignments
+        .checked_add(
+            active_experts
+                .checked_mul(127)
+                .ok_or(KernelError::Overflow)?,
+        )
+        .and_then(|rows| rows.checked_mul(u64::from(LOCAL_INTERMEDIATE) / 16))
+        .ok_or(KernelError::Overflow)
+}
+
+pub fn fc2_grouped_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, KernelError> {
+    let global_sfa_bytes = u64::from(assignments)
+        .checked_add(127)
+        .map(|value| value / 128 * 128)
+        .and_then(|padded| padded.checked_mul(u64::from(LOCAL_INTERMEDIATE) / 16))
+        .ok_or(KernelError::Overflow)?;
+    fc2_workspace_bytes(rows, assignments)?
+        .checked_sub(global_sfa_bytes)
+        .and_then(|base| base.checked_add(fc2_grouped_sfa_capacity_bytes(assignments).ok()?))
+        .ok_or(KernelError::Overflow)
+}
+
 #[cfg(any(feature = "cuda-ffi", test))]
 pub(crate) fn active_experts_for_grouped(
     route_experts: &[u16],
@@ -560,6 +588,14 @@ mod tests {
     #[test]
     fn fc2_workspace_includes_deterministic_scatter_state() {
         assert_eq!(fc2_workspace_bytes(1, 8).unwrap(), 258_116);
+        assert_eq!(
+            fc2_grouped_workspace_bytes(1, 8).unwrap(),
+            8 * 128 * (LOCAL_INTERMEDIATE / 16) as u64 + 254_020
+        );
+        assert!(
+            fc2_grouped_workspace_bytes(128, 1_024).unwrap()
+                > fc2_workspace_bytes(128, 1_024).unwrap()
+        );
         assert_eq!(fc2_workspace_bytes(0, 8), Err(KernelError::Shape));
         assert_eq!(fc2_workspace_bytes(1, 9), Err(KernelError::Shape));
     }

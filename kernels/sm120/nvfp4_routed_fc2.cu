@@ -85,7 +85,7 @@ __device__ float block_max(float value, float* scratch) {
 }
 
 __global__ void quantize_fc2_rows(
-    const glmaxx_fc2_descriptor descriptor) {
+    const glmaxx_fc2_descriptor descriptor, bool expert_local_sfa) {
   const uint32_t assignment = blockIdx.x;
   if (assignment >= descriptor.assignments) {
     return;
@@ -96,6 +96,12 @@ __global__ void quantize_fc2_rows(
   auto* scales = reinterpret_cast<uint8_t*>(descriptor.activation_scales);
   auto* globals =
       reinterpret_cast<float*>(descriptor.activation_global_scales);
+  const auto* route_experts =
+      reinterpret_cast<const uint16_t*>(descriptor.route_experts_u16);
+  const auto* expert_offsets =
+      reinterpret_cast<const uint32_t*>(descriptor.expert_offsets_u32);
+  const auto* expert_sfa_offsets =
+      reinterpret_cast<const uint64_t*>(descriptor.token_output_f32);
   const __nv_bfloat16* row =
       input + uint64_t{assignment} * kLocalIntermediate;
 
@@ -114,6 +120,18 @@ __global__ void quantize_fc2_rows(
   __syncthreads();
 
   constexpr uint32_t kGroups = kLocalIntermediate / 16;
+  uint32_t scale_row = assignment;
+  uint64_t scale_base = 0;
+  if (expert_local_sfa) {
+    const uint32_t expert = route_experts[assignment];
+    if (expert >= kExperts ||
+        assignment < expert_offsets[expert] ||
+        assignment >= expert_offsets[expert + 1]) {
+      return;
+    }
+    scale_row = assignment - expert_offsets[expert];
+    scale_base = expert_sfa_offsets[expert];
+  }
   for (uint32_t group = threadIdx.x; group < kGroups;
        group += blockDim.x) {
     float group_amax = 0.0f;
@@ -127,7 +145,8 @@ __global__ void quantize_fc2_rows(
         group_amax == 0.0f
             ? 0
             : encode_e4m3((group_amax / 6.0f) / global_scale);
-    scales[scale_offset(assignment, group, kLocalIntermediate)] =
+    scales[scale_base +
+           scale_offset(scale_row, group, kLocalIntermediate)] =
         scale_code;
     const float decoded_scale = decode_e4m3(scale_code) * global_scale;
     uint8_t* packed_row =
@@ -142,6 +161,26 @@ __global__ void quantize_fc2_rows(
           scale_code == 0 ? 0 : encode_e2m1(hi / decoded_scale);
       packed_row[start / 2 + pair] = lo_code | (hi_code << 4);
     }
+  }
+}
+
+__global__ void build_expert_sfa_offsets(
+    const glmaxx_fc2_descriptor descriptor) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+  const auto* expert_offsets =
+      reinterpret_cast<const uint32_t*>(descriptor.expert_offsets_u32);
+  auto* expert_sfa_offsets =
+      reinterpret_cast<uint64_t*>(descriptor.token_output_f32);
+  expert_sfa_offsets[0] = 0;
+  for (uint32_t expert = 0; expert < kExperts; ++expert) {
+    const uint32_t assignments =
+        expert_offsets[expert + 1] - expert_offsets[expert];
+    const uint64_t padded = round_up_128(assignments);
+    expert_sfa_offsets[expert + 1] =
+        expert_sfa_offsets[expert] +
+        padded * kLocalIntermediate / 16;
   }
 }
 
@@ -392,9 +431,17 @@ cudaError_t enqueue_prepare(const glmaxx_fc2_descriptor& descriptor,
 }
 
 cudaError_t enqueue_quantize(const glmaxx_fc2_descriptor& descriptor,
-                             cudaStream_t stream) {
+                             cudaStream_t stream,
+                             bool expert_local_sfa = false) {
+  if (expert_local_sfa) {
+    build_expert_sfa_offsets<<<1, 1, 0, stream>>>(descriptor);
+    const cudaError_t offset_status = cudaPeekAtLastError();
+    if (offset_status != cudaSuccess) {
+      return offset_status;
+    }
+  }
   quantize_fc2_rows<<<descriptor.assignments, kThreads, 0, stream>>>(
-      descriptor);
+      descriptor, expert_local_sfa);
   return cudaPeekAtLastError();
 }
 
@@ -477,6 +524,24 @@ extern "C" uint64_t glmaxx_nvfp4_routed_fc2_workspace_bytes(
          uint64_t{rows} * kTopK * sizeof(uint32_t) + sizeof(uint32_t);
 }
 
+extern "C" uint64_t glmaxx_nvfp4_grouped_fc2_workspace_bytes(
+    uint32_t rows, uint32_t assignments) {
+  if (rows == 0 || assignments == 0 || assignments > 65535 ||
+      assignments > uint64_t{rows} * kTopK) {
+    return 0;
+  }
+  const uint64_t active_experts =
+      assignments < kExperts ? assignments : kExperts;
+  const uint64_t global_sfa_bytes =
+      uint64_t{round_up_128(assignments)} *
+      kLocalIntermediate / 16;
+  const uint64_t grouped_sfa_bytes =
+      (uint64_t{assignments} + active_experts * 127) *
+      kLocalIntermediate / 16;
+  return glmaxx_nvfp4_routed_fc2_workspace_bytes(rows, assignments) -
+         global_sfa_bytes + grouped_sfa_bytes;
+}
+
 extern "C" int32_t glmaxx_nvfp4_routed_fc2_launch(
     const glmaxx_fc2_descriptor* descriptor, void* cuda_stream,
     int32_t* asynchronous_error) {
@@ -504,6 +569,23 @@ extern "C" int32_t glmaxx_nvfp4_fc2_quantize_launch(
   }
   return static_cast<int32_t>(enqueue_quantize(
       *descriptor, reinterpret_cast<cudaStream_t>(cuda_stream)));
+}
+
+extern "C" int32_t glmaxx_nvfp4_fc2_grouped_quantize_launch(
+    const glmaxx_fc2_descriptor* descriptor, void* cuda_stream) {
+  cudaDeviceProp properties{};
+  const int32_t validation =
+      validate_launch(descriptor, cuda_stream, &properties);
+  if (validation != 0) {
+    return validation;
+  }
+  if (descriptor->workspace_bytes <
+      glmaxx_nvfp4_grouped_fc2_workspace_bytes(
+          descriptor->rows, descriptor->assignments)) {
+    return -2;
+  }
+  return static_cast<int32_t>(enqueue_quantize(
+      *descriptor, reinterpret_cast<cudaStream_t>(cuda_stream), true));
 }
 
 extern "C" int32_t glmaxx_nvfp4_fc2_core_launch(

@@ -11,7 +11,8 @@ use glm_cache::{
     PagePieceBytes, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
 };
 use glm_cuda::{
-    Fc1Descriptor, Fc2Descriptor, KernelPath, LaunchGeometry, fc2_workspace_bytes, workspace_bytes,
+    Fc1Descriptor, Fc2Descriptor, KernelPath, LaunchGeometry, fc2_grouped_workspace_bytes,
+    fc2_workspace_bytes, workspace_bytes,
 };
 use glm_engine::{
     AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CpuWorkerPool, GIB,
@@ -2669,6 +2670,7 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         "fc2_descriptor_alignment": std::mem::align_of::<Fc2Descriptor>(),
         "m128_workspace_bytes": workspace_bytes(assignments)?,
         "m128_fc2_workspace_bytes": fc2_workspace_bytes(rows, assignments)?,
+        "m128_grouped_fc2_workspace_bytes": fc2_grouped_workspace_bytes(rows, assignments)?,
         "cuda_ffi_feature": cfg!(feature = "cuda-ffi"),
         "native_abi_verified": native_abi_verified,
         "gpu_launched": false,

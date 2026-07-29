@@ -6,8 +6,9 @@ use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
 use crate::abi::active_experts_for_grouped;
 use crate::{
     CudaDriver, Fc1Descriptor, Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE,
-    LaunchGeometry, fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan,
-    grouped_workspace_bytes, validate_descriptor, workspace_bytes,
+    LaunchGeometry, fc2_grouped_sfa_capacity_bytes, fc2_grouped_workspace_bytes,
+    fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes,
+    validate_descriptor, workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -79,6 +80,13 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_fc2_grouped_control_launch(
+        descriptor: *const Fc2Descriptor,
+        active_experts: *const u16,
+        active_expert_count: u32,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -89,6 +97,7 @@ unsafe extern "C" {
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_grouped_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_routed_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
+    fn glmaxx_nvfp4_grouped_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
@@ -642,6 +651,50 @@ impl NativeFc1Fixture {
         if status != 0 {
             return Err(KernelError::Driver(status));
         }
+        if async_error != 0 {
+            return Err(KernelError::Async(async_error));
+        }
+        execution.download(self.stream.0)
+    }
+
+    pub fn run_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+    ) -> Result<Vec<f32>, KernelError> {
+        let mut active_experts = Vec::new();
+        for &expert in route_experts {
+            if active_experts.last().copied() != Some(expert) {
+                active_experts.push(expert);
+            }
+        }
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let mut async_error = 0_i32;
+        // SAFETY: `prepare_case` proved exact expert-major ranges and the
+        // active-expert slice and device allocations remain live through sync.
+        let status = unsafe {
+            glmaxx_nvfp4_fc2_grouped_control_launch(
+                std::ptr::from_ref(&execution.descriptor),
+                active_experts.as_ptr(),
+                active_expert_count,
+                self.stream.0 as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        check(status)?;
         if async_error != 0 {
             return Err(KernelError::Async(async_error));
         }
@@ -1267,7 +1320,7 @@ impl NativeFc2Fixture {
         let activation_values =
             NativeBuffer::allocate(padded_assignments * u64::from(LOCAL_INTERMEDIATE) / 2)?;
         let activation_scales =
-            NativeBuffer::allocate(padded_assignments * u64::from(LOCAL_INTERMEDIATE) / 16)?;
+            NativeBuffer::allocate(fc2_grouped_sfa_capacity_bytes(assignments)?)?;
         let activation_globals = NativeBuffer::allocate(u64::from(assignments) * 4)?;
         let assignment_down =
             NativeBuffer::allocate(u64::from(assignments) * u64::from(HIDDEN) * 4)?;
@@ -1300,7 +1353,7 @@ impl NativeFc2Fixture {
         descriptor.token_output_f32 = output.pointer;
         descriptor.slot_assignment_u32 = slot_assignment.pointer;
         descriptor.validation_error_u32 = validation_error.pointer;
-        descriptor.workspace_bytes = fc2_workspace_bytes(rows, assignments)?;
+        descriptor.workspace_bytes = fc2_grouped_workspace_bytes(rows, assignments)?;
         descriptor.sequence = 1;
         crate::validate_fc2_descriptor(&descriptor)?;
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
@@ -1572,6 +1625,8 @@ fn validate_native_fc2_library(rows: u32, assignments: u32) -> Result<(), Kernel
     // device; it mirrors Rust's checked workspace arithmetic.
     if unsafe { glmaxx_nvfp4_routed_fc2_workspace_bytes(rows, assignments) }
         != fc2_workspace_bytes(rows, assignments)?
+        || unsafe { glmaxx_nvfp4_grouped_fc2_workspace_bytes(rows, assignments) }
+            != fc2_grouped_workspace_bytes(rows, assignments)?
     {
         return Err(KernelError::Abi);
     }

@@ -141,8 +141,8 @@ owned_omma_count="$(
 )"
 printf '%s\n' "${owned_omma_count}" \
   | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-owned-omma-count.txt"
-if [[ "${owned_omma_count}" != "192" ]]; then
-  echo "GLMAXX-owned FC1 dense/grouped and FC2 dense controls did not retain exactly 192 expected SM120 NVFP4 OMMA instructions" >&2
+if [[ "${owned_omma_count}" != "256" ]]; then
+  echo "GLMAXX-owned FC1 and FC2 dense/grouped controls did not retain exactly 256 expected SM120 NVFP4 OMMA instructions" >&2
   exit 70
 fi
 nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
@@ -153,10 +153,10 @@ if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-control-symbols.txt" | tr -d ' '
   exit 70
 fi
 nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
-  | grep -E 'glmaxx_nvfp4_fc2_dense_control_launch' \
+  | grep -E 'glmaxx_nvfp4_fc2_(dense|grouped)_control_launch' \
   | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-fc2-control-symbol.txt"
-if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-fc2-control-symbol.txt" | tr -d ' ')" != "1" ]]; then
-  echo "GLMAXX shared library must export exactly one FC2 dense control launcher" >&2
+if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-fc2-control-symbol.txt" | tr -d ' ')" != "2" ]]; then
+  echo "GLMAXX shared library must export exactly the FC2 dense and grouped control launchers" >&2
   exit 70
 fi
 

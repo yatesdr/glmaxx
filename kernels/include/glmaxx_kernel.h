@@ -146,6 +146,9 @@ int32_t glmaxx_nvfp4_routed_fc2_launch(
 int32_t glmaxx_nvfp4_fc2_quantize_launch(
     const struct glmaxx_fc2_descriptor* descriptor,
     void* cuda_stream);
+int32_t glmaxx_nvfp4_fc2_grouped_quantize_launch(
+    const struct glmaxx_fc2_descriptor* descriptor,
+    void* cuda_stream);
 int32_t glmaxx_nvfp4_fc2_core_launch(
     const struct glmaxx_fc2_descriptor* descriptor,
     void* cuda_stream);
@@ -155,6 +158,12 @@ int32_t glmaxx_nvfp4_fc2_reduce_launch(
 int32_t glmaxx_nvfp4_fc2_dense_control_launch(
     const struct glmaxx_fc2_descriptor* descriptor,
     uint32_t expert,
+    void* cuda_stream,
+    int32_t* asynchronous_error);
+int32_t glmaxx_nvfp4_fc2_grouped_control_launch(
+    const struct glmaxx_fc2_descriptor* descriptor,
+    const uint16_t* active_experts,
+    uint32_t active_expert_count,
     void* cuda_stream,
     int32_t* asynchronous_error);
 int32_t glmaxx_graph_exec_launch(uint64_t graph_exec, uint64_t stream);
@@ -170,6 +179,8 @@ uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(uint32_t assignments);
 uint64_t glmaxx_nvfp4_grouped_workspace_bytes(uint32_t assignments);
 uint64_t glmaxx_nvfp4_routed_fc2_workspace_bytes(uint32_t rows,
                                                  uint32_t assignments);
+uint64_t glmaxx_nvfp4_grouped_fc2_workspace_bytes(uint32_t rows,
+                                                  uint32_t assignments);
 const char* glmaxx_kernel_abi(void);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);
