@@ -83,6 +83,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Nonblocking transport adversarial handoff](docs/fable-nonblocking-http-transport-v1-handoff.md)
 - [Direct DRAM/NVMe tier I/O candidate](docs/direct-tier-io-v1.md)
 - [Direct tier I/O adversarial handoff](docs/fable-direct-tier-io-v1-handoff.md)
+- [Fail-closed review provenance verifier](docs/review-provenance-verifier-v1.md)
 - [Current production punchlist](docs/production-punchlist.md)
 - [Provenance-aware results index](docs/results-index.md)
 - [Draft roadmap](docs/roadmap.md)
@@ -97,9 +98,12 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 211 Rust tests plus formatting, Clippy with
+The current local gate passes 216 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, deterministic proof regeneration, and
-the pinned external-tokenizer proof. The CPU/reference workspace includes
+the pinned external-tokenizer proof. It also verifies all 19 candidate-based
+Fable handoffs against their exact committed inputs and can classify an
+explicit review artifact by exact acceptance-token presence. The CPU/reference
+workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
 hybrid policy machinery, TP4 startup and step consensus, bounded continuous
 batching, distributed-sampling oracles, transactional prefix storage,

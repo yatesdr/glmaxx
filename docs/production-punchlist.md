@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Baseline audited: `69895e040617a79dea78d7eaf1ced88234ccb193`
+Baseline audited: `59e11e5b14737020f72659b8a49d8c82982deba8`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -85,10 +85,10 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, and pinned tokenizer proof pass | `scripts/local-checks.sh` passed at `8aaef8e`; 211 Rust tests (the final candidate delta is documentation-only) | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | `scripts/local-checks.sh` passed at `59e11e5`; 216 Rust tests and 19 candidate-based handoffs verified | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | Historical compile-only records exist; current state unavailable after release | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
-| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Initial index accompanies this punchlist; most required artifacts do not exist | Append only provenance-complete records |
+| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed verifier at `59e11e5` proves candidate hashes for all 19 pinned handoffs and exact token state for supplied reviews; most required result artifacts still do not exist | Append only provenance-complete records and supply each review artifact explicitly |
 | D05 | OPEN | Full-checkpoint conversion is allowed only after policy fit and quality gates pass | Profile correctly blocks conversion today | Q01/Q02 and measured HBM budget |
 
 ## External state

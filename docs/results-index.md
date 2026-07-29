@@ -2,14 +2,16 @@
 
 Date: 2026-07-29
 
-Current source baseline:
-`69895e040617a79dea78d7eaf1ced88234ccb193`
+Current implementation baseline:
+`59e11e5b14737020f72659b8a49d8c82982deba8`
 
 The complete gate ran against implementation commit `63b13fd`; `8aaef8e`
 changes only the accompanying terminal-delivery wording. `d0a09d7`,
 `7c71818`, `7e810c4`, `3608a03`, and `69895e0` add only the unimplemented
 online-publication, distributed-sampling, tenant-resource-quota, and
-nonblocking-transport and direct-tier-I/O design candidates.
+nonblocking-transport and direct-tier-I/O design candidates. `59e11e5`
+adds the review-provenance verifier and is the newest fully checked
+implementation.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -19,9 +21,10 @@ permission to convert a full checkpoint.
 
 The complete local gate passed at the source baseline:
 
-- `scripts/local-checks.sh`: 211 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 216 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and the external pinned-tokenizer proof;
+  all 19 candidate-based review-handoff hash proofs, and the external
+  pinned-tokenizer proof;
 - platform: local CPU development host;
 - CUDA compiler or GPU context: not used;
 - kernel/device correctness, one-layer replay, model quality, and performance:
@@ -31,7 +34,7 @@ Pinned inputs:
 
 | Artifact | SHA-256 |
 |---|---|
-| `scripts/local-checks.sh` | `c3456173f504372c2ae2cd7dc391a8886ea838c2703a6ac38bfece47b426ebef` |
+| `scripts/local-checks.sh` | `378a717bc9d592bac68ac999c6a91d4655b633177a9005529288096a3d2a029b` |
 | `fixtures/cpu-serving-proof-v1.json` | `fb76dd1cdc83501ff35ef192dc2be012b5e5cc52ced9a7f8ff4b0b1313698db1` |
 | `fixtures/engine-contract-proof-v1.json` | `a28686829ae46d62ab449eacae3a1b64bf965c43c22699bb4c9130ecedc9c1a2` |
 | `fixtures/nvfp4-actual-shape-v1.json` | `56bca55ab3489fe6f50cd864f73a21f3b83367d79faa8bc70cb26f325f9b1099` |
@@ -42,6 +45,10 @@ Pinned inputs:
 
 The profile validates as arithmetic but remains
 `conversion_allowed=false`.
+
+The review-handoff verifier contract, implementation hashes, commands, and
+exclusions are pinned in `docs/review-provenance-verifier-v1.md`. It validates
+candidate bytes and exact review-token presence; it does not accept any gate.
 
 ## Historical cn4 preparation evidence
 
