@@ -1415,8 +1415,9 @@ impl std::error::Error for SafeTensorError {}
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs::{self, FileTimes},
         sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, UNIX_EPOCH},
     };
 
     use serde_json::json;
@@ -1481,6 +1482,15 @@ mod tests {
         file.extend_from_slice(&encoded);
         file.extend_from_slice(&data);
         fs::write(path, file).unwrap();
+    }
+
+    fn force_distinct_modified_time(path: &Path, seconds: u64) {
+        // Overlay and network filesystems may coalesce two same-size rewrites
+        // into one timestamp tick. Make the fingerprint transition explicit
+        // instead of relying on a sleep or wall-clock scheduling.
+        let file = File::options().write(true).open(path).unwrap();
+        file.set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
+            .unwrap();
     }
 
     fn words_bytes(words: &[u16]) -> Vec<u8> {
@@ -1686,6 +1696,7 @@ mod tests {
             Err(SafeTensorError::ShardPath(_))
         ));
         write_safe(&shard_b, vec![("b", "U8", vec![1], vec![4])]);
+        force_distinct_modified_time(&shard_b, 1);
         assert!(matches!(
             set.read_tensor("b"),
             Err(SafeTensorError::ShardChanged(_))
@@ -1729,6 +1740,7 @@ mod tests {
         let reopened = ShardedSafetensors::open_directory(&directory.0).unwrap();
         assert_eq!(first.structure_sha256(), reopened.structure_sha256());
         write_safe(&shard_z, vec![("z", "U8", vec![2], vec![4, 3])]);
+        force_distinct_modified_time(&shard_z, 2);
         assert_eq!(first.structure_sha256(), reopened.structure_sha256());
         assert!(matches!(
             first.read_tensor("z"),
