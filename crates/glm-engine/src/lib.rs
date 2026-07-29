@@ -6,6 +6,7 @@
 
 mod graph;
 mod memory;
+mod output;
 mod startup;
 mod step;
 mod weight;
@@ -18,13 +19,17 @@ pub use memory::{
     ProfileBudgetTerms, ProfileClass, RankMemoryInput, RankMemoryPlan, SystemMemoryPlan,
     plan_system_memory,
 };
+pub use output::{
+    CommittedTokens, GLM_52_OUTPUT_VOCABULARY, MAX_COMMITTED_TOKENS_PER_SEQUENCE, OutputError,
+    StepOutput,
+};
 pub use startup::{
     MockFault, RankStartupReport, StartupCoordinator, StartupError, StartupState, run_mock_startup,
 };
 pub use step::{
-    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, PlanError, STEP_PLAN_ABI,
-    STEP_PLAN_HASH_INPUT_BYTES, STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest,
-    TP_RANK_MASK,
+    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, MAX_ACTIVE_SEQUENCES,
+    MAX_MTP_DEPTH, MAX_VERIFIER_ROWS, PlanError, STEP_PLAN_ABI, STEP_PLAN_HASH_INPUT_BYTES,
+    STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest, TP_RANK_MASK,
 };
 pub use weight::{
     EXL3_PROJECTION_BYTES, ExpertCodec, ExpertKey, ExpertTensorRole, NVFP4_PROJECTION_BYTES,

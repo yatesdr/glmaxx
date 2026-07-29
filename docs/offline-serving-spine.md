@@ -20,14 +20,22 @@ changing the scheduler or cache contracts.
    and collective schedule. DCP query, candidate, partial-LSE, TP reduction,
    and distributed sampling routes are explicit and graph-qualified.
 3. One bounded dispatcher sends the identical plan to four rank workers.
-   Plan, schedule, and output consensus are checked before the scheduler may
-   commit the step. Plan and collective-schedule validation occurs before the
-   backend entry point. Each executor remains on its named rank thread across
-   steps and may mutate only its own rank-local state. Any plan-order,
+   Every rank returns a fixed-capacity `StepOutput` in sequence-table order:
+   at most 64 sequence records and at most seven committed token IDs per
+   sequence. Plan, schedule, exact output, and canonical output-digest
+   consensus are checked before the scheduler may commit the step. Padded
+   language-head rows 154856–154879 are rejected at this boundary.
+   Plan and collective-schedule validation occurs before the backend entry
+   point. Each executor remains on its named rank thread across steps and may
+   mutate only its own rank-local state. Any plan-order, malformed output,
    rank-backend, or consensus failure permanently closes that worker
    generation so no rank can enter a later collective schedule.
-4. Verify steps commit a checked value from one through `depth + 1`, without
-   crossing a request's generation limit.
+4. Serving consumes the exact rank-returned token IDs; it no longer derives
+   mock tokens or acceptance counts from a digest. Verify steps commit a
+   checked value from one through `depth + 1`, without crossing a request's
+   generation limit. In a verify result, the first `N - 1` committed tokens
+   are accepted draft tokens and the final token is the target correction or
+   bonus token.
 5. Request events cover admission, prefill progress, tokens, finish,
    cancellation, and failure. Event and worker queues apply backpressure
    instead of growing without bound.
@@ -72,7 +80,10 @@ and compares it.
 
 The proof currently covers two tenants, one real 64-token durable prefix
 restore, cold prefill, MTP0 decode, MTP6 verify, eleven emitted tokens, and
-clean completion through four consensus workers.
+clean completion through four consensus workers. The CPU executor deliberately
+returns one target token per verify step, so this proof claims no synthetic
+draft acceptance. A separate scripted-executor test proves the bounded
+multi-token result and accepted-draft event path.
 
 ## SM120 handoff boundary
 

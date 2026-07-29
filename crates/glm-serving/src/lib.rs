@@ -9,17 +9,13 @@ use std::{
 
 use glm_cache::PrefixPageKey;
 use glm_engine::{GraphProfile, Tp4WorkerPool, WorkerError};
+#[cfg(test)]
+use glm_scheduler::SamplingCollective;
 use glm_scheduler::{
     BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog, Scheduler,
     SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
 };
-use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-use glm_scheduler::SamplingCollective;
-
-const TOKEN_DOMAIN: &[u8] = b"glmaxx.mock-token.v1\0";
-const GLM_52_VOCABULARY: u32 = 154_880;
 const MAXIMUM_STEP_EVENTS: usize = 512;
 
 mod cache;
@@ -204,22 +200,34 @@ impl ServingCoordinator {
                 return Err(ServingError::Worker(error));
             }
         };
+        let output_rows = outcome.output.sequences();
         let commits: Vec<_> = starting_progress
             .iter()
-            .filter_map(|(request_id, progress)| match batch.kind {
-                BatchKind::Prefill => None,
-                BatchKind::Decode => Some((*request_id, 1)),
-                BatchKind::Verify { depth } => Some((
-                    *request_id,
-                    mock_commit_count(*request_id, *progress, depth, outcome.output_digest),
-                )),
-            })
+            .zip(output_rows)
+            .map(|((request_id, _), output)| (*request_id, output.count()))
             .collect();
+        let output_fits_requests = match batch.kind {
+            BatchKind::Prefill => output_rows.is_empty(),
+            BatchKind::Decode | BatchKind::Verify { .. } => {
+                output_rows.len() == starting_progress.len()
+                    && starting_progress
+                        .iter()
+                        .zip(output_rows)
+                        .all(|((_, progress), output)| {
+                            u32::from(output.count())
+                                <= progress.maximum_new_tokens - progress.generated
+                        })
+            }
+        };
+        if !output_fits_requests {
+            self.scheduler.complete_batch(false)?;
+            self.emit_failed_rows(&batch)?;
+            return Err(ServingError::Output);
+        }
         self.scheduler.complete_batch_with_commits(true, &commits)?;
-        for row in &batch.rows {
+        for (row_index, row) in batch.rows.iter().enumerate() {
             let starting = starting_progress
-                .iter()
-                .find(|(request_id, _)| *request_id == row.request_id)
+                .get(row_index)
                 .map(|(_, progress)| *progress)
                 .ok_or(ServingError::Request)?;
             let progress = self
@@ -233,12 +241,21 @@ impl ServingCoordinator {
                     prompt_tokens: progress.prompt_tokens,
                 }),
                 BatchKind::Decode | BatchKind::Verify { .. } => {
-                    for position in starting.generated..progress.generated {
+                    let output = output_rows.get(row_index).ok_or(ServingError::Output)?;
+                    for (offset, &token_id) in output.token_ids().iter().enumerate() {
+                        let offset = u32::try_from(offset).map_err(|_| ServingError::Overflow)?;
+                        let position = starting
+                            .generated
+                            .checked_add(offset)
+                            .ok_or(ServingError::Overflow)?;
                         self.events.push_back(RequestEvent::Token {
                             request_id: row.request_id,
                             position,
-                            token_id: mock_token(row.request_id, position, outcome.output_digest),
-                            speculative: matches!(batch.kind, BatchKind::Verify { .. }),
+                            token_id,
+                            // A verify result commits N accepted draft tokens
+                            // followed by one target/residual/bonus token.
+                            speculative: matches!(batch.kind, BatchKind::Verify { .. })
+                                && offset + 1 < u32::from(output.count()),
                         });
                     }
                 }
@@ -346,39 +363,13 @@ impl ServingCoordinator {
     }
 }
 
-fn mock_token(request_id: u64, position: u32, output_digest: [u8; 32]) -> u32 {
-    let mut hasher = Sha256::new();
-    hasher.update(TOKEN_DOMAIN);
-    hasher.update(request_id.to_le_bytes());
-    hasher.update(position.to_le_bytes());
-    hasher.update(output_digest);
-    let digest: [u8; 32] = hasher.finalize().into();
-    u32::from_le_bytes(digest[..4].try_into().expect("bounded")) % GLM_52_VOCABULARY
-}
-
-fn mock_commit_count(
-    request_id: u64,
-    progress: RequestProgress,
-    depth: u8,
-    output_digest: [u8; 32],
-) -> u8 {
-    let remaining = progress.maximum_new_tokens - progress.generated;
-    let maximum = (u32::from(depth) + 1).min(remaining) as u8;
-    let mut hasher = Sha256::new();
-    hasher.update(b"glmaxx.mock-mtp-accept.v1\0");
-    hasher.update(request_id.to_le_bytes());
-    hasher.update(progress.generated.to_le_bytes());
-    hasher.update(output_digest);
-    let digest: [u8; 32] = hasher.finalize().into();
-    1 + digest[0] % maximum
-}
-
 #[derive(Debug)]
 pub enum ServingError {
     Config,
     Backpressure,
     Graph,
     Request,
+    Output,
     Overflow,
     StepLimit,
     CacheUnavailable,
@@ -431,7 +422,10 @@ mod tests {
         DurablePageRequest, FileTierStore, NamespaceInputs, PagePieceBytes, PrefixIndex,
         PrefixNamespace, ResidencyConfig, TierPiece,
     };
-    use glm_engine::{AttentionTransport, GraphEntry, GraphKey, MockWorkerFault, StepMode};
+    use glm_engine::{
+        AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
+        MockWorkerFault, RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan,
+    };
 
     use super::*;
 
@@ -489,6 +483,10 @@ mod tests {
     }
 
     fn coordinator(fault: Option<MockWorkerFault>) -> ServingCoordinator {
+        coordinator_with_workers(Tp4WorkerPool::spawn_cpu(2, fault).unwrap())
+    }
+
+    fn coordinator_with_workers(workers: Tp4WorkerPool) -> ServingCoordinator {
         let profile = GraphProfile::new(vec![
             entry(1, StepMode::Prefill, 4, 64, 0),
             entry(2, StepMode::Decode, 4, 4, 0),
@@ -519,9 +517,39 @@ mod tests {
                 },
             ],
             routes(),
-            Tp4WorkerPool::spawn_cpu(2, fault).unwrap(),
+            workers,
         )
         .unwrap()
+    }
+
+    struct FixedMtpRankExecutor;
+
+    impl RankExecutor for FixedMtpRankExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if plan.mode == StepMode::Prefill {
+                return Ok(StepOutput::empty());
+            }
+            let token_ids: &[u32] = if plan.mode == StepMode::Verify {
+                &[41, 42]
+            } else {
+                &[43]
+            };
+            let sequence =
+                CommittedTokens::new(token_ids).map_err(|_| RankExecutionError::Invariant)?;
+            StepOutput::new(&vec![sequence; usize::from(plan.active_sequences)])
+                .map_err(|_| RankExecutionError::Invariant)
+        }
+    }
+
+    fn fixed_mtp_workers() -> Tp4WorkerPool {
+        let executors =
+            std::array::from_fn(|_| Box::new(FixedMtpRankExecutor) as Box<dyn RankExecutor>);
+        Tp4WorkerPool::spawn(2, executors).unwrap()
     }
 
     fn temporary_store(name: &str) -> std::path::PathBuf {
@@ -534,7 +562,7 @@ mod tests {
 
     #[test]
     fn multi_user_prefix_mtp_and_streaming_lifecycle_runs_end_to_end() {
-        let mut serving = coordinator(None);
+        let mut serving = coordinator_with_workers(fixed_mtp_workers());
         serving
             .admit_prevalidated(ServingRequest {
                 spec: RequestSpec {
@@ -639,7 +667,7 @@ mod tests {
                     mtp_depth: 0,
                     sampling: SamplingCollective::Greedy,
                 },
-                cached_prompt_tokens: 0,
+                cached_prompt_tokens: 64,
             })
             .unwrap();
         let _ = serving.drain_events();
@@ -647,6 +675,30 @@ mod tests {
             serving.tick(),
             Err(ServingError::Worker(WorkerError::Consensus))
         ));
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Failed { request_id: 10 }]
+        );
+    }
+
+    #[test]
+    fn backend_cannot_commit_past_a_request_generation_limit() {
+        let mut serving = coordinator_with_workers(fixed_mtp_workers());
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 10,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 64,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+        assert!(matches!(serving.tick(), Err(ServingError::Output)));
         assert_eq!(
             serving.drain_events(),
             vec![RequestEvent::Failed { request_id: 10 }]

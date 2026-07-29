@@ -10,7 +10,11 @@ weight residency remain pending
 The serving coordinator emits one immutable `StepPlan` and one collective
 schedule. `Tp4WorkerPool` owns exactly four persistent rank threads. Each
 thread owns one mutable `RankExecutor`; plan and schedule verification occurs
-before its backend method is called.
+before its backend method is called. The executor returns a bounded
+`StepOutput` containing the post-collective token decisions in sequence-table
+order. All four logical records must match exactly. Mode geometry, MTP commit
+counts, and the GLM-5.2 tokenizer vocabulary ceiling are validated before the
+coordinator sees the result.
 
 The CUDA rank executor will lazily create its device state on that rank thread
 and retain it until the worker generation terminates:
@@ -59,7 +63,9 @@ Any of these conditions rejects startup or the current step:
 - SM count or total memory is zero;
 - stream creation returns an error or null handle;
 - the context is used from a different host thread; or
-- any rank backend returns an execution error.
+- any rank backend returns an execution error;
+- a rank returns an output record inconsistent with the immutable plan; or
+- token records or their canonical digest differ between ranks.
 
 A plan-order, rank-backend, or output-consensus failure permanently closes the
 worker generation. It may not process a later collective schedule.

@@ -11,9 +11,12 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{CollectiveSchedule, PlanError, StepPlan};
+use crate::{
+    CollectiveSchedule, CommittedTokens, GLM_52_OUTPUT_VOCABULARY, OutputError, PlanError,
+    StepMode, StepOutput, StepPlan,
+};
 
-const OUTPUT_DOMAIN: &[u8] = b"glmaxx.cpu-worker-output.v1\0";
+const CPU_TOKEN_DOMAIN: &[u8] = b"glmaxx.cpu-worker-token.v1\0";
 const TP_RANKS: u8 = 4;
 
 /// Rank-local execution boundary for one persistent TP4 worker thread.
@@ -28,7 +31,7 @@ pub trait RankExecutor: Send + 'static {
         rank: u8,
         plan: &StepPlan,
         schedule: &CollectiveSchedule,
-    ) -> Result<[u8; 32], RankExecutionError>;
+    ) -> Result<StepOutput, RankExecutionError>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,21 +55,21 @@ impl RankExecutor for CpuRankExecutor {
         rank: u8,
         plan: &StepPlan,
         schedule: &CollectiveSchedule,
-    ) -> Result<[u8; 32], RankExecutionError> {
-        let mut hasher = Sha256::new();
-        hasher.update(OUTPUT_DOMAIN);
-        hasher.update(plan.plan_hash);
-        hasher.update(schedule.hash());
-        let mut output_digest: [u8; 32] = hasher.finalize().into();
+    ) -> Result<StepOutput, RankExecutionError> {
+        let mut output = cpu_output(plan, schedule)?;
         if self.fault
             == Some(MockWorkerFault::DivergentOutput {
                 rank,
                 step_id: plan.step_id,
             })
         {
-            output_digest[0] ^= 1;
+            let mut sequences = output.sequences().to_vec();
+            let first = sequences.first_mut().ok_or(RankExecutionError::Invariant)?;
+            let divergent = (first.token_ids()[0] + 1) % GLM_52_OUTPUT_VOCABULARY;
+            *first = CommittedTokens::new(&[divergent])?;
+            output = StepOutput::new(&sequences)?;
         }
-        Ok(output_digest)
+        Ok(output)
     }
 }
 
@@ -84,6 +87,7 @@ pub struct StepOutcome {
     pub step_id: u64,
     pub plan_hash: [u8; 32],
     pub output_digest: [u8; 32],
+    pub output: StepOutput,
     pub rank_acks: [RankStepAck; 4],
 }
 
@@ -136,7 +140,7 @@ struct DispatchCommand {
 struct RankCommand {
     plan: StepPlan,
     schedule: CollectiveSchedule,
-    response: SyncSender<Result<RankStepAck, WorkerError>>,
+    response: SyncSender<Result<RankResult, WorkerError>>,
 }
 
 pub struct Tp4WorkerPool {
@@ -287,30 +291,39 @@ fn dispatch_one(
     for _ in 0..TP_RANKS {
         acknowledgements.push(ack_receiver.recv().map_err(|_| WorkerError::Closed)??);
     }
-    acknowledgements.sort_by_key(|ack| ack.rank);
+    acknowledgements.sort_by_key(|result| result.ack.rank);
     if acknowledgements
         .iter()
         .enumerate()
-        .any(|(rank, ack)| usize::from(ack.rank) != rank)
+        .any(|(rank, result)| usize::from(result.ack.rank) != rank)
     {
         return Err(WorkerError::RankSet);
     }
-    let first = acknowledgements[0];
-    if acknowledgements.iter().any(|ack| {
-        ack.step_id != first.step_id
-            || ack.plan_hash != first.plan_hash
-            || ack.schedule_hash != first.schedule_hash
-            || ack.output_digest != first.output_digest
+    let first = &acknowledgements[0];
+    if acknowledgements.iter().any(|result| {
+        result.ack.step_id != first.ack.step_id
+            || result.ack.plan_hash != first.ack.plan_hash
+            || result.ack.schedule_hash != first.ack.schedule_hash
+            || result.ack.output_digest != first.ack.output_digest
+            || result.output != first.output
     }) {
         return Err(WorkerError::Consensus);
     }
+    let step_id = first.ack.step_id;
+    let plan_hash = first.ack.plan_hash;
+    let output_digest = first.ack.output_digest;
+    let output = first.output.clone();
     let rank_acks: [RankStepAck; 4] = acknowledgements
+        .into_iter()
+        .map(|result| result.ack)
+        .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| WorkerError::RankSet)?;
     Ok(StepOutcome {
-        step_id: first.step_id,
-        plan_hash: first.plan_hash,
-        output_digest: first.output_digest,
+        step_id,
+        plan_hash,
+        output_digest,
+        output,
         rank_acks,
     })
 }
@@ -333,18 +346,54 @@ fn execute_rank(
     plan: &StepPlan,
     schedule: &CollectiveSchedule,
     executor: &mut dyn RankExecutor,
-) -> Result<RankStepAck, WorkerError> {
+) -> Result<RankResult, WorkerError> {
     plan.verify(schedule)?;
-    let output_digest = executor
+    let output = executor
         .execute(rank, plan, schedule)
         .map_err(|error| WorkerError::RankExecution { rank, error })?;
-    Ok(RankStepAck {
-        rank,
-        step_id: plan.step_id,
-        plan_hash: plan.plan_hash,
-        schedule_hash: schedule.hash(),
-        output_digest,
+    output
+        .validate(plan)
+        .map_err(|error| WorkerError::RankOutput { rank, error })?;
+    let output_digest = output.canonical_digest();
+    Ok(RankResult {
+        ack: RankStepAck {
+            rank,
+            step_id: plan.step_id,
+            plan_hash: plan.plan_hash,
+            schedule_hash: schedule.hash(),
+            output_digest,
+        },
+        output,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RankResult {
+    ack: RankStepAck,
+    output: StepOutput,
+}
+
+fn cpu_output(
+    plan: &StepPlan,
+    schedule: &CollectiveSchedule,
+) -> Result<StepOutput, RankExecutionError> {
+    if matches!(plan.mode, StepMode::Prefill | StepMode::CacheOnly) {
+        return Ok(StepOutput::empty());
+    }
+    let sequences = (0..plan.active_sequences)
+        .map(|row| {
+            let mut hasher = Sha256::new();
+            hasher.update(CPU_TOKEN_DOMAIN);
+            hasher.update(plan.plan_hash);
+            hasher.update(schedule.hash());
+            hasher.update(row.to_le_bytes());
+            let digest: [u8; 32] = hasher.finalize().into();
+            let token_id = u32::from_le_bytes(digest[..4].try_into().expect("bounded"))
+                % GLM_52_OUTPUT_VOCABULARY;
+            CommittedTokens::new(&[token_id])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    StepOutput::new(&sequences).map_err(Into::into)
 }
 
 #[derive(Debug)]
@@ -357,6 +406,7 @@ pub enum WorkerError {
     RankSet,
     Consensus,
     RankExecution { rank: u8, error: RankExecutionError },
+    RankOutput { rank: u8, error: OutputError },
     Plan(PlanError),
     Thread(std::io::Error),
 }
@@ -372,6 +422,12 @@ impl std::error::Error for WorkerError {}
 impl From<PlanError> for WorkerError {
     fn from(value: PlanError) -> Self {
         Self::Plan(value)
+    }
+}
+
+impl From<OutputError> for RankExecutionError {
+    fn from(_: OutputError) -> Self {
+        Self::Invariant
     }
 }
 
@@ -425,13 +481,26 @@ mod tests {
         fail_code: Option<i32>,
     }
 
+    struct InvalidOutputExecutor;
+
+    impl RankExecutor for InvalidOutputExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            _plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            Ok(StepOutput::empty())
+        }
+    }
+
     impl RankExecutor for StatefulRankExecutor {
         fn execute(
             &mut self,
             rank: u8,
             plan: &StepPlan,
             schedule: &CollectiveSchedule,
-        ) -> Result<[u8; 32], RankExecutionError> {
+        ) -> Result<StepOutput, RankExecutionError> {
             let thread = std::thread::current().id();
             if rank != self.expected_rank
                 || plan.step_id != self.calls + 1
@@ -444,11 +513,7 @@ mod tests {
             if let Some(code) = self.fail_code {
                 return Err(RankExecutionError::Backend(code));
             }
-            let mut hasher = Sha256::new();
-            hasher.update(b"glmaxx.stateful-rank-test.v1\0");
-            hasher.update(plan.plan_hash);
-            hasher.update(schedule.hash());
-            Ok(hasher.finalize().into())
+            cpu_output(plan, schedule)
         }
     }
 
@@ -531,6 +596,21 @@ mod tests {
             Err(WorkerError::RankExecution {
                 rank: 3,
                 error: RankExecutionError::Backend(17),
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_rank_output_never_reaches_consensus() {
+        let executors =
+            std::array::from_fn(|_| Box::new(InvalidOutputExecutor) as Box<dyn RankExecutor>);
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        let (plan, schedule) = step(1);
+        assert!(matches!(
+            pool.try_submit(plan, schedule).unwrap().receive(),
+            Err(WorkerError::RankOutput {
+                error: OutputError::SequenceCount,
+                ..
             })
         ));
     }
