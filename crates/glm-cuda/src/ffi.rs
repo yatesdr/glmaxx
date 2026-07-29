@@ -1,14 +1,15 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::time::Instant;
 
-use glm_format::{Codec, KERNEL_ABI, PackedNvfp4};
+use glm_format::{Codec, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4};
 
 use crate::abi::active_experts_for_grouped;
 use crate::{
-    CudaDriver, Fc1Descriptor, Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE,
-    LaunchGeometry, fc2_grouped_sfa_capacity_bytes, fc2_grouped_workspace_bytes,
-    fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes,
-    validate_descriptor, workspace_bytes,
+    CudaDriver, EXL3_KERNEL_ABI, Exl3Descriptor, Exl3KernelProjection, Fc1Descriptor,
+    Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
+    exl3_trellis_bytes, exl3_workspace_bytes, fc2_grouped_sfa_capacity_bytes,
+    fc2_grouped_workspace_bytes, fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan,
+    grouped_workspace_bytes, validate_descriptor, validate_exl3_descriptor, workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -87,6 +88,11 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_exl3_projection_launch(
+        descriptor: *const Exl3Descriptor,
+        stream: *mut c_void,
+        error_code: *mut i32,
+    ) -> i32;
     fn glmaxx_graph_exec_launch(graph_exec: u64, stream: u64) -> i32;
     fn glmaxx_graph_exec_destroy(graph_exec: u64) -> i32;
     fn glmaxx_event_create(event: *mut u64) -> i32;
@@ -98,7 +104,9 @@ unsafe extern "C" {
     fn glmaxx_nvfp4_grouped_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_routed_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
     fn glmaxx_nvfp4_grouped_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
+    fn glmaxx_exl3_projection_workspace_bytes(rows: u32, logical_k: u32, logical_n: u32) -> u64;
     fn glmaxx_kernel_abi() -> *const c_char;
+    fn glmaxx_exl3_kernel_abi() -> *const c_char;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
     fn glmaxx_stream_create(stream: *mut u64) -> i32;
@@ -157,6 +165,27 @@ impl CudaDriver for NativeKernelDriver {
         // referenced allocations remain caller-owned through stream completion.
         let status = unsafe {
             glmaxx_nvfp4_routed_fc2_launch(
+                std::ptr::from_ref(descriptor),
+                stream as *mut c_void,
+                std::ptr::from_mut(&mut async_error),
+            )
+        };
+        if status != 0 {
+            Err(KernelError::Driver(status))
+        } else if async_error != 0 {
+            Err(KernelError::Async(async_error))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn launch_exl3(&self, descriptor: &Exl3Descriptor, stream: u64) -> Result<(), KernelError> {
+        validate_native_exl3_library(descriptor.rows, descriptor.logical_k, descriptor.logical_n)?;
+        let mut async_error = 0_i32;
+        // SAFETY: the safe launch ticket validates the POD descriptor and
+        // caller-owned allocations remain live through stream completion.
+        let status = unsafe {
+            glmaxx_exl3_projection_launch(
                 std::ptr::from_ref(descriptor),
                 stream as *mut c_void,
                 std::ptr::from_mut(&mut async_error),
@@ -356,6 +385,51 @@ struct NativeFc2Case {
     _slot_assignment: NativeBuffer,
     validation_error: NativeBuffer,
     descriptor: Fc2Descriptor,
+}
+
+struct NativeExl3Case {
+    _input: NativeBuffer,
+    _rotated_input: NativeBuffer,
+    _projected: NativeBuffer,
+    output: NativeBuffer,
+    validation_error: NativeBuffer,
+    descriptor: Exl3Descriptor,
+}
+
+impl NativeExl3Case {
+    fn download(&self, stream: u64) -> Result<Vec<u16>, KernelError> {
+        let output_words = u64::from(self.descriptor.rows)
+            .checked_mul(u64::from(self.descriptor.logical_n))
+            .ok_or(KernelError::Overflow)?;
+        let output_bytes = output_words.checked_mul(2).ok_or(KernelError::Overflow)?;
+        let mut host_output =
+            vec![0_u16; usize::try_from(output_words).map_err(|_| KernelError::Overflow)?];
+        let mut validation_error = 0_u32;
+        // SAFETY: both host destinations and device sources cover the exact
+        // requested ranges and remain live through stream synchronization.
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                host_output.as_mut_ptr().cast(),
+                self.output.pointer,
+                output_bytes,
+                stream,
+            )
+        })?;
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                std::ptr::from_mut(&mut validation_error).cast(),
+                self.validation_error.pointer,
+                4,
+                stream,
+            )
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(stream) })?;
+        if validation_error == 0 {
+            Ok(host_output)
+        } else {
+            Err(KernelError::DeviceValidation(validation_error))
+        }
+    }
 }
 
 impl NativeFc2Case {
@@ -1376,6 +1450,137 @@ impl NativeFc2Fixture {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Exl3Replay {
+    pub output_f16: Vec<u16>,
+    pub repeat_count: u32,
+    pub bitwise_deterministic: bool,
+}
+
+/// Owns one direct source-order EXL3 projection on the active CUDA device.
+///
+/// The source trellis and rotations are uploaded without transformation.
+/// Per-launch scratch contains only rotated activations and projected FP16
+/// rows, never a reconstructed persistent weight matrix.
+pub struct NativeExl3Fixture {
+    stream: NativeStream,
+    trellis: NativeBuffer,
+    suh: NativeBuffer,
+    svh: NativeBuffer,
+    projection: Exl3KernelProjection,
+    logical_k: u32,
+    logical_n: u32,
+}
+
+impl NativeExl3Fixture {
+    pub fn from_source(tensor: &Exl3Trellis) -> Result<Self, KernelError> {
+        tensor.validate().map_err(|_| KernelError::Shape)?;
+        let projection = match tensor.metadata.projection {
+            Exl3Projection::Gate => Exl3KernelProjection::Gate,
+            Exl3Projection::Up => Exl3KernelProjection::Up,
+            Exl3Projection::Down => Exl3KernelProjection::Down,
+        };
+        let logical_k = tensor.metadata.logical_k;
+        let logical_n = tensor.metadata.logical_n;
+        let trellis_bytes = u64::try_from(std::mem::size_of_val(tensor.trellis.as_slice()))
+            .map_err(|_| KernelError::Overflow)?;
+        if trellis_bytes
+            != exl3_trellis_bytes(logical_k, logical_n, u32::from(tensor.metadata.bits))?
+        {
+            return Err(KernelError::Shape);
+        }
+        let stream = NativeStream::create()?;
+        let trellis = NativeBuffer::upload(words_as_bytes(&tensor.trellis), stream.0)?;
+        let suh = NativeBuffer::upload(words_as_bytes(&tensor.suh), stream.0)?;
+        let svh = NativeBuffer::upload(words_as_bytes(&tensor.svh), stream.0)?;
+        check(unsafe { glmaxx_stream_synchronize(stream.0) })?;
+        Ok(Self {
+            stream,
+            trellis,
+            suh,
+            svh,
+            projection,
+            logical_k,
+            logical_n,
+        })
+    }
+
+    pub fn run(&self, input_f16: &[u16], rows: u32) -> Result<Vec<u16>, KernelError> {
+        let execution = self.prepare_case(input_f16, rows)?;
+        launch_native_exl3(&execution.descriptor, self.stream.0)?;
+        execution.download(self.stream.0)
+    }
+
+    pub fn run_repeated(
+        &self,
+        input_f16: &[u16],
+        rows: u32,
+        repeat_count: u32,
+    ) -> Result<Exl3Replay, KernelError> {
+        if repeat_count == 0 || repeat_count > 100 {
+            return Err(KernelError::Shape);
+        }
+        let execution = self.prepare_case(input_f16, rows)?;
+        let mut first_output = None;
+        let mut bitwise_deterministic = true;
+        for _ in 0..repeat_count {
+            launch_native_exl3(&execution.descriptor, self.stream.0)?;
+            let output = execution.download(self.stream.0)?;
+            if let Some(first) = &first_output {
+                bitwise_deterministic &= first == &output;
+            } else {
+                first_output = Some(output);
+            }
+        }
+        Ok(Exl3Replay {
+            output_f16: first_output.ok_or(KernelError::Shape)?,
+            repeat_count,
+            bitwise_deterministic,
+        })
+    }
+
+    fn prepare_case(&self, input_f16: &[u16], rows: u32) -> Result<NativeExl3Case, KernelError> {
+        let expected_input = usize::try_from(rows)
+            .map_err(|_| KernelError::Overflow)?
+            .checked_mul(usize::try_from(self.logical_k).map_err(|_| KernelError::Overflow)?)
+            .ok_or(KernelError::Overflow)?;
+        if input_f16.len() != expected_input {
+            return Err(KernelError::Shape);
+        }
+        validate_native_exl3_library(rows, self.logical_k, self.logical_n)?;
+        let input = NativeBuffer::upload(words_as_bytes(input_f16), self.stream.0)?;
+        let rotated_input =
+            NativeBuffer::allocate(u64::from(rows) * u64::from(self.logical_k) * 2)?;
+        let projected = NativeBuffer::allocate(u64::from(rows) * u64::from(self.logical_n) * 2)?;
+        let output = NativeBuffer::allocate(u64::from(rows) * u64::from(self.logical_n) * 2)?;
+        let validation_error = NativeBuffer::allocate(4)?;
+        let mut descriptor = Exl3Descriptor::new(rows, self.projection);
+        if descriptor.logical_k != self.logical_k || descriptor.logical_n != self.logical_n {
+            return Err(KernelError::Shape);
+        }
+        descriptor.input_f16 = input.pointer;
+        descriptor.trellis_u16 = self.trellis.pointer;
+        descriptor.suh_f16 = self.suh.pointer;
+        descriptor.svh_f16 = self.svh.pointer;
+        descriptor.rotated_input_f16 = rotated_input.pointer;
+        descriptor.projected_f16 = projected.pointer;
+        descriptor.output_f16 = output.pointer;
+        descriptor.validation_error_u32 = validation_error.pointer;
+        descriptor.workspace_bytes = exl3_workspace_bytes(rows, self.logical_k, self.logical_n)?;
+        descriptor.sequence = 1;
+        validate_exl3_descriptor(&descriptor)?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        Ok(NativeExl3Case {
+            _input: input,
+            _rotated_input: rotated_input,
+            _projected: projected,
+            output,
+            validation_error,
+            descriptor,
+        })
+    }
+}
+
 pub fn run_single_expert(
     input_bf16: &[u16],
     rows: u32,
@@ -1488,6 +1693,24 @@ fn launch_native_fc2(descriptor: &Fc2Descriptor, stream: u64) -> Result<(), Kern
         Err(KernelError::Async(async_error))
     }
 }
+
+fn launch_native_exl3(descriptor: &Exl3Descriptor, stream: u64) -> Result<(), KernelError> {
+    let mut async_error = 0_i32;
+    // SAFETY: the caller keeps the descriptor allocations and stream live.
+    check(unsafe {
+        glmaxx_exl3_projection_launch(
+            std::ptr::from_ref(descriptor),
+            stream as *mut c_void,
+            std::ptr::from_mut(&mut async_error),
+        )
+    })?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
+
 fn launch_native_grouped_control(
     descriptor: &Fc1Descriptor,
     active_experts: &[u16],
@@ -1633,6 +1856,24 @@ fn validate_native_fc2_library(rows: u32, assignments: u32) -> Result<(), Kernel
     Ok(())
 }
 
+fn validate_native_exl3_library(
+    rows: u32,
+    logical_k: u32,
+    logical_n: u32,
+) -> Result<(), KernelError> {
+    // SAFETY: both functions return immutable process-lifetime ABI metadata
+    // or perform pure checked integer arithmetic without creating a context.
+    let native_abi = unsafe { glmaxx_exl3_kernel_abi() };
+    if native_abi.is_null()
+        || unsafe { CStr::from_ptr(native_abi) }.to_bytes() != EXL3_KERNEL_ABI.as_bytes()
+        || unsafe { glmaxx_exl3_projection_workspace_bytes(rows, logical_k, logical_n) }
+            != exl3_workspace_bytes(rows, logical_k, logical_n)?
+    {
+        return Err(KernelError::Abi);
+    }
+    Ok(())
+}
+
 /// Verifies the loaded native library's ABI identifier and workspace formula
 /// without creating a CUDA context or touching a device.
 pub fn validate_native_abi(assignments: u32) -> Result<(), KernelError> {
@@ -1643,4 +1884,14 @@ pub fn validate_native_abi(assignments: u32) -> Result<(), KernelError> {
 /// shape without creating a CUDA context or touching a device.
 pub fn validate_native_moe_abi(rows: u32, assignments: u32) -> Result<(), KernelError> {
     validate_native_fc2_library(rows, assignments)
+}
+
+/// Verifies the direct EXL3 source-projection ABI and workspace arithmetic
+/// without creating a CUDA context or touching a device.
+pub fn validate_native_exl3_abi(
+    rows: u32,
+    logical_k: u32,
+    logical_n: u32,
+) -> Result<(), KernelError> {
+    validate_native_exl3_library(rows, logical_k, logical_n)
 }

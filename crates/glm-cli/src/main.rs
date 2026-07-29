@@ -11,7 +11,8 @@ use glm_cache::{
     PagePieceBytes, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
 };
 use glm_cuda::{
-    Fc1Descriptor, Fc2Descriptor, KernelPath, LaunchGeometry, fc2_grouped_workspace_bytes,
+    EXL3_KERNEL_ABI, Exl3Descriptor, Exl3KernelProjection, Fc1Descriptor, Fc2Descriptor,
+    KernelPath, LaunchGeometry, exl3_workspace_bytes, fc2_grouped_workspace_bytes,
     fc2_workspace_bytes, workspace_bytes,
 };
 use glm_engine::{
@@ -187,6 +188,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_fc2_smoke(rows)?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-exl3-smoke") => {
+            let projection = arguments.get(2).map(String::as_str).unwrap_or("gate");
+            let rows = arguments
+                .get(3)
+                .map(|value| value.parse::<u32>())
+                .transpose()?
+                .unwrap_or(1);
+            gpu_exl3_smoke(projection, rows)?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-matrix") => {
             let path = arguments
                 .get(2)
@@ -230,7 +241,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -1515,6 +1526,122 @@ fn compare_fc2_output(reference: &[f32], actual: &[f32]) -> (f32, f32, usize) {
         } else {
             maximum_relative = f32::INFINITY;
         }
+        if !reference.is_finite() || !actual.is_finite() || absolute > 0.5 + 0.03 * reference.abs()
+        {
+            failures = failures.saturating_add(1);
+        }
+    }
+    (maximum_absolute, maximum_relative, failures)
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_exl3_smoke(projection_name: &str, rows: u32) -> Result<(), Box<dyn std::error::Error>> {
+    if rows == 0 || rows > 8 {
+        return Err("gpu-exl3-smoke CPU-control rows must be in 1..=8".into());
+    }
+    let projection = match projection_name {
+        "gate" => Exl3Projection::Gate,
+        "up" => Exl3Projection::Up,
+        "down" => Exl3Projection::Down,
+        _ => return Err("gpu-exl3-smoke projection must be gate, up, or down".into()),
+    };
+    let (logical_k, logical_n) = match projection {
+        Exl3Projection::Gate | Exl3Projection::Up => (6_144_u32, 512_u32),
+        Exl3Projection::Down => (512_u32, 6_144_u32),
+    };
+    let metadata = Exl3Metadata::new(projection, 3, 0, 0, 3, logical_k, logical_n)?;
+    let mut state = 0x0002_c026_0721_u64 ^ u64::from(projection as u8) ^ (u64::from(rows) << 32);
+    let mut trellis = Vec::with_capacity(
+        usize::try_from(metadata.trellis_words).map_err(|_| "EXL3 trellis is too large")?,
+    );
+    for _ in 0..metadata.trellis_words {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        trellis.push(state as u16);
+    }
+    let suh: Vec<u16> = (0..logical_k)
+        .map(|index| {
+            let offset = i32::try_from((index * 13 + 5) % 17).unwrap() - 8;
+            glm_format::f32_to_f16_bits(1.0 + offset as f32 / 64.0)
+        })
+        .collect();
+    let svh: Vec<u16> = (0..logical_n)
+        .map(|index| {
+            let offset = i32::try_from((index * 7 + 3) % 13).unwrap() - 6;
+            glm_format::f32_to_f16_bits(1.0 + offset as f32 / 64.0)
+        })
+        .collect();
+    let tensor = Exl3Trellis {
+        metadata,
+        trellis,
+        suh,
+        svh,
+        mcg_marker: glm_format::EXL3_MCG_MULTIPLIER,
+    };
+    tensor.validate()?;
+    let input_f16: Vec<u16> = (0..usize::try_from(rows)? * usize::try_from(logical_k)?)
+        .map(|index| {
+            let signed = i32::try_from((index * 29 + 17) % 257).unwrap() - 128;
+            glm_format::f32_to_f16_bits(signed as f32 / 512.0)
+        })
+        .collect();
+    let reference = tensor.matmul_reference_f16(&input_f16, usize::try_from(rows)?)?;
+    let fixture = glm_cuda::NativeExl3Fixture::from_source(&tensor)?;
+    let replay = fixture.run_repeated(&input_f16, rows, 2)?;
+    let (maximum_absolute, maximum_relative, failures) =
+        compare_f16_output(&reference, &replay.output_f16);
+    let report = serde_json::json!({
+        "schema": "glmaxx.sm120-exl3-source-smoke.v1",
+        "projection": projection_name,
+        "shape": [rows, logical_k, logical_n],
+        "bits": 3,
+        "kernel_abi": EXL3_KERNEL_ABI,
+        "trellis_sha256": u16_hash(&tensor.trellis),
+        "suh_sha256": u16_hash(&tensor.suh),
+        "svh_sha256": u16_hash(&tensor.svh),
+        "input_sha256": u16_hash(&input_f16),
+        "cpu_output_sha256": u16_hash(&reference),
+        "gpu_output_sha256": u16_hash(&replay.output_f16),
+        "maximum_absolute_error": maximum_absolute,
+        "maximum_relative_error": maximum_relative,
+        "failed_elements": failures,
+        "repeat_count": replay.repeat_count,
+        "repeat_bitwise_deterministic": replay.bitwise_deterministic,
+        "runtime_weight_repack_bytes": 0,
+        "persistent_reconstructed_weight_bytes": 0,
+        "tolerance": "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.03 * abs(cpu)",
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if failures != 0 || !replay.bitwise_deterministic {
+        return Err("SM120 EXL3 source-projection smoke did not satisfy the frozen gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn compare_f16_output(reference: &[u16], actual: &[u16]) -> (f32, f32, usize) {
+    if reference.len() != actual.len() {
+        return (f32::INFINITY, f32::INFINITY, usize::MAX);
+    }
+    let mut maximum_absolute = 0.0_f32;
+    let mut maximum_relative = 0.0_f32;
+    let mut failures = 0_usize;
+    for (&reference, &actual) in reference.iter().zip(actual) {
+        let reference = glm_format::f16_bits_to_f32(reference);
+        let actual = glm_format::f16_bits_to_f32(actual);
+        let absolute = (reference - actual).abs();
+        let relative = absolute / reference.abs().max(1.0e-6);
+        maximum_absolute = if absolute.is_finite() {
+            maximum_absolute.max(absolute)
+        } else {
+            f32::INFINITY
+        };
+        maximum_relative = if relative.is_finite() {
+            maximum_relative.max(relative)
+        } else {
+            f32::INFINITY
+        };
         if !reference.is_finite() || !actual.is_finite() || absolute > 0.5 + 0.03 * reference.abs()
         {
             failures = failures.saturating_add(1);
@@ -2809,6 +2936,8 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
     });
     #[cfg(feature = "cuda-ffi")]
     glm_cuda::validate_native_moe_abi(rows, assignments)?;
+    #[cfg(feature = "cuda-ffi")]
+    glm_cuda::validate_native_exl3_abi(1, 6_144, 512)?;
     let native_abi_verified = cfg!(feature = "cuda-ffi");
     let reason = if native_abi_verified {
         "native library linked; ABI and workspace formula verified without a GPU launch"
@@ -2821,6 +2950,10 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         "descriptor_alignment": std::mem::align_of::<Fc1Descriptor>(),
         "fc2_descriptor_bytes": std::mem::size_of::<Fc2Descriptor>(),
         "fc2_descriptor_alignment": std::mem::align_of::<Fc2Descriptor>(),
+        "exl3_kernel_abi": EXL3_KERNEL_ABI,
+        "exl3_descriptor_bytes": std::mem::size_of::<Exl3Descriptor>(),
+        "exl3_descriptor_alignment": std::mem::align_of::<Exl3Descriptor>(),
+        "exl3_gate_m1_workspace_bytes": exl3_workspace_bytes(1, 6_144, 512)?,
         "m128_workspace_bytes": workspace_bytes(assignments)?,
         "m128_fc2_workspace_bytes": fc2_workspace_bytes(rows, assignments)?,
         "m128_grouped_fc2_workspace_bytes": fc2_grouped_workspace_bytes(rows, assignments)?,
@@ -2830,6 +2963,7 @@ fn abi_check() -> Result<(), Box<dyn std::error::Error>> {
         "reason": reason,
     });
     let _ = descriptor;
+    let _ = Exl3Descriptor::new(1, Exl3KernelProjection::Gate);
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }

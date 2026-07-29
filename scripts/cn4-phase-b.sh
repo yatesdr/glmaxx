@@ -159,6 +159,13 @@ if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-fc2-control-symbol.txt" | tr -d 
   echo "GLMAXX shared library must export exactly the FC2 dense and grouped control launchers" >&2
   exit 70
 fi
+nm -D --defined-only "${build_dir}/libglmaxx_sm120.so" \
+  | grep -E 'glmaxx_exl3_(projection_launch|projection_workspace_bytes|kernel_abi)' \
+  | tee "${GLMAXX_EVIDENCE_DIR}/glmaxx-exl3-control-symbols.txt"
+if [[ "$(wc -l < "${GLMAXX_EVIDENCE_DIR}/glmaxx-exl3-control-symbols.txt" | tr -d ' ')" != "3" ]]; then
+  echo "GLMAXX shared library must export the EXL3 launch, workspace, and ABI controls" >&2
+  exit 70
+fi
 
 check_idle
 

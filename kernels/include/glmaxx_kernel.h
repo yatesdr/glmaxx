@@ -11,8 +11,12 @@ extern "C" {
 enum {
   GLMAXX_FC1_ABI_VERSION = 1,
   GLMAXX_FC2_ABI_VERSION = 1,
+  GLMAXX_EXL3_ABI_VERSION = 1,
   GLMAXX_FC1_DECODE_PERSISTENT = 1,
   GLMAXX_FC1_PREFILL_GROUPED = 2,
+  GLMAXX_EXL3_GATE = 1,
+  GLMAXX_EXL3_UP = 2,
+  GLMAXX_EXL3_DOWN = 3,
 };
 
 #if defined(__cplusplus)
@@ -84,6 +88,32 @@ struct glmaxx_fc2_descriptor {
   uint64_t assignment_down_f32;
   uint64_t token_output_f32;
   uint64_t slot_assignment_u32;
+  uint64_t validation_error_u32;
+  uint64_t workspace_bytes;
+  uint64_t sequence;
+  uint64_t reserved[4];
+};
+
+#if defined(__cplusplus)
+struct alignas(16) glmaxx_exl3_descriptor {
+#else
+struct glmaxx_exl3_descriptor {
+#endif
+  uint32_t abi_version;
+  uint32_t struct_bytes;
+  uint32_t flags;
+  uint32_t projection;
+  uint32_t rows;
+  uint32_t logical_k;
+  uint32_t logical_n;
+  uint32_t bits;
+  uint64_t input_f16;
+  uint64_t trellis_u16;
+  uint64_t suh_f16;
+  uint64_t svh_f16;
+  uint64_t rotated_input_f16;
+  uint64_t projected_f16;
+  uint64_t output_f16;
   uint64_t validation_error_u32;
   uint64_t workspace_bytes;
   uint64_t sequence;
@@ -166,6 +196,10 @@ int32_t glmaxx_nvfp4_fc2_grouped_control_launch(
     uint32_t active_expert_count,
     void* cuda_stream,
     int32_t* asynchronous_error);
+int32_t glmaxx_exl3_projection_launch(
+    const struct glmaxx_exl3_descriptor* descriptor,
+    void* cuda_stream,
+    int32_t* asynchronous_error);
 int32_t glmaxx_graph_exec_launch(uint64_t graph_exec, uint64_t stream);
 int32_t glmaxx_graph_exec_destroy(uint64_t graph_exec);
 int32_t glmaxx_event_create(uint64_t* event);
@@ -181,7 +215,11 @@ uint64_t glmaxx_nvfp4_routed_fc2_workspace_bytes(uint32_t rows,
                                                  uint32_t assignments);
 uint64_t glmaxx_nvfp4_grouped_fc2_workspace_bytes(uint32_t rows,
                                                   uint32_t assignments);
+uint64_t glmaxx_exl3_projection_workspace_bytes(uint32_t rows,
+                                                uint32_t logical_k,
+                                                uint32_t logical_n);
 const char* glmaxx_kernel_abi(void);
+const char* glmaxx_exl3_kernel_abi(void);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);
 int32_t glmaxx_stream_create(uint64_t* stream);
@@ -206,6 +244,10 @@ static_assert(sizeof(glmaxx_fc2_descriptor) == 224,
               "Rust/C FC2 descriptor size mismatch");
 static_assert(alignof(glmaxx_fc2_descriptor) == 16,
               "Rust/C FC2 descriptor alignment mismatch");
+static_assert(sizeof(glmaxx_exl3_descriptor) == 144,
+              "Rust/C EXL3 descriptor size mismatch");
+static_assert(alignof(glmaxx_exl3_descriptor) == 16,
+              "Rust/C EXL3 descriptor alignment mismatch");
 #endif
 
 #endif  // GLMAXX_KERNEL_H_

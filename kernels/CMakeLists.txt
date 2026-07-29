@@ -17,6 +17,7 @@ endif()
 add_library(glmaxx_sm120 SHARED
   sm120/nvfp4_routed_fc1.cu
   sm120/nvfp4_routed_fc2.cu
+  sm120/exl3_projection_control.cu
   sm120/cutlass_nvfp4_dense_control.cu
   sm120/cutlass_nvfp4_fc2_control.cu)
 target_include_directories(glmaxx_sm120

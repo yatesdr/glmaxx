@@ -339,42 +339,11 @@ impl Exl3Trellis {
         let k = self.metadata.logical_k as usize;
         let n = self.metadata.logical_n as usize;
         let bits = usize::from(self.metadata.bits);
-        let tile_words = 8 * bits;
-        let tile_halves = 16 * bits;
         let mut output = vec![0_u16; k.checked_mul(n).ok_or(Exl3Error::Overflow)?];
 
-        for k_tile in 0..k / 16 {
-            for n_tile in 0..n / 16 {
-                let tile_base = (k_tile * (n / 16) + n_tile) * tile_halves;
-                let mut words = vec![0_u32; tile_words];
-                for (word, halves) in words
-                    .iter_mut()
-                    .zip(self.trellis[tile_base..tile_base + tile_halves].chunks_exact(2))
-                {
-                    *word = u32::from(halves[0]) | (u32::from(halves[1]) << 16);
-                }
-                for lane in 0..32 {
-                    let row0 = (lane % 4) * 2;
-                    let rows = [row0, row0 + 1, row0 + 8, row0 + 9];
-                    let col0 = lane / 8;
-                    let col1 = col0 + 4;
-                    let parity = (lane >> 2) & 1;
-                    for weight in 0..8 {
-                        let end_bit = (lane * 8 + weight + 257) * bits;
-                        let start_bit = end_bit - 16;
-                        let first_word = start_bit / 32;
-                        let last_word = (end_bit - 1) / 32;
-                        let shift = (last_word + 1) * 32 - end_bit;
-                        let merged = (u64::from(words[first_word % tile_words]) << 32)
-                            | u64::from(words[last_word % tile_words]);
-                        let window = ((merged >> shift) & 0xffff) as u16;
-                        let value = decode_3inst_f16(window);
-                        let row = k_tile * 16 + rows[weight % 4];
-                        let column =
-                            n_tile * 16 + 2 * (if weight < 4 { col0 } else { col1 }) + parity;
-                        output[row * n + column] = value;
-                    }
-                }
+        for row in 0..k {
+            for column in 0..n {
+                output[row * n + column] = decode_native_at(&self.trellis, n, bits, row, column);
             }
         }
         Ok(output)
@@ -501,6 +470,42 @@ fn decode_3inst_f16(window: u16) -> u16 {
     let low = packed as u16;
     let high = (packed >> 16) as u16;
     f32_to_f16_bits(f16_bits_to_f32(low) + f16_bits_to_f32(high))
+}
+
+fn inverse_trellis_slot(local_row: usize, local_column: usize) -> (usize, usize) {
+    debug_assert!(local_row < 16 && local_column < 16);
+    let row_quadrant = (local_row & 7) >> 1;
+    let row_selector = usize::from(local_row >= 8) * 2 + (local_row & 1);
+    let column_group = (local_column >> 1) & 3;
+    let parity = local_column & 1;
+    let lane = column_group * 8 + parity * 4 + row_quadrant;
+    let weight = usize::from(local_column >= 8) * 4 + row_selector;
+    (lane, weight)
+}
+
+fn decode_native_at(
+    trellis: &[u16],
+    logical_n: usize,
+    bits: usize,
+    row: usize,
+    column: usize,
+) -> u16 {
+    let tile_halves = 16 * bits;
+    let tile_words = 8 * bits;
+    let tile_index = (row / 16) * (logical_n / 16) + column / 16;
+    let tile_base = tile_index * tile_halves;
+    let (lane, weight) = inverse_trellis_slot(row & 15, column & 15);
+    let end_bit = (lane * 8 + weight + 257) * bits;
+    let start_bit = end_bit - 16;
+    let first_word = start_bit / 32;
+    let last_word = (end_bit - 1) / 32;
+    let shift = (last_word + 1) * 32 - end_bit;
+    let read_word = |index: usize| {
+        let half = tile_base + (index % tile_words) * 2;
+        u32::from(trellis[half]) | (u32::from(trellis[half + 1]) << 16)
+    };
+    let merged = (u64::from(read_word(first_word)) << 32) | u64::from(read_word(last_word));
+    decode_3inst_f16(((merged >> shift) & 0xffff) as u16)
 }
 
 fn hadamard_128(input: &[f32; 128]) -> [f32; 128] {
@@ -711,6 +716,26 @@ mod tests {
                 0xbc, 0x5b, 0x4e, 0x15,
             ]
         );
+    }
+
+    #[test]
+    fn inverse_scatter_recovers_every_trellis_tile_position() {
+        let tensor = fixture();
+        let native = tensor.reconstruct_native_f16().unwrap();
+        let n = tensor.metadata.logical_n as usize;
+        let bits = usize::from(tensor.metadata.bits);
+        for &(row_base, column_base) in &[(0, 0), (6_128, 496)] {
+            for local_row in 0..16 {
+                for local_column in 0..16 {
+                    let row = row_base + local_row;
+                    let column = column_base + local_column;
+                    assert_eq!(
+                        decode_native_at(&tensor.trellis, n, bits, row, column),
+                        native[row * n + column]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

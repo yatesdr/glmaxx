@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    Fc1Descriptor, Fc2Descriptor, KernelError, validate_descriptor, validate_fc2_descriptor,
+    Exl3Descriptor, Fc1Descriptor, Fc2Descriptor, KernelError, validate_descriptor,
+    validate_exl3_descriptor, validate_fc2_descriptor,
 };
 
 pub trait CudaDriver: Send + Sync + 'static {
@@ -9,7 +10,42 @@ pub trait CudaDriver: Send + Sync + 'static {
     fn free(&self, pointer: u64) -> Result<(), KernelError>;
     fn launch_fc1(&self, descriptor: &Fc1Descriptor, stream: u64) -> Result<(), KernelError>;
     fn launch_fc2(&self, descriptor: &Fc2Descriptor, stream: u64) -> Result<(), KernelError>;
+    fn launch_exl3(&self, descriptor: &Exl3Descriptor, stream: u64) -> Result<(), KernelError>;
     fn query_stream(&self, stream: u64) -> Result<bool, KernelError>;
+}
+
+pub struct Exl3LaunchTicket<D: CudaDriver> {
+    driver: Arc<D>,
+    stream: u64,
+    sequence: u64,
+}
+
+impl<D: CudaDriver> Exl3LaunchTicket<D> {
+    pub fn launch(
+        driver: Arc<D>,
+        descriptor: &Exl3Descriptor,
+        stream: u64,
+    ) -> Result<Self, KernelError> {
+        validate_exl3_descriptor(descriptor)?;
+        if stream == 0 {
+            return Err(KernelError::Null);
+        }
+        driver.launch_exl3(descriptor, stream)?;
+        Ok(Self {
+            driver,
+            stream,
+            sequence: descriptor.sequence,
+        })
+    }
+
+    pub fn is_complete(&self) -> Result<bool, KernelError> {
+        self.driver.query_stream(self.stream)
+    }
+
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
 }
 
 pub struct Fc2LaunchTicket<D: CudaDriver> {
@@ -149,6 +185,14 @@ mod tests {
         }
 
         fn launch_fc2(&self, _descriptor: &Fc2Descriptor, _stream: u64) -> Result<(), KernelError> {
+            Ok(())
+        }
+
+        fn launch_exl3(
+            &self,
+            _descriptor: &Exl3Descriptor,
+            _stream: u64,
+        ) -> Result<(), KernelError> {
             Ok(())
         }
 

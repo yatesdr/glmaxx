@@ -7,12 +7,24 @@ pub const LOCAL_INTERMEDIATE: u32 = 512;
 pub const EXPERTS: u32 = 256;
 pub const TOP_K: u32 = 8;
 pub const SFA_BYTES_PER_PADDED_ROW: u64 = HIDDEN as u64 / 16;
+pub const EXL3_ABI_VERSION: u32 = 1;
+pub const EXL3_BITS: u32 = 3;
+pub const EXL3_MAX_ROWS: u32 = 3_072;
+pub const EXL3_KERNEL_ABI: &str = "glmaxx.sm120.exl3.source_projection.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum KernelPath {
     DecodePersistent = 1,
     PrefillGrouped = 2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Exl3KernelProjection {
+    Gate = 1,
+    Up = 2,
+    Down = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +159,66 @@ pub struct Fc2Descriptor {
     pub workspace_bytes: u64,
     pub sequence: u64,
     pub reserved: [u64; 4],
+}
+
+/// Direct source-order EXL3 projection correctness boundary.
+///
+/// The three work/output planes are FP16. `trellis_u16`, `suh_f16`, and
+/// `svh_f16` point directly into the native container planes; a launch may
+/// reconstruct only the scalar/tile values it immediately consumes.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, align(16))]
+pub struct Exl3Descriptor {
+    pub abi_version: u32,
+    pub struct_bytes: u32,
+    pub flags: u32,
+    pub projection: u32,
+    pub rows: u32,
+    pub logical_k: u32,
+    pub logical_n: u32,
+    pub bits: u32,
+    pub input_f16: u64,
+    pub trellis_u16: u64,
+    pub suh_f16: u64,
+    pub svh_f16: u64,
+    pub rotated_input_f16: u64,
+    pub projected_f16: u64,
+    pub output_f16: u64,
+    pub validation_error_u32: u64,
+    pub workspace_bytes: u64,
+    pub sequence: u64,
+    pub reserved: [u64; 4],
+}
+
+impl Exl3Descriptor {
+    #[must_use]
+    pub fn new(rows: u32, projection: Exl3KernelProjection) -> Self {
+        let (logical_k, logical_n) = match projection {
+            Exl3KernelProjection::Gate | Exl3KernelProjection::Up => (HIDDEN, LOCAL_INTERMEDIATE),
+            Exl3KernelProjection::Down => (LOCAL_INTERMEDIATE, HIDDEN),
+        };
+        Self {
+            abi_version: EXL3_ABI_VERSION,
+            struct_bytes: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            projection: projection as u32,
+            rows,
+            logical_k,
+            logical_n,
+            bits: EXL3_BITS,
+            input_f16: 0,
+            trellis_u16: 0,
+            suh_f16: 0,
+            svh_f16: 0,
+            rotated_input_f16: 0,
+            projected_f16: 0,
+            output_f16: 0,
+            validation_error_u32: 0,
+            workspace_bytes: 0,
+            sequence: 0,
+            reserved: [0; 4],
+        }
+    }
 }
 
 impl Fc2Descriptor {
@@ -484,6 +556,99 @@ pub fn fc2_grouped_workspace_bytes(rows: u32, assignments: u32) -> Result<u64, K
         .ok_or(KernelError::Overflow)
 }
 
+pub fn exl3_trellis_bytes(logical_k: u32, logical_n: u32, bits: u32) -> Result<u64, KernelError> {
+    if logical_k == 0
+        || logical_n == 0
+        || !logical_k.is_multiple_of(16)
+        || !logical_n.is_multiple_of(16)
+        || bits != EXL3_BITS
+    {
+        return Err(KernelError::Shape);
+    }
+    u64::from(logical_k / 16)
+        .checked_mul(u64::from(logical_n / 16))
+        .and_then(|tiles| tiles.checked_mul(u64::from(16 * bits)))
+        .and_then(|halves| halves.checked_mul(2))
+        .ok_or(KernelError::Overflow)
+}
+
+pub fn exl3_workspace_bytes(rows: u32, logical_k: u32, logical_n: u32) -> Result<u64, KernelError> {
+    if rows == 0
+        || rows > EXL3_MAX_ROWS
+        || !matches!(
+            (logical_k, logical_n),
+            (HIDDEN, LOCAL_INTERMEDIATE) | (LOCAL_INTERMEDIATE, HIDDEN)
+        )
+    {
+        return Err(KernelError::Shape);
+    }
+    u64::from(rows)
+        .checked_mul(
+            u64::from(logical_k)
+                .checked_add(u64::from(logical_n))
+                .ok_or(KernelError::Overflow)?,
+        )
+        .and_then(|elements| elements.checked_mul(2))
+        .ok_or(KernelError::Overflow)
+}
+
+pub fn validate_exl3_descriptor(descriptor: &Exl3Descriptor) -> Result<(), KernelError> {
+    if descriptor.abi_version != EXL3_ABI_VERSION
+        || descriptor.struct_bytes as usize != std::mem::size_of::<Exl3Descriptor>()
+        || descriptor.flags != 0
+        || descriptor.bits != EXL3_BITS
+        || descriptor.reserved.iter().any(|&value| value != 0)
+    {
+        return Err(KernelError::Abi);
+    }
+    let expected_shape = match descriptor.projection {
+        1 | 2 => (HIDDEN, LOCAL_INTERMEDIATE),
+        3 => (LOCAL_INTERMEDIATE, HIDDEN),
+        _ => return Err(KernelError::Path),
+    };
+    if (descriptor.logical_k, descriptor.logical_n) != expected_shape
+        || descriptor.rows == 0
+        || descriptor.rows > EXL3_MAX_ROWS
+    {
+        return Err(KernelError::Shape);
+    }
+    if [
+        descriptor.input_f16,
+        descriptor.trellis_u16,
+        descriptor.suh_f16,
+        descriptor.svh_f16,
+        descriptor.rotated_input_f16,
+        descriptor.projected_f16,
+        descriptor.output_f16,
+        descriptor.validation_error_u32,
+    ]
+    .contains(&0)
+    {
+        return Err(KernelError::Null);
+    }
+    if !descriptor.input_f16.is_multiple_of(2)
+        || !descriptor.trellis_u16.is_multiple_of(4)
+        || !descriptor.suh_f16.is_multiple_of(2)
+        || !descriptor.svh_f16.is_multiple_of(2)
+        || !descriptor.rotated_input_f16.is_multiple_of(2)
+        || !descriptor.projected_f16.is_multiple_of(2)
+        || !descriptor.output_f16.is_multiple_of(2)
+        || !descriptor.validation_error_u32.is_multiple_of(4)
+    {
+        return Err(KernelError::Alignment);
+    }
+    let required =
+        exl3_workspace_bytes(descriptor.rows, descriptor.logical_k, descriptor.logical_n)?;
+    if descriptor.workspace_bytes < required {
+        return Err(KernelError::Workspace {
+            required,
+            provided: descriptor.workspace_bytes,
+        });
+    }
+    let _ = exl3_trellis_bytes(descriptor.logical_k, descriptor.logical_n, descriptor.bits)?;
+    Ok(())
+}
+
 #[cfg(any(feature = "cuda-ffi", test))]
 pub(crate) fn active_experts_for_grouped(
     route_experts: &[u16],
@@ -547,6 +712,90 @@ mod tests {
         assert_eq!(std::mem::align_of::<Fc1Descriptor>(), 16);
         assert_eq!(std::mem::size_of::<Fc2Descriptor>(), 224);
         assert_eq!(std::mem::align_of::<Fc2Descriptor>(), 16);
+        assert_eq!(std::mem::size_of::<Exl3Descriptor>(), 144);
+        assert_eq!(std::mem::align_of::<Exl3Descriptor>(), 16);
+    }
+
+    #[test]
+    fn exl3_actual_projection_descriptors_validate() {
+        for projection in [
+            Exl3KernelProjection::Gate,
+            Exl3KernelProjection::Up,
+            Exl3KernelProjection::Down,
+        ] {
+            for rows in [1, 2, 8, 128, 256, EXL3_MAX_ROWS] {
+                let mut descriptor = Exl3Descriptor::new(rows, projection);
+                let mut pointer = 0x1000_u64;
+                for field in [
+                    &mut descriptor.input_f16,
+                    &mut descriptor.trellis_u16,
+                    &mut descriptor.suh_f16,
+                    &mut descriptor.svh_f16,
+                    &mut descriptor.rotated_input_f16,
+                    &mut descriptor.projected_f16,
+                    &mut descriptor.output_f16,
+                    &mut descriptor.validation_error_u32,
+                ] {
+                    *field = pointer;
+                    pointer += 0x100;
+                }
+                descriptor.workspace_bytes =
+                    exl3_workspace_bytes(rows, descriptor.logical_k, descriptor.logical_n).unwrap();
+                validate_exl3_descriptor(&descriptor).unwrap();
+            }
+        }
+        assert_eq!(
+            exl3_trellis_bytes(HIDDEN, LOCAL_INTERMEDIATE, EXL3_BITS).unwrap(),
+            1_179_648
+        );
+        assert_eq!(
+            exl3_workspace_bytes(1, HIDDEN, LOCAL_INTERMEDIATE).unwrap(),
+            13_312
+        );
+        assert_eq!(
+            exl3_workspace_bytes(1, HIDDEN, HIDDEN),
+            Err(KernelError::Shape)
+        );
+    }
+
+    #[test]
+    fn exl3_descriptor_rejects_shape_pointer_and_workspace_lies() {
+        let mut descriptor = Exl3Descriptor::new(1, Exl3KernelProjection::Gate);
+        let mut pointer = 0x1000_u64;
+        for field in [
+            &mut descriptor.input_f16,
+            &mut descriptor.trellis_u16,
+            &mut descriptor.suh_f16,
+            &mut descriptor.svh_f16,
+            &mut descriptor.rotated_input_f16,
+            &mut descriptor.projected_f16,
+            &mut descriptor.output_f16,
+            &mut descriptor.validation_error_u32,
+        ] {
+            *field = pointer;
+            pointer += 0x100;
+        }
+        descriptor.workspace_bytes =
+            exl3_workspace_bytes(1, descriptor.logical_k, descriptor.logical_n).unwrap();
+        let valid = descriptor;
+
+        descriptor.logical_n += 128;
+        assert_eq!(
+            validate_exl3_descriptor(&descriptor),
+            Err(KernelError::Shape)
+        );
+        descriptor = valid;
+        descriptor.trellis_u16 += 2;
+        assert_eq!(
+            validate_exl3_descriptor(&descriptor),
+            Err(KernelError::Alignment)
+        );
+        descriptor = valid;
+        descriptor.workspace_bytes -= 1;
+        assert!(matches!(
+            validate_exl3_descriptor(&descriptor),
+            Err(KernelError::Workspace { .. })
+        ));
     }
 
     #[test]
