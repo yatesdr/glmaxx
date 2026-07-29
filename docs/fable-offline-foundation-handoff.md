@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Base commit:
-`ee3f1f3507ba67b886796126b1cc1e91c5d099e4`
+`de0434c414ce0c1c3ea552bb3bda46a89ba30c3f`
 
 Review scope: the eight CPU/offline workstreams requested after the Phase-A
 engine contract. No cn4 access or GPU execution occurred.
@@ -19,8 +19,10 @@ Hash these files again at review start and finish:
 | `docs/native-engine-plan.md` | `9662c82bea15c7b336ac3efa41a12a1e627a511a5f8da603ba466d5bcb6ae036` |
 | `docs/exl3-trellis-cpu-contract.md` | `7c5bfa0795aa6b78646b00b029f8d4edc7c15491d69ea19e423f770701b5cdc3` |
 | `docs/offline-serving-foundation.md` | `576932d119332774df2a8a65d85a4f185e804504acca949561689f03b02f28ae` |
+| `docs/checkpoint-ingest.md` | `9dbe3ff82df903d7c4812202eba1d8b136b1e7d49605d329daafe113a36060ee` |
 | `crates/glm-format/src/exl3.rs` | `6ba46fa98979711f5ecaaccf9be150045de768648e2a31fb5fbf49d56d95bbe4` |
 | `crates/glm-format/src/container.rs` | `3896cea86554218ec9c19d8090c2cef4956c0ad50bfc4806327c10443980ea7f` |
+| `crates/glm-format/src/safetensors.rs` | `5173a2c21f125d61fa79c0ee398cdeaee6e8e2f0d6ad88eac02a58e27560040f` |
 | `crates/glm-engine/src/weight.rs` | `d658cefefc17757a28258bafd0e13f5309e8adcbf2b30c4d2bdc97be9899ca19` |
 | `crates/glm-engine/src/startup.rs` | `9634f120a2e01f21aaa5778954053d9a06f1e8d2af6c5abe1f9c6e4cbbd31e87` |
 | `crates/glm-scheduler/src/lib.rs` | `b6ec68d37d87ba64dead63444972b6334218d6a7fbeceb4e7f685162bf2b43e8` |
@@ -56,6 +58,10 @@ Hash these files again at review start and finish:
    plane and marker/rotations as aux, validate all source arithmetic, reject
    unknown codecs and false direct-layout flags, and expose only an
    inspection/CPU-proof API.
+10. A strict Rust safetensors reader validates single-file and standard
+    sharded checkpoint structure, exposes bounded positional reads and
+    content hashing, and imports the canonical four EXL3 components at actual
+    GLM-5.2 shapes without a framework or intermediate representation.
 
 ## Reproduction
 
@@ -65,11 +71,16 @@ The complete local gate passes:
 ./scripts/local-checks.sh
 ```
 
-The workspace currently has 125 passing tests. Clippy passes with warnings
+The workspace currently has 132 passing tests. Clippy passes with warnings
 denied. The real EXL3 source proof is external-data dependent:
 
 ```text
 cargo run -p glm-cli -- exl3-proof /external/path/source.payload
+cargo run -p glm-cli --release -- \
+  safetensors-inventory /external/model/model.safetensors.index.json
+cargo run -p glm-cli --release -- \
+  exl3-safetensors-proof \
+  /external/model/model.safetensors.index.json 3 0 0 gate
 ```
 
 Pinned real-payload result:
@@ -111,6 +122,10 @@ No weights or raw benchmark evidence are in Git.
    which require another CPU correction first?
 10. Does the source-container split preserve exact EXL3 component semantics
     while remaining fail-closed against serving/GPU health claims?
+11. Can the safetensors parser, index reconciliation, shape/dtype checks, or
+    positional read path accept an ambiguous, truncated, overlapping,
+    unmapped, path-traversing, or same-header/wrong-data EXL3 source while
+    reporting it as proven?
 
 ## Explicit non-claims
 
@@ -118,6 +133,6 @@ No weights or raw benchmark evidence are in Git.
 - no CUDA graph capture or real four-process worker;
 - no measured fairness/SLO tuning;
 - no filesystem I/O, fsync, io_uring, or GDS implementation;
-- no full-checkpoint loader or conversion;
+- no complete-model conversion or bounded-memory native rank writer;
 - no model logit/quality result;
 - no serving API or end-to-end throughput claim.
