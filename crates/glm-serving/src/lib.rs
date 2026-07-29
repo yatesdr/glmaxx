@@ -266,6 +266,12 @@ impl ServingCoordinator {
     /// prefix pages inside this coordinator.
     pub fn admit_prevalidated(&mut self, request: ServingRequest) -> Result<(), ServingError> {
         self.require_event_space(1)?;
+        if self.pending_admissions.contains_key(&request.spec.id)
+            || self.prefix_leases.contains_key(&request.spec.id)
+            || self.request_tokens.contains_key(&request.spec.id)
+        {
+            return Err(ServingError::Backpressure);
+        }
         let next_generation = self.next_sequence_generation()?;
         self.scheduler
             .admit_with_prefix(request.spec, request.cached_prompt_tokens)?;
@@ -300,16 +306,19 @@ impl ServingCoordinator {
         }
         if self.pending_admissions.contains_key(&spec.id)
             || self.scheduler.request_state(spec.id).is_some()
+            || self.prefix_leases.contains_key(&spec.id)
+            || self.request_tokens.contains_key(&spec.id)
             || self.pending_admissions.len() >= self.event_capacity
         {
             return Err(ServingError::Backpressure);
         }
         let prompt_bytes = prompt_bytes(tokens.len())?;
-        if self
+        let prior_retained_prompt_bytes = self.retained_prompt_bytes;
+        let retained_prompt_bytes = self
             .retained_prompt_bytes
             .checked_add(prompt_bytes)
-            .is_none_or(|bytes| bytes > self.maximum_retained_prompt_bytes)
-        {
+            .ok_or(ServingError::Overflow)?;
+        if retained_prompt_bytes > self.maximum_retained_prompt_bytes {
             return Err(ServingError::Backpressure);
         }
         let status = self
@@ -317,10 +326,7 @@ impl ServingCoordinator {
             .as_mut()
             .ok_or(ServingError::CacheUnavailable)?
             .begin_restore_longest_with_capability(spec.id, tokens, spec.mtp_depth != 0)?;
-        self.retained_prompt_bytes = self
-            .retained_prompt_bytes
-            .checked_add(prompt_bytes)
-            .ok_or(ServingError::Overflow)?;
+        self.retained_prompt_bytes = retained_prompt_bytes;
         match status {
             PrefixRestoreStatus::Pending => {
                 self.pending_admissions.insert(
@@ -332,9 +338,12 @@ impl ServingCoordinator {
                 );
                 Ok(AdmissionStatus::Pending)
             }
-            PrefixRestoreStatus::Ready(restored) => {
-                self.finish_token_admission(spec, tokens.to_vec().into_boxed_slice(), restored)
-            }
+            PrefixRestoreStatus::Ready(restored) => self.finish_token_admission(
+                spec,
+                tokens.to_vec().into_boxed_slice(),
+                restored,
+                prior_retained_prompt_bytes,
+            ),
         }
     }
 
@@ -342,16 +351,24 @@ impl ServingCoordinator {
         if !self.pending_admissions.contains_key(&request_id) {
             return Err(ServingError::UnknownAdmission);
         }
-        let status = match self
+        let retained_prompt_bytes = self.retained_prompt_bytes_after_release(
+            self.pending_admissions
+                .get(&request_id)
+                .ok_or(ServingError::UnknownAdmission)?
+                .tokens
+                .len(),
+        )?;
+        let cache = self
             .prefix_cache
             .as_mut()
-            .ok_or(ServingError::CacheUnavailable)?
-            .poll_restore(request_id)
-        {
+            .ok_or(ServingError::CacheUnavailable)?;
+        let status = match cache.poll_restore(request_id) {
             Ok(status) => status,
             Err(error) => {
-                if let Some(pending) = self.pending_admissions.remove(&request_id) {
-                    self.release_prompt_reservation(pending.tokens.len())?;
+                if !cache.has_pending_restore(request_id)
+                    && self.pending_admissions.remove(&request_id).is_some()
+                {
+                    self.retained_prompt_bytes = retained_prompt_bytes;
                 }
                 return Err(error.into());
             }
@@ -362,8 +379,13 @@ impl ServingCoordinator {
                 let pending = self
                     .pending_admissions
                     .remove(&request_id)
-                    .ok_or(ServingError::UnknownAdmission)?;
-                self.finish_token_admission(pending.spec, pending.tokens, restored)
+                    .expect("pending admission was preflighted under exclusive serving access");
+                self.finish_token_admission(
+                    pending.spec,
+                    pending.tokens,
+                    restored,
+                    retained_prompt_bytes,
+                )
             }
         }
     }
@@ -373,13 +395,14 @@ impl ServingCoordinator {
         spec: RequestSpec,
         tokens: Box<[u32]>,
         mut restored: RestoredPrefix,
+        retained_prompt_bytes: u64,
     ) -> Result<AdmissionStatus, ServingError> {
         if let Err(error) = restored.validate() {
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
                 .release(&restored.page_keys)?;
-            self.release_prompt_reservation(tokens.len())?;
+            self.retained_prompt_bytes = retained_prompt_bytes;
             return Err(error.into());
         }
         if spec.mtp_depth != 0 && restored.page_has_draft.contains(&false) {
@@ -403,12 +426,12 @@ impl ServingCoordinator {
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
                 .release(&restored.page_keys)?;
-            self.release_prompt_reservation(tokens.len())?;
+            self.retained_prompt_bytes = retained_prompt_bytes;
             return Err(error);
         }
         self.prefix_leases.insert(spec.id, restored);
         if matched_tokens == spec.prompt_tokens {
-            self.release_prompt_reservation(tokens.len())?;
+            self.retained_prompt_bytes = retained_prompt_bytes;
         } else {
             self.request_tokens.insert(spec.id, tokens);
         }
@@ -420,15 +443,21 @@ impl ServingCoordinator {
     pub fn cancel(&mut self, request_id: u64) -> Result<(), ServingError> {
         if self.pending_admissions.contains_key(&request_id) {
             self.require_event_space(1)?;
+            let retained_prompt_bytes = self.retained_prompt_bytes_after_release(
+                self.pending_admissions
+                    .get(&request_id)
+                    .ok_or(ServingError::UnknownAdmission)?
+                    .tokens
+                    .len(),
+            )?;
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
                 .cancel_restore(request_id)?;
-            let pending = self
-                .pending_admissions
+            self.pending_admissions
                 .remove(&request_id)
-                .ok_or(ServingError::UnknownAdmission)?;
-            self.release_prompt_reservation(pending.tokens.len())?;
+                .expect("pending admission was preflighted under exclusive serving access");
+            self.retained_prompt_bytes = retained_prompt_bytes;
             self.events
                 .push_back(RequestEvent::Cancelled { request_id });
             self.terminal_events.insert(request_id);
@@ -835,12 +864,10 @@ impl ServingCoordinator {
         self.retained_prompt_bytes = plan.retained_prompt_bytes;
     }
 
-    fn release_prompt_reservation(&mut self, token_count: usize) -> Result<(), ServingError> {
-        self.retained_prompt_bytes = self
-            .retained_prompt_bytes
+    fn retained_prompt_bytes_after_release(&self, token_count: usize) -> Result<u64, ServingError> {
+        self.retained_prompt_bytes
             .checked_sub(prompt_bytes(token_count)?)
-            .ok_or(ServingError::Overflow)?;
-        Ok(())
+            .ok_or(ServingError::Overflow)
     }
 }
 
@@ -1722,6 +1749,140 @@ mod tests {
         assert_eq!(
             serving.drain_events(),
             vec![RequestEvent::Cancelled { request_id: 78 }]
+        );
+        drop(serving);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_restore_rollback_retains_pending_admission_until_cancel() {
+        let root = temporary_store("serving-restore-rollback");
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [21; 32],
+            tokenizer_sha256: [22; 32],
+            chat_template_sha256: [23; 32],
+            weight_policy_hash: [24; 32],
+            target_kv_abi_sha256: [25; 32],
+            draft_kv_abi_sha256: [26; 32],
+            rope_parameters_sha256: [27; 32],
+        })
+        .unwrap();
+        let tokens: Vec<u32> = (0..64).collect();
+        let index = PrefixIndex::new(namespace);
+        let key = index.derive_keys(&tokens)[0];
+        let mut store = FileTierStore::open(&root).unwrap();
+        let record = store
+            .publish(DurablePageRequest {
+                namespace: namespace.0,
+                page_key: key.0,
+                generation: 1,
+                mtp: false,
+                pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                    .into_iter()
+                    .map(|piece| PagePieceBytes {
+                        piece,
+                        bytes: vec![piece as u8; piece.expected_bytes() as usize],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let page_bytes = record.pieces.iter().map(|piece| piece.byte_length).sum();
+        drop(store);
+
+        let mut prefix = PrefixRestoreCoordinator::new(
+            index,
+            &root,
+            ResidencyConfig {
+                hbm_bytes: page_bytes,
+                dram_bytes: page_bytes,
+            },
+            1,
+        )
+        .unwrap();
+        prefix.register_prefix(&tokens, vec![record]).unwrap();
+        let mut serving = coordinator(None);
+        serving.attach_prefix_cache(prefix).unwrap();
+        assert_eq!(
+            serving
+                .begin_admit_tokens(
+                    RequestSpec {
+                        id: 210,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 1,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    &tokens,
+                )
+                .unwrap(),
+            AdmissionStatus::Pending
+        );
+        assert!(matches!(
+            serving.admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 210,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 0,
+            }),
+            Err(ServingError::Backpressure)
+        ));
+        assert!(serving.request_progress(210).is_none());
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .abort_pending_page_for_test(210, 0)
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match serving.poll_admission(210) {
+                Ok(AdmissionStatus::Pending) => {
+                    assert!(Instant::now() < deadline, "restore fault did not arrive");
+                    thread::yield_now();
+                }
+                Err(ServingError::Cache(PrefixRestoreError::Residency(
+                    glm_cache::ResidencyError::State,
+                ))) => break,
+                result => panic!("unexpected restore rollback result: {result:?}"),
+            }
+        }
+        assert!(serving.pending_admissions.contains_key(&210));
+        assert!(
+            serving
+                .prefix_cache
+                .as_ref()
+                .unwrap()
+                .has_pending_restore(210)
+        );
+        assert_eq!(serving.retained_prompt_bytes(), 256);
+        assert!(serving.drain_events().is_empty());
+
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .repair_pending_page_identity_for_test(210, 0)
+            .unwrap();
+        serving.cancel(210).unwrap();
+        assert!(!serving.pending_admissions.contains_key(&210));
+        assert!(
+            !serving
+                .prefix_cache
+                .as_ref()
+                .unwrap()
+                .has_pending_restore(210)
+        );
+        assert_eq!(serving.retained_prompt_bytes(), 0);
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Cancelled { request_id: 210 }]
         );
         drop(serving);
         fs::remove_dir_all(root).unwrap();

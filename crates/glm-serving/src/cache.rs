@@ -42,14 +42,21 @@ enum PendingPageState {
 
 struct PendingPage {
     key: PrefixPageKey,
+    ordinal: u64,
     rank: u8,
     has_draft: bool,
     state: PendingPageState,
 }
 
 struct PendingRestore {
+    request_id: u64,
     matched_tokens: u32,
     pages: Vec<PendingPage>,
+}
+
+struct PendingRollbackPlan {
+    pins: BTreeMap<(u8, [u8; 32]), u32>,
+    restores: BTreeMap<(u8, [u8; 32]), (u64, u64)>,
 }
 
 pub struct PrefixRestoreCoordinator {
@@ -165,6 +172,7 @@ impl PrefixRestoreCoordinator {
         let matched_tokens =
             u32::try_from(matched.matched_tokens).map_err(|_| PrefixRestoreError::Overflow)?;
         let mut pending = PendingRestore {
+            request_id,
             matched_tokens,
             pages: Vec::with_capacity(matched.page_keys.len()),
         };
@@ -206,8 +214,10 @@ impl PrefixRestoreCoordinator {
                     let handle = match self.services[usize::from(rank)].try_submit(request) {
                         Ok(handle) => handle,
                         Err(error) => {
-                            manager.abort_restore(key.0)?;
-                            self.rollback_pending(&pending)?;
+                            let plan = self.plan_pending_rollback_with_restore(
+                                &pending, rank, key.0, request_id, ordinal,
+                            )?;
+                            self.commit_pending_rollback(plan);
                             return Err(error.into());
                         }
                     };
@@ -224,6 +234,7 @@ impl PrefixRestoreCoordinator {
             };
             pending.pages.push(PendingPage {
                 key,
+                ordinal,
                 rank,
                 has_draft,
                 state,
@@ -261,20 +272,17 @@ impl PrefixRestoreCoordinator {
                 Ok(Some(result)) => {
                     let manager = &mut self.ranks[usize::from(page.rank)];
                     if let Err(error) = manager.complete_restore(result) {
-                        self.rollback_pending(&pending)?;
-                        return Err(error.into());
+                        return self.fail_polled_restore(request_id, pending, error.into());
                     }
                     page.state = PendingPageState::Resident;
                     if let Err(error) = manager.pin_hbm(page.key.0) {
-                        self.rollback_pending(&pending)?;
-                        return Err(error.into());
+                        return self.fail_polled_restore(request_id, pending, error.into());
                     }
                     page.state = PendingPageState::Pinned;
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    self.rollback_pending(&pending)?;
-                    return Err(error.into());
+                    return self.fail_polled_restore(request_id, pending, error.into());
                 }
             }
         }
@@ -294,16 +302,67 @@ impl PrefixRestoreCoordinator {
     }
 
     pub fn cancel_restore(&mut self, request_id: u64) -> Result<(), PrefixRestoreError> {
+        let plan = self.plan_pending_rollback(
+            self.pending
+                .get(&request_id)
+                .ok_or(PrefixRestoreError::UnknownRequest)?,
+        )?;
         let pending = self
             .pending
             .remove(&request_id)
-            .ok_or(PrefixRestoreError::UnknownRequest)?;
-        self.rollback_pending(&pending)
+            .expect("pending restore was preflighted under exclusive coordinator access");
+        self.commit_pending_rollback(plan);
+        drop(pending);
+        Ok(())
     }
 
     #[must_use]
     pub fn pending_restores(&self) -> usize {
         self.pending.len()
+    }
+
+    #[must_use]
+    pub fn has_pending_restore(&self, request_id: u64) -> bool {
+        self.pending.contains_key(&request_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abort_pending_page_for_test(
+        &mut self,
+        request_id: u64,
+        page_index: usize,
+    ) -> Result<(), PrefixRestoreError> {
+        let page = self
+            .pending
+            .get(&request_id)
+            .and_then(|pending| pending.pages.get(page_index))
+            .ok_or(PrefixRestoreError::UnknownRequest)?;
+        self.ranks[usize::from(page.rank)].abort_restore_identity(
+            page.key.0,
+            request_id,
+            page.ordinal,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn repair_pending_page_identity_for_test(
+        &mut self,
+        request_id: u64,
+        page_index: usize,
+    ) -> Result<(), PrefixRestoreError> {
+        let page = self
+            .pending
+            .get(&request_id)
+            .and_then(|pending| pending.pages.get(page_index))
+            .ok_or(PrefixRestoreError::UnknownRequest)?;
+        let _ = self.ranks[usize::from(page.rank)].begin_restore(
+            request_id,
+            page.key.0,
+            page.ordinal,
+            page.rank,
+        )?;
+        Ok(())
     }
 
     pub fn release(&mut self, page_keys: &[PrefixPageKey]) -> Result<(), PrefixRestoreError> {
@@ -345,22 +404,104 @@ impl PrefixRestoreCoordinator {
     }
 
     fn rollback_pending(&mut self, pending: &PendingRestore) -> Result<(), PrefixRestoreError> {
-        let mut first_error = None;
-        for page in pending.pages.iter().rev() {
-            let result = match &page.state {
-                PendingPageState::Pinned => self.ranks[usize::from(page.rank)].unpin(page.key.0),
-                PendingPageState::Restoring(_) => {
-                    self.ranks[usize::from(page.rank)].abort_restore(page.key.0)
+        let plan = self.plan_pending_rollback(pending)?;
+        self.commit_pending_rollback(plan);
+        Ok(())
+    }
+
+    fn fail_polled_restore(
+        &mut self,
+        request_id: u64,
+        pending: PendingRestore,
+        error: PrefixRestoreError,
+    ) -> Result<PrefixRestoreStatus, PrefixRestoreError> {
+        match self.rollback_pending(&pending) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => {
+                match self.pending.entry(request_id) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(pending);
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        panic!("polled restore identity reappeared under exclusive access");
+                    }
                 }
-                PendingPageState::Resident => Ok(()),
-            };
-            if let Err(error) = result
-                && first_error.is_none()
-            {
-                first_error = Some(error);
+                Err(rollback_error)
             }
         }
-        first_error.map_or(Ok(()), |error| Err(error.into()))
+    }
+
+    fn plan_pending_rollback(
+        &self,
+        pending: &PendingRestore,
+    ) -> Result<PendingRollbackPlan, PrefixRestoreError> {
+        let mut pins = BTreeMap::new();
+        let mut restores = BTreeMap::new();
+        for page in &pending.pages {
+            match &page.state {
+                PendingPageState::Pinned => {
+                    let count = pins.entry((page.rank, page.key.0)).or_insert(0_u32);
+                    *count = count.checked_add(1).ok_or(PrefixRestoreError::Overflow)?;
+                }
+                PendingPageState::Restoring(_) => {
+                    if restores
+                        .insert((page.rank, page.key.0), (pending.request_id, page.ordinal))
+                        .is_some()
+                    {
+                        return Err(PrefixRestoreError::Record);
+                    }
+                }
+                PendingPageState::Resident => {}
+            }
+        }
+        for (&(rank, page_key), &count) in &pins {
+            self.ranks[usize::from(rank)].validate_unpin_count(page_key, count)?;
+        }
+        for (&(rank, page_key), &(request_id, page_ordinal)) in &restores {
+            self.ranks[usize::from(rank)].validate_abort_restore_identity(
+                page_key,
+                request_id,
+                page_ordinal,
+            )?;
+        }
+        Ok(PendingRollbackPlan { pins, restores })
+    }
+
+    fn plan_pending_rollback_with_restore(
+        &self,
+        pending: &PendingRestore,
+        rank: u8,
+        page_key: [u8; 32],
+        request_id: u64,
+        page_ordinal: u64,
+    ) -> Result<PendingRollbackPlan, PrefixRestoreError> {
+        let mut plan = self.plan_pending_rollback(pending)?;
+        if plan
+            .restores
+            .insert((rank, page_key), (request_id, page_ordinal))
+            .is_some()
+        {
+            return Err(PrefixRestoreError::Record);
+        }
+        self.ranks[usize::from(rank)].validate_abort_restore_identity(
+            page_key,
+            request_id,
+            page_ordinal,
+        )?;
+        Ok(plan)
+    }
+
+    fn commit_pending_rollback(&mut self, plan: PendingRollbackPlan) {
+        for ((rank, page_key), count) in plan.pins {
+            self.ranks[usize::from(rank)]
+                .unpin_count(page_key, count)
+                .expect("pending pins were preflighted under exclusive coordinator access");
+        }
+        for ((rank, page_key), (request_id, page_ordinal)) in plan.restores {
+            self.ranks[usize::from(rank)]
+                .abort_restore_identity(page_key, request_id, page_ordinal)
+                .expect("pending restore was preflighted under exclusive coordinator access");
+        }
     }
 }
 
@@ -525,6 +666,17 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+        coordinator.ranks[0].abort_restore(keys[0].0).unwrap();
+        assert!(matches!(
+            coordinator.cancel_restore(8),
+            Err(PrefixRestoreError::Residency(ResidencyError::State))
+        ));
+        assert_eq!(coordinator.pending_restores(), 1);
+        assert_eq!(coordinator.location(0, keys[0]), Some(Residency::Nvme));
+        assert_eq!(coordinator.location(1, keys[1]), Some(Residency::Restoring));
+        let _ = coordinator.ranks[0]
+            .begin_restore(8, keys[0].0, 0, owner_rank(0))
+            .unwrap();
         coordinator.cancel_restore(8).unwrap();
         assert_eq!(coordinator.pending_restores(), 0);
         for (ordinal, key) in keys.iter().copied().enumerate() {
@@ -599,6 +751,89 @@ mod tests {
             coordinator.poll_restore(9),
             Err(PrefixRestoreError::UnknownRequest)
         ));
+        drop(coordinator);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn submit_saturation_rolls_back_every_started_restore() {
+        let root = temporary_store();
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [11; 32],
+            tokenizer_sha256: [12; 32],
+            chat_template_sha256: [13; 32],
+            weight_policy_hash: [14; 32],
+            target_kv_abi_sha256: [15; 32],
+            draft_kv_abi_sha256: [16; 32],
+            rope_parameters_sha256: [17; 32],
+        })
+        .unwrap();
+        let tokens: Vec<u32> = (0..320).collect();
+        let index = PrefixIndex::new(namespace);
+        let keys = index.derive_keys(&tokens);
+        let mut store = FileTierStore::open(&root).unwrap();
+        let records: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(page, key)| {
+                store
+                    .publish(DurablePageRequest {
+                        namespace: namespace.0,
+                        page_key: key.0,
+                        generation: 1,
+                        mtp: false,
+                        pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                            .into_iter()
+                            .map(|piece| PagePieceBytes {
+                                piece,
+                                bytes: vec![
+                                    u8::try_from(page + 1).unwrap();
+                                    piece.expected_bytes() as usize
+                                ],
+                            })
+                            .collect(),
+                    })
+                    .unwrap()
+            })
+            .collect();
+        let page_bytes = records[0]
+            .pieces
+            .iter()
+            .map(|piece| piece.byte_length)
+            .sum();
+        drop(store);
+
+        let mut coordinator = PrefixRestoreCoordinator::new(
+            index,
+            &root,
+            ResidencyConfig {
+                hbm_bytes: page_bytes,
+                dram_bytes: page_bytes,
+            },
+            1,
+        )
+        .unwrap();
+        coordinator.register_prefix(&tokens, records).unwrap();
+        assert!(matches!(
+            coordinator.begin_restore_longest(10, &tokens),
+            Err(PrefixRestoreError::Restore(RestoreError::Saturated))
+        ));
+        assert_eq!(coordinator.pending_restores(), 0);
+        assert_eq!(
+            coordinator
+                .services
+                .iter()
+                .map(RestoreService::outstanding)
+                .sum::<usize>(),
+            0
+        );
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            assert_eq!(
+                coordinator.location(u64::try_from(ordinal).unwrap(), key),
+                Some(Residency::Nvme)
+            );
+        }
+
         drop(coordinator);
         fs::remove_dir_all(root).unwrap();
     }

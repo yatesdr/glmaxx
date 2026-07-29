@@ -357,6 +357,41 @@ impl ResidencyManager {
         Ok(())
     }
 
+    pub fn validate_abort_restore_identity(
+        &self,
+        page_key: [u8; 32],
+        request_id: u64,
+        page_ordinal: u64,
+    ) -> Result<(), ResidencyError> {
+        let entry = self.entries.get(&page_key).ok_or(ResidencyError::Missing)?;
+        if entry.residency != Residency::Restoring
+            || entry.pending_restore
+                != Some(PendingRestoreIdentity {
+                    request_id,
+                    page_ordinal,
+                })
+        {
+            return Err(ResidencyError::State);
+        }
+        Ok(())
+    }
+
+    pub fn abort_restore_identity(
+        &mut self,
+        page_key: [u8; 32],
+        request_id: u64,
+        page_ordinal: u64,
+    ) -> Result<(), ResidencyError> {
+        self.validate_abort_restore_identity(page_key, request_id, page_ordinal)?;
+        let entry = self
+            .entries
+            .get_mut(&page_key)
+            .ok_or(ResidencyError::Missing)?;
+        entry.residency = Residency::Nvme;
+        entry.pending_restore = None;
+        Ok(())
+    }
+
     pub fn complete_restore(&mut self, result: RestoreResult) -> Result<(), ResidencyError> {
         let page_key = result.page.record.page_key;
         let entry = self.entries.get(&page_key).ok_or(ResidencyError::Missing)?;
@@ -861,6 +896,18 @@ mod tests {
                 page: wrong_record,
             }),
             Err(ResidencyError::Stale)
+        );
+        assert_eq!(
+            manager.location(record.page_key),
+            Some(Residency::Restoring)
+        );
+        assert_eq!(
+            manager.abort_restore_identity(record.page_key, 8, 0),
+            Err(ResidencyError::State)
+        );
+        assert_eq!(
+            manager.abort_restore_identity(record.page_key, 7, 4),
+            Err(ResidencyError::State)
         );
         assert_eq!(
             manager.location(record.page_key),
