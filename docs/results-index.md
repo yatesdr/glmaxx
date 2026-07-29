@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`72e60716cf58632dd9aba5ead41ba0d128f59395`
+`b097703b0a6def10d3732ae70835881c93a954dd`
 
-The complete local gate most recently ran against the prefix/residency
-coherence implementation
-`a3f5957b6e8d526cedb2ab58fa2204bb34d9f8b7`; its provenance record was then
-committed at `72e60716cf58632dd9aba5ead41ba0d128f59395`. The target
+The complete local gate most recently ran against the durable-content
+deduplication implementation
+`85d950ee45294f2551d674736b35781986dda874`; its provenance record was then
+committed at `b097703b0a6def10d3732ae70835881c93a954dd`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -21,7 +21,8 @@ event cancellation, retryable active-sequence removal, and fail-stop durable
 cache writes after uncertain publication errors, plus exclusive durable
 writer ownership and read-only rank restore snapshots, and same-key logical
 piece collision rejection with monotonic MTP capability through both the
-prefix index and owner-rank residency.
+prefix index and owner-rank residency, plus a shared no-write dedup/MTP
+upgrade matrix in the prefix index, file writer, and journal replay.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -29,11 +30,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at prefix/residency implementation `a3f5957` passed:
+The latest local run at durable-content implementation `85d950e` passed:
 
-- `scripts/local-checks.sh`: 250 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 253 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 48 then-present candidate-based review-handoff hash proofs;
+  and all 49 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -239,6 +240,16 @@ exact dedup and MTP capability, and rejects an unreconstructable prepopulated
 index at coordinator construction. The dedicated handoff passes local
 provenance validation; independent acceptance is absent.
 
+The durable logical-content correction is pinned in
+`docs/durable-content-dedup-proof-v1.md`. One validated relation now drives
+prefix insertion, file-store preflight, and restart replay. Exact dedup makes
+no write and retains the existing revision, only a strictly newer
+target-only→MTP transition replaces a record, and target/indexer/draft
+collisions fail before mutation and during recovery. It explicitly
+supersedes the earlier candidate's same-content revision-refresh behavior.
+The dedicated handoff passes local provenance validation; independent
+acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -359,6 +370,7 @@ verdicts:
 | exclusive durable writer and read-only restore snapshots | `535a8d6` | `docs/fable-durable-store-single-writer-v1-handoff.md` |
 | same-key prefix logical integrity and monotonic MTP capability | `2e3aa22` | `docs/fable-prefix-generation-integrity-v1-handoff.md` |
 | prefix index and owner-rank residency generation coherence | `72e6071` | `docs/fable-prefix-residency-coherence-v1-handoff.md` |
+| no-write durable dedup, MTP-only upgrade, and collision-safe replay | `b097703` | `docs/fable-durable-content-dedup-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
