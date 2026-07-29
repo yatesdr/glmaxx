@@ -33,7 +33,10 @@ use glm_reference::{
     generate_numerical_fixture, generate_routes, operation_manifest_json,
 };
 #[cfg(feature = "cuda-ffi")]
-use glm_reference::{NumericalCase, RoutingCase, bf16_round, routed_fc1_oracle};
+use glm_reference::{
+    NumericalCase, Route, RoutedExpertWeights, RoutingCase, bf16_round, routed_fc1_oracle,
+    routed_fc2_oracle,
+};
 use glm_scheduler::{
     RequestSpec, RequestState, RouteCatalog, SamplingCollective, SchedulerConfig, TenantConfig,
 };
@@ -175,6 +178,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_smoke(rows)?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-fc2-smoke") => {
+            let rows = arguments
+                .get(2)
+                .map(|value| value.parse::<u32>())
+                .transpose()?
+                .unwrap_or(1);
+            gpu_fc2_smoke(rows)?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-matrix") => {
             let path = arguments
                 .get(2)
@@ -218,7 +230,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -1368,6 +1380,147 @@ fn gpu_smoke(rows: u32) -> Result<(), Box<dyn std::error::Error>> {
         return Err("SM120 output exceeded predeclared tolerance".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_fc2_smoke(rows: u32) -> Result<(), Box<dyn std::error::Error>> {
+    if rows == 0 || rows > 8 {
+        return Err("gpu-fc2-smoke CPU-control rows must be in 1..=8".into());
+    }
+    let hidden = 6_144_usize;
+    let local_intermediate = 512_usize;
+    let experts: Vec<u16> = (0_u16..8).collect();
+    let packed = PackedNvfp4::pack(
+        &actual_shape_values(hidden, local_intermediate),
+        hidden,
+        local_intermediate,
+        Codec::OneDimensional,
+    )?;
+    let mut routes = Vec::with_capacity(rows as usize * experts.len());
+    for token in 0..rows {
+        for slot in 0_u8..8 {
+            routes.push(Route {
+                token,
+                expert: u16::from(slot),
+                slot,
+                weight: f32::from(slot + 1) / 36.0,
+            });
+        }
+    }
+    let compacted = compact_routes(&routes, rows as usize)?;
+    let activated: Vec<f32> = (0..compacted.len() * local_intermediate)
+        .map(|index| {
+            let signed = i32::try_from((index * 29 + 17) % 257).unwrap() - 128;
+            bf16_round(signed as f32 / 96.0)
+        })
+        .collect();
+    let weights: Vec<RoutedExpertWeights> = experts
+        .iter()
+        .map(|&expert| RoutedExpertWeights {
+            expert,
+            down: packed.clone(),
+        })
+        .collect();
+    let reference = routed_fc2_oracle(
+        &activated,
+        &routes,
+        rows as usize,
+        local_intermediate,
+        hidden,
+        &weights,
+    )?;
+    let route_experts: Vec<u16> = compacted.iter().map(|route| route.expert).collect();
+    let route_tokens: Vec<u32> = compacted.iter().map(|route| route.token).collect();
+    let route_slots: Vec<u8> = compacted.iter().map(|route| route.slot).collect();
+    let route_weights: Vec<f32> = compacted
+        .iter()
+        .map(|route| f32::from(route.slot + 1) / 36.0)
+        .collect();
+    let input_bf16 = to_bf16_bits(&activated);
+    let device = glm_cuda::NativeFc2Fixture::replicated(&packed, &experts)?;
+    let direct = device.run(
+        &input_bf16,
+        rows,
+        &route_experts,
+        &route_tokens,
+        &route_slots,
+        &route_weights,
+    )?;
+    let grouped = device.run_grouped_control(
+        &input_bf16,
+        rows,
+        &route_experts,
+        &route_tokens,
+        &route_slots,
+        &route_weights,
+    )?;
+    let grouped_repeat = device.run_grouped_control(
+        &input_bf16,
+        rows,
+        &route_experts,
+        &route_tokens,
+        &route_slots,
+        &route_weights,
+    )?;
+    let (direct_max_abs, direct_max_rel, direct_failures) = compare_fc2_output(&reference, &direct);
+    let (grouped_max_abs, grouped_max_rel, grouped_failures) =
+        compare_fc2_output(&reference, &grouped);
+    let grouped_deterministic = grouped == grouped_repeat;
+    let report = serde_json::json!({
+        "schema": "glmaxx.sm120-fc2-smoke.v1",
+        "shape": [rows, rows * 8, local_intermediate, hidden],
+        "active_experts": experts.len(),
+        "packed_weight_sha256": packed_hash(&packed),
+        "kernel_abi": KERNEL_ABI,
+        "route_weight_placement": "after down projection",
+        "scatter_order": "token slot 0..7",
+        "tolerance": "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.03 * abs(cpu)",
+        "direct_output_sha256": f32_hash(&direct),
+        "direct_maximum_absolute_error": direct_max_abs,
+        "direct_maximum_relative_error": direct_max_rel,
+        "direct_failed_elements": direct_failures,
+        "grouped_output_sha256": f32_hash(&grouped),
+        "grouped_maximum_absolute_error": grouped_max_abs,
+        "grouped_maximum_relative_error": grouped_max_rel,
+        "grouped_failed_elements": grouped_failures,
+        "grouped_repeat_bitwise_deterministic": grouped_deterministic,
+        "runtime_weight_repack_bytes": 0,
+        "persistent_dequant_bytes": 0,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if direct_failures != 0 || grouped_failures != 0 || !grouped_deterministic {
+        return Err("SM120 FC2 smoke did not satisfy the frozen gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn compare_fc2_output(reference: &[f32], actual: &[f32]) -> (f32, f32, usize) {
+    if reference.len() != actual.len() {
+        return (f32::INFINITY, f32::INFINITY, usize::MAX);
+    }
+    let mut maximum_absolute = 0.0_f32;
+    let mut maximum_relative = 0.0_f32;
+    let mut failures = 0_usize;
+    for (&reference, &actual) in reference.iter().zip(actual) {
+        let absolute = (reference - actual).abs();
+        let relative = absolute / reference.abs().max(1.0e-6);
+        if absolute.is_finite() {
+            maximum_absolute = maximum_absolute.max(absolute);
+        } else {
+            maximum_absolute = f32::INFINITY;
+        }
+        if relative.is_finite() {
+            maximum_relative = maximum_relative.max(relative);
+        } else {
+            maximum_relative = f32::INFINITY;
+        }
+        if !reference.is_finite() || !actual.is_finite() || absolute > 0.5 + 0.03 * reference.abs()
+        {
+            failures = failures.saturating_add(1);
+        }
+    }
+    (maximum_absolute, maximum_relative, failures)
 }
 
 #[cfg(feature = "cuda-ffi")]

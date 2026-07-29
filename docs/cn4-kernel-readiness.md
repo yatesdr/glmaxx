@@ -7,27 +7,25 @@ in the handoff
 
 Target: four RTX PRO 6000 Blackwell GPUs, SM120, PCIe, no NVLink
 
-Operator: TP4 rank-local GLM-5.2 routed-expert FC1/gate-up
+Operator: TP4 rank-local GLM-5.2 routed-expert FC1/SwiGLU/FC2
 
-Kernel ABI: `glmaxx.sm120.nvfp4.routed_fc1.v1`
+Kernel ABI: `glmaxx.sm120.nvfp4.routed_moe.v2`
 
 ## Current verdict
 
-The CPU/reference package and direct CUDA correctness baseline are
-engineering-ready for cn4. M2 execution is still gate-blocked until an
+The CPU/reference package, direct CUDA correctness baselines, and native
+block-scaled FC1/FC2 controls are engineering-ready for cn4. Device execution
+is still gate-blocked until an
 independent reviewer accepts the generated operation manifest and the v0.2.2
 physical/cache ABI amendment. Separate operator authorization is also
-required. The kernel is not yet qualified as functional on SM120, and it is
-not a performance candidate yet. The authorized cn4 preparation pass compiled
-native `sm_120f` cubins with pinned CUDA 13.3 and CUTLASS 4.6.1, proved the
-CUTLASS layout, linked the Rust/native ABI, and ran all 119 Rust tests without
-creating a CUDA context. The compile-only dense control contains 64 native
-SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions, and the expert-grouped
-control contains another 64. The GLMAXX-owned packed-byte controls and their
-Rust M1/M256 runners compile and link; both controls materialize gate/up only
-as named development boundaries. There is still no device launch, counter,
-or timing evidence. The latest compact result is recorded in
-`docs/cn4-grouped-control-preparation-20260729.md`.
+required. The kernels are not yet qualified as functional on SM120, and they
+are not performance candidates yet. The authorized cn4 preparation pass
+compiled native `sm_120f` cubins with pinned CUDA 13.3 and CUTLASS 4.6.1,
+proved both CUTLASS scale layouts, linked both 224-byte Rust/native
+descriptors, and ran all 153 Rust tests without creating a CUDA context. The
+four compile-only dense/grouped FC1/FC2 controls contain exactly 256 native
+SM120 block-scaled E2M1/UE4M3 `OMMA.SF` instructions. There is still no FC2
+device launch, hardware numerical result, counter, or timing evidence.
 
 The first cn4 session must establish correctness before replacing the
 CUDA-core dot product with the CUTLASS block-scaled MMA path. A source file
@@ -67,7 +65,7 @@ existing in Git is not a GPU pass.
 - The cache calculator derives 33,529,266,176 aggregate bytes at 1M with MTP:
   30,098,325,504 target KV, 2,906,652,672 target indexer keys, 385,875,968
   draft KV, and 138,412,032 draft indexer keys.
-- Rust and C agree on a 224-byte, 16-byte-aligned descriptor.
+- Rust and C agree on two 224-byte, 16-byte-aligned descriptors.
 - The source baseline directly consumes packed weights, dynamically quantizes
   BF16 rows once, reuses them for gate/up, accumulates in FP32, fuses the two
   dot products with SwiGLU, and does not materialize a gate/up tensor. Decode
@@ -154,8 +152,9 @@ The external evidence directory must contain:
 - complete Rust test output;
 - CMake configure/build output and compiler command lines;
 - the 393,216-comparison CUTLASS layout-probe result;
-- a shared-library SASS record proving exactly 128 expected SM120 NVFP4
-  `OMMA.SF` instructions and the exported dense/grouped-control symbols;
+- a shared-library SASS record proving exactly 256 expected SM120 NVFP4
+  `OMMA.SF` instructions and all four exported FC1/FC2
+  dense/grouped-control symbols;
 - one JSON correctness report for each of the 135 positive cases, a summary
   proving all nine negative route cases were rejected, two 20-repeat eager
   determinism gates, and SHA-256 for every report;

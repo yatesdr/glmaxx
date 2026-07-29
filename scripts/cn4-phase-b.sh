@@ -170,6 +170,11 @@ cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
   -- gpu-smoke 1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/gpu-smoke-m1.json"
 
+check_idle
+cargo run --release --offline -p glm-cli --features cuda-ffi --bin glmaxx 2>&1 \
+  -- gpu-fc2-smoke 1 \
+  | tee "${GLMAXX_EVIDENCE_DIR}/gpu-fc2-smoke-m1.json"
+
 correctness_dir="${GLMAXX_EVIDENCE_DIR}/correctness"
 if [[ -e "${correctness_dir}" ]]; then
   echo "Correctness evidence directory already exists; refusing to overwrite it" >&2
@@ -240,4 +245,4 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 70
 fi
 
-echo "Eager, CUDA-graph, and SM120 CUTLASS dense/grouped-control correctness gates finished. Do not benchmark unless the eager summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures; the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures; the dense-control summary reports 2 bitwise-deterministic cases over 20 repeats with zero failures; and the grouped-control summary reports 14 positive cases, 2 negative route rejections, 2 bitwise-deterministic cases over 20 repeats, and zero failures."
+echo "Eager FC1/FC2, CUDA-graph, and SM120 CUTLASS dense/grouped-control correctness gates finished. Do not benchmark unless both M1 smoke reports pass; the eager FC1 summary reports 135 positive cases, 9 negative rejections, 2 deterministic cases, and zero failures; the graph summary reports 2 bitwise-deterministic cases over 20 replays with zero failures; the dense-control summary reports 2 bitwise-deterministic cases over 20 repeats with zero failures; and the grouped-control summary reports 14 positive cases, 2 negative route rejections, 2 bitwise-deterministic cases over 20 repeats, and zero failures."
