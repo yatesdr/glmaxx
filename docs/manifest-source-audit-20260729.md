@@ -15,6 +15,7 @@ not close the review gate or authorize a CUDA launch.
 | production image | `voipmonitor/vllm@sha256:10261c7d65101c8aba2ce1fb59eabe73aff9d35eca5043b330cc0ce76d3c98d0` |
 | installed Transformers modeling source SHA-256 | `adb8317a21716b01273046e46c807f14f0dbaf035af59b60d52bd6bc3007cf72` |
 | installed Transformers configuration source SHA-256 | `5a81164be746307431ad998f789b6b0bca20eb4c14a726552eb3730268413997` |
+| exact official Transformers commit | `5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3` |
 | read-only `../glm52-opt` HEAD | `d213925ee6701072f117aec59ca94f1bf00d5e7f` |
 | pinned `deepseek_mtp.py` SHA-256 | `3a8a0b30e5dc5eb8c1f0ddb2ce317c375dc094de5b5ba8ba78f71d5481deae6d` |
 | pinned NVIDIA V32 `mtp.py` SHA-256 | `8e09e33823d4a6feb5071eb4ef3a5822bf79c1fab7ab59b9e5220be67b5571ca` |
@@ -35,6 +36,16 @@ reproduced from these read-only files:
 ```
 
 No file in `../glm52-opt` was modified.
+
+The official upstream source identity was independently resolved after the
+cn4 release. Walking the official `huggingface/transformers` history for
+`modeling_glm_moe_dsa.py` found commit
+`5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3`; at that commit the modeling and
+configuration files hash exactly to the two installed-source hashes above.
+The public `v5.12.0` tag's modeling file instead hashes to
+`e62d5eec32e96fd3441db67ef7f595f3d37af6feace5eccc4e26e13fa6ef17dc`
+and uses a different indexer RoPE path, so that tag is not an acceptable
+substitute for the pinned bytes.
 
 ## Configuration facts
 
@@ -90,6 +101,21 @@ following graph facts used by `manifests/glm52-operation-v1.json`:
 7. The pinned prototype implements `index_share_for_mtp_iteration`: recurrence
    zero computes the sparse-attention top-k list and later recurrences reuse
    it. Its compaction path preserves top-k rows for the surviving draft slots.
+8. A full target indexer projects 32 128-value queries from the Q residual,
+   projects and epsilon-`1e-6` LayerNorms one 128-value key, applies
+   interleaved RoPE to the first 64 query/key values, computes FP32 dot
+   products scaled by `128^-0.5`, applies ReLU, weights the 32 heads with the
+   protected projection scaled by `32^-0.5`, then selects the causal top
+   2,048 positions.
+9. Main MLA splits each local query head into 192 NoPE and 64 RoPE values,
+   expands the 512-value normalized latent through the head-specific KV-B
+   weight into 192 key and 256 value values, applies interleaved RoPE, uses
+   the 256-value total QK dimension's inverse-square-root scale, and applies
+   the row-parallel output projection.
+10. Each decoder layer adds the attention result to the pre-norm residual,
+    applies post-attention RMSNorm, adds the dense or routed-plus-shared MLP
+    result to that second residual, and returns the full-indexer's winner list
+    for the following shared layers.
 
 The source audit supports, but deliberately does not independently accept,
 the manifest's stable route-compaction order, exact TP collective placement,
@@ -117,3 +143,15 @@ shasum -a 256 \
 ```
 
 The cn4 operations did not request a GPU and did not launch CUDA.
+
+The later upstream provenance check ran on the development host and did not
+connect to cn4:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/huggingface/transformers/5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py \
+  | shasum -a 256
+curl -fsSL \
+  https://raw.githubusercontent.com/huggingface/transformers/5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3/src/transformers/models/glm_moe_dsa/configuration_glm_moe_dsa.py \
+  | shasum -a 256
+```

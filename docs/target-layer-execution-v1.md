@@ -47,6 +47,7 @@ internals. It consumes those separate reviewed contracts.
 | operation manifest | `manifests/glm52-operation-v1.json` |
 | operation-manifest SHA-256 | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | installed Transformers modeling source SHA-256 | `adb8317a21716b01273046e46c807f14f0dbaf035af59b60d52bd6bc3007cf72` |
+| exact official Transformers commit | `5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3` |
 | exact model config SHA-256 | `185f93ee6d12548e16a847e279dc0c3c90b1524c970b0866b42fb545747d859a` |
 | model-source audit | `docs/manifest-source-audit-20260729.md` |
 | engine specification | `spec/engine-v0.md` |
@@ -177,6 +178,13 @@ one immutable EXL3 or NVFP4 codec for each
 154,880 physical rows contain 154,856 valid vocabulary rows and 24 masked
 padding rows.
 
+Source dtype is not arithmetic membership. The indexer head-weight projection
+and sparse router widen their BF16 source weights and inputs to FP32 for their
+linear operations, matching the pinned source. They may use an immutable
+startup-expanded FP32 allocation only when its exact bytes are present in the
+accepted memory plan; otherwise kernels widen BF16 values while loading. They
+may not quantize those weights or widen them differently by rank.
+
 ## Row state
 
 Rows are in immutable `StepInput` sequence-table order. Prefill expands each
@@ -291,8 +299,9 @@ W_V[256,512]
 For each local query head, the 192-value NoPE query is absorbed through
 `W_K` into a 512-value query over the compressed latent. This is a local
 protected-weight operation and is not a collective. The accepted CPU oracle
-must freeze the exact reshape, transpose, scaling, BF16 store, and FP32
-accumulation membership before CUDA implementation.
+must reproduce the pinned reshape and transpose. V1 uses BF16 inputs and
+weights, FP32 dot accumulation, and one round-to-nearest BF16 store for each
+absorbed-query value.
 
 The 64-value query suffix and the 64-value
 `kv_latent_and_rope[512..576]` key use RoPE at the row's absolute logical
@@ -433,10 +442,17 @@ FP32 partial softmax in ascending logical-position order.
 
 For a winning position, the score is the source-ordered, source-scaled sum of
 the absorbed-query/decoded-latent dot product and the RoPE-query/decoded-RoPE
-dot product. The weighted numerator accumulates the decoded 512-value latent,
-not an expanded 256-value V. The CPU oracle must pin where the softmax scale
-is applied and every BF16/FP32 rounding boundary; algebraically equivalent
-reassociation is not assumed bit-equivalent.
+dot product:
+
+```text
+score[p] =
+  (FP32_DOT(q_absorbed, decoded_latent[p]) +
+   FP32_DOT(q_rope, decoded_rope[p])) * 256^(-1/2)
+```
+
+The weighted numerator accumulates the decoded 512-value latent, not an
+expanded 256-value V. Algebraically equivalent reassociation is not assumed
+bit-equivalent.
 
 One owner/head partial state is exactly 2,064 bytes:
 
@@ -455,8 +471,9 @@ sum, and nonzero count.
 Partial states return to each query head's fixed TP owner. Merge order is
 owner rank `0,1,2,3`, using the FP32 log-sum-exp equations in engine v0.
 The merged numerator is divided by the merged sum to obtain one 512-value
-latent output per head. The head owner applies its local `W_V` to obtain the
-256-value head output. There is no full KV-record gather on decode.
+FP32 latent output per head, then rounds it once to BF16. The head owner
+applies its local BF16 `W_V` with FP32 accumulation and a BF16 head-output
+store to obtain 256 values. There is no full KV-record gather on decode.
 
 ### Phase E — attention output and residual
 
