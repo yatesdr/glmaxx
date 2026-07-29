@@ -15,7 +15,7 @@ use glm_engine::{
 use glm_scheduler::SamplingCollective;
 use glm_scheduler::{
     BatchCompletion, BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog,
-    Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
+    ScheduledBatch, Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
 };
 use glm_tokenizer::EOS_TOKEN_IDS;
 
@@ -387,19 +387,26 @@ impl ServingCoordinator {
             self.emit_terminal_transitions()?;
             return Ok(None);
         };
-        let entry = self
-            .scheduler
-            .graph_entry(batch.graph_id)
-            .cloned()
-            .ok_or(ServingError::Graph)?;
-        let compiled = self
+        let entry = match self.scheduler.graph_entry(batch.graph_id).cloned() {
+            Some(entry) => entry,
+            None => return self.fail_selected_step(&batch, ServingError::Graph),
+        };
+        let compiled = match self
             .compiler
-            .compile(&batch, &entry, self.sequence_table_generation)?;
+            .compile(&batch, &entry, self.sequence_table_generation)
+        {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return self.fail_selected_step(&batch, ServingError::Compile(error));
+            }
+        };
         let plan = compiled.plan;
-        let collective_count = u16::try_from(compiled.schedule.operations().len())
-            .map_err(|_| ServingError::Overflow)?;
+        let collective_count = match u16::try_from(compiled.schedule.operations().len()) {
+            Ok(count) => count,
+            Err(_) => return self.fail_selected_step(&batch, ServingError::Overflow),
+        };
         let collectives = observe_collectives(&compiled.schedule);
-        let starting_progress: Vec<_> = batch
+        let starting_progress = batch
             .rows
             .iter()
             .map(|row| {
@@ -408,14 +415,22 @@ impl ServingCoordinator {
                     .map(|progress| (row.request_id, progress))
                     .ok_or(ServingError::Request)
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>();
+        let starting_progress = match starting_progress {
+            Ok(progress) => progress,
+            Err(error) => return self.fail_selected_step(&batch, error),
+        };
         let worker_start = Instant::now();
-        let outcome = match self.workers.try_submit(plan, compiled.schedule)?.receive() {
+        let handle = match self.workers.try_submit(plan, compiled.schedule) {
+            Ok(handle) => handle,
+            Err(error) => {
+                return self.fail_selected_step(&batch, ServingError::Worker(error));
+            }
+        };
+        let outcome = match handle.receive() {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.scheduler.complete_batch(false)?;
-                self.emit_failed_rows(&batch)?;
-                return Err(ServingError::Worker(error));
+                return self.fail_selected_step(&batch, ServingError::Worker(error));
             }
         };
         let worker_round_trip = worker_start.elapsed();
@@ -447,12 +462,14 @@ impl ServingCoordinator {
             }
         };
         if !output_fits_requests {
-            self.scheduler.complete_batch(false)?;
-            self.emit_failed_rows(&batch)?;
-            return Err(ServingError::Output);
+            return self.fail_selected_step(&batch, ServingError::Output);
         }
-        self.scheduler
-            .complete_batch_with_results(true, &completions)?;
+        if let Err(error) = self
+            .scheduler
+            .complete_batch_with_results(true, &completions)
+        {
+            return self.fail_selected_step(&batch, ServingError::Scheduler(error));
+        }
         for (row_index, row) in batch.rows.iter().enumerate() {
             let starting = starting_progress
                 .get(row_index)
@@ -586,10 +603,7 @@ impl ServingCoordinator {
         Ok(())
     }
 
-    fn emit_failed_rows(
-        &mut self,
-        batch: &glm_scheduler::ScheduledBatch,
-    ) -> Result<(), ServingError> {
+    fn emit_failed_rows(&mut self, batch: &ScheduledBatch) -> Result<(), ServingError> {
         self.require_event_space(batch.rows.len())?;
         for row in &batch.rows {
             self.release_request_prefix(row.request_id)?;
@@ -598,6 +612,16 @@ impl ServingCoordinator {
             });
         }
         Ok(())
+    }
+
+    fn fail_selected_step<T>(
+        &mut self,
+        batch: &ScheduledBatch,
+        error: ServingError,
+    ) -> Result<T, ServingError> {
+        self.scheduler.complete_batch(false)?;
+        self.emit_failed_rows(batch)?;
+        Err(error)
     }
 
     fn require_event_space(&self, needed: usize) -> Result<(), ServingError> {
@@ -784,8 +808,9 @@ mod tests {
         PrefixNamespace, ResidencyConfig, TierPiece,
     };
     use glm_engine::{
-        AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
-        MockWorkerFault, RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan,
+        AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CommittedTokens,
+        GraphEntry, GraphKey, MockWorkerFault, RankExecutionError, RankExecutor, StepMode,
+        StepOutput, StepPlan, StepPlanRequest, TP_RANK_MASK,
     };
 
     use super::*;
@@ -884,6 +909,39 @@ mod tests {
         .unwrap()
     }
 
+    fn worker_reservation_step() -> (StepPlan, CollectiveSchedule) {
+        let schedule = CollectiveSchedule::new(vec![CollectiveOp {
+            ordinal: 0,
+            kind: CollectiveKind::TpReduce,
+            route_id: 1,
+            payload_bytes: 16,
+            participant_mask: TP_RANK_MASK,
+        }])
+        .unwrap();
+        let plan = StepPlan::build(
+            StepPlanRequest {
+                epoch: 1,
+                step_id: 99,
+                mode: StepMode::Decode,
+                active_sequences: 1,
+                sequence_bucket: 1,
+                scheduled_prompt_tokens: 0,
+                query_rows: 1,
+                verifier_row_bucket: 1,
+                mtp_depth: 0,
+                graph_id: 1,
+                tp_route_id: 1,
+                dcp_route_id: 1,
+                attention_transport: AttentionTransport::DecodeQueryLse,
+                sampling_route_id: 1,
+                sequence_table_generation: 1,
+            },
+            &schedule,
+        )
+        .unwrap();
+        (plan, schedule)
+    }
+
     #[test]
     fn step_observation_captures_exact_graph_routes_bytes_and_host_split() {
         let mut serving = coordinator(None);
@@ -941,6 +999,77 @@ mod tests {
         assert_eq!(decode.collectives.sampling_bytes, 8);
         assert_eq!(decode.collectives.dcp_candidate_route_id, 4);
         assert_eq!(decode.collectives.sampling_route_id, 6);
+    }
+
+    #[test]
+    fn compile_failure_fails_selected_rows_without_stranding_inflight() {
+        let mut serving = coordinator(None);
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 92,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 0,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+        serving.sequence_table_generation = 0;
+
+        assert!(matches!(
+            serving.tick_observed(),
+            Err(ServingError::Compile(glm_scheduler::CompileError::Batch))
+        ));
+        assert_eq!(
+            serving.request_progress(92).unwrap().state,
+            RequestState::Failed
+        );
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Failed { request_id: 92 }]
+        );
+        assert!(!serving.tick().unwrap());
+    }
+
+    #[test]
+    fn submit_failure_fails_selected_rows_without_stranding_inflight() {
+        let workers = Tp4WorkerPool::spawn_cpu(1, None).unwrap();
+        let (plan, schedule) = worker_reservation_step();
+        let held_slot = workers.try_submit(plan, schedule).unwrap();
+        let mut serving = coordinator_with_workers(workers);
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 93,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 0,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+
+        assert!(matches!(
+            serving.tick_observed(),
+            Err(ServingError::Worker(WorkerError::Saturated))
+        ));
+        assert_eq!(
+            serving.request_progress(93).unwrap().state,
+            RequestState::Failed
+        );
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Failed { request_id: 93 }]
+        );
+        drop(held_slot);
+        assert!(!serving.tick().unwrap());
     }
 
     struct FixedMtpRankExecutor;
