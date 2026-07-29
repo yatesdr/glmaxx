@@ -28,6 +28,8 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
 cargo run --offline -p glm-cli --bin glmaxx -- budget
 cargo run --offline -p glm-cli --bin glmaxx -- abi-check
 cargo run --offline -p glm-cli --bin glmaxx -- \
+  review-proof-all . "${proof_dir}/review-provenance.json"
+cargo run --offline -p glm-cli --bin glmaxx -- \
   engine-proof "${proof_dir}/engine-proof.json"
 cmp fixtures/engine-contract-proof-v1.json \
   "${proof_dir}/engine-proof.json"

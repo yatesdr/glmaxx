@@ -52,6 +52,8 @@ use glm_tokenizer::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+mod review;
+
 const ACTUAL_PACKED_SHA256: &str =
     "a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5";
 const ACTUAL_RANK0_SHA256: &str =
@@ -196,6 +198,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Path::new(review),
             )?;
         }
+        Some("review-proof") => {
+            if arguments.len() > 4 {
+                return Err("review-proof accepts a handoff and optional review artifact".into());
+            }
+            let handoff = arguments
+                .get(2)
+                .ok_or("review-proof requires a handoff path")?;
+            let review = arguments.get(3).map(Path::new);
+            let proof = review::verify_review_handoff(Path::new("."), Path::new(handoff), review)?;
+            println!("{}", serde_json::to_string_pretty(&proof)?);
+        }
+        Some("review-proof-all") => {
+            if arguments.len() > 4 {
+                return Err(
+                    "review-proof-all accepts a repository and optional output path".into(),
+                );
+            }
+            let repository = arguments.get(2).map_or_else(|| Path::new("."), Path::new);
+            let proof = review::verify_all_review_handoffs(repository)?;
+            let mut json = serde_json::to_vec_pretty(&proof)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(3) {
+                fs::write(path, &json)?;
+                println!(
+                    "verified {} review handoffs; wrote {} bytes to {path}",
+                    proof.verified_handoffs.len(),
+                    json.len()
+                );
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -270,7 +304,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
