@@ -63,6 +63,13 @@ in `docs/review-provenance-verifier-v2.md`. It validates candidate bytes,
 declared result paths, candidate/input attestations, and exact review-token
 presence; it does not accept any gate.
 
+The discovered candidate-versus-current-build gap and its proposed v3
+acceptance command are pinned in
+`docs/current-tree-review-acceptance-v3.md`. The design would bind every
+reviewed input to the current worktree before device inventory or conversion,
+and would repair the stale Phase-C result path through a complete re-pin. It
+is not implemented and its adversarial design token is absent.
+
 The integrated cache lifecycle implementation and scope boundary are pinned
 in `docs/cache-lifecycle-proof-v1.md`. Its deterministic fixture proves the
 CPU file-store/prefix/residency/page-table lifecycle but does not qualify
@@ -190,6 +197,7 @@ verdicts:
 | bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
 | atomic no-replace rank-set publication | `aaeffea` | `docs/fable-atomic-rank-publication-v1-handoff.md` |
 | finite target/draft KV and indexer reconstruction | `757d5cf` | `docs/fable-kv-finite-reconstruction-v1-handoff.md` |
+| current-tree-bound review acceptance and qualification re-pin | `60311cf` | `docs/fable-current-tree-review-acceptance-v3-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
