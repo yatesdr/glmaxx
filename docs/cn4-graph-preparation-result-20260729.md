@@ -154,3 +154,51 @@ missing pinned CUTLASS `examples/common` include path before the fresh run.
 |---|---|
 | `source-commit.txt` | `155330fdcc509fc09cef54b102f798c824430843d6419fda4de0c62993077bf2` |
 | `cmake-build.txt` | `3c7188c37d6062bc4201d5fcf3e8cf4c7acc252f2635f43f6dc022c3ffdcafe4` |
+
+## GLMAXX-owned packed-byte control
+
+Commit `55c5997404f6c9990606d3884df578e71cb5d369` completed the
+compile-only successor to the stock example. The fresh record is:
+
+```text
+/home/derek/glmaxx/evidence/prepare-20260729T071000Z
+```
+
+The shared library now owns a void-C CUTLASS GEMM that directly accepts the
+frozen GLMAXX activation-value/SFA and expert-value/SFB pointers. It writes a
+BF16 1,024-column gate/up development intermediate, then applies the
+per-assignment activation global scale, per-expert weight global scale, and
+SwiGLU into the final 512-column BF16 output. It performs no weight repack,
+scale transform, or persistent dequantization.
+
+The no-launch gate proved all of the following:
+
+- 117 Rust tests pass and the release Rust runner links the new native
+  function;
+- the shared library exports `glmaxx_nvfp4_dense_control_launch`;
+- its native `sm_120f` cubin contains exactly 64
+  `OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X` instructions;
+- the MMA kernel uses 168 registers and 1,024 shared bytes;
+- the scale-and-SwiGLU development epilogue uses 31 registers and 1,024
+  shared bytes;
+- the SFB and SFA host proofs still pass 393,216 and 42,564,864 comparisons.
+
+The M1/M256 Rust correctness runner and 20-repeat determinism gate are built
+but unexecuted. This materialized gate/up path is a development control, not
+the production fused kernel or a performance result.
+
+| Record or artifact | SHA-256 |
+|---|---|
+| `source-commit.txt` | `7e6fc9e9ccbc3e01d31eab026aa85b423861190a8c1b308bed4e981479af9700` |
+| `input-sha256.txt` | `ff97ff3b550c1ca3e15565d3de0fe36ee60bdd50ea86d2f5ebce054153f43d1d` |
+| `cargo-test.txt` | `cfdb2e46642147c61bc4637093cb61559adc49fc26f1d2e27f000f7083d4c029` |
+| `cmake-build.txt` | `357b967afbcdcec032c6628fe036cd37c3ae3a5d871e68ce9f6fbad3a6603cab` |
+| `cuobjdump-resources.txt` | `871207f8f0823094fdf7efdcc613dc7b972f10989061aefa591177049f07e026` |
+| `glmaxx-library-sass.txt` | `c93f0e02a6ed3b73b336d85b733dc0bee5dda2e8878500b32c671cd62b4540c5` |
+| `glmaxx-owned-omma-count.txt` | `913f5d1da2feaf4deeccc9e55cbb350a20f12b3f507e87be85dbb77fdd3cb9bc` |
+| `glmaxx-dense-control-symbol.txt` | `600d84f9d89df0c8c697d78224e917a443dea12a1b10cb649967ced302e74559` |
+| `cuda-ffi-linkage.txt` | `c25a44e07c1a8738958d8f69a727f7b3fdb7b7532daa8bb3e019cfc505a884df` |
+| `build-artifact-sha256.txt` | `d9497a54ca8e297c5307872b93cf9d875bcf94403f948572fcc371b0c5b0130b` |
+| `verdict.txt` | `46e37de26271cb0be15f5ace05d17611b678ec6f05e17543e60ce6f85f8686d4` |
+| `libglmaxx_sm120.so` | `5c9d3bf56e06b6945bc31fdec5ebf85f922c7578f65547cc4cb4bd71d8ae3c5a` |
+| release `glmaxx` | `b4d936a3dbc2638a622c9a2abc4bb52dfb5a73b53ebfd69640f287349bf33f8d` |

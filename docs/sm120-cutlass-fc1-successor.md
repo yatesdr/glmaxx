@@ -2,9 +2,10 @@
 
 Date: 2026-07-29
 
-Status: compile/design preparation only. The retained CUDA-core control must
-pass the reviewed SM120 correctness gate before this candidate can replace
-it.
+Status: GLMAXX-owned packed-byte dense control compiled and linked without a
+device launch. The retained CUDA-core control and this materialized gate/up
+control must pass the reviewed SM120 correctness gates before the fused
+candidate can replace either.
 
 ## Pinned implementation anchors
 
@@ -102,7 +103,9 @@ and expert-local SFA workspace.
 1. Retain and pass the direct CUDA-core eager and CUDA-graph correctness
    gates.
 2. Add a compile-only CUTLASS 79a-derived dense control for
-   `[M,1024,6144]`, consuming the existing A/B/SFA/SFB bytes.
+   `[M,1024,6144]`, consuming the existing A/B/SFA/SFB bytes. Complete:
+   the owned shared library contains 64 native SM120 NVFP4 `OMMA.SF`
+   instructions and the Rust runner is linked.
 3. Prove the dense control against the CPU oracle at M1 and M256; retain its
    materialized accumulator only as evidence.
 4. Add expert-local SFA byte arithmetic, prefix sums, bounds tests, and a
