@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`535a8d6764ff968a21cb5d668e1d895ef0e940fb`
+`2e3aa222e0808c27793798dab6890dbdb7614ed3`
 
-The complete local gate most recently ran against the durable-store
-single-writer and reader-snapshot implementation
-`37268646cff31d8d6a637389508defd3d6e272f9`; its provenance record was then
-committed at `535a8d6764ff968a21cb5d668e1d895ef0e940fb`. The target
+The complete local gate most recently ran against the prefix-generation
+integrity implementation
+`aecbcdf`; its provenance record was then committed at
+`2e3aa222e0808c27793798dab6890dbdb7614ed3`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -19,7 +19,8 @@ multi-request terminal cleanup, plus retryable pending restore/admission
 rollback and fail-stop ownership propagation through backend admission and
 event cancellation, retryable active-sequence removal, and fail-stop durable
 cache writes after uncertain publication errors, plus exclusive durable
-writer ownership and read-only rank restore snapshots.
+writer ownership and read-only rank restore snapshots, and same-key logical
+piece collision rejection with monotonic MTP capability.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -27,11 +28,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at durable-store implementation `3726864` passed:
+The latest local run at prefix-generation implementation `aecbcdf` passed:
 
-- `scripts/local-checks.sh`: 248 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 249 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 46 then-present candidate-based review-handoff hash proofs;
+  and all 47 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -222,6 +223,13 @@ bytes, permits a later writer after snapshot construction, and proves those
 readers cannot observe the later record. The dedicated handoff passes local
 provenance validation; independent acceptance is absent.
 
+The prefix-generation correction is pinned in
+`docs/prefix-generation-integrity-proof-v1.md`. Same-key target and indexer
+logical identities must match, two MTP records must also agree on their draft
+sidecar, target-only records cannot downgrade MTP capability, and every
+collision or reference overflow is rejected before mutation. The dedicated
+handoff passes local provenance validation; independent acceptance is absent.
+
 The quality source audit is recorded in
 `docs/quality-corpus-manifest-v1.md` and
 `manifests/quality-corpus-sources-v1.json`. It pins and byte-verifies the
@@ -340,6 +348,7 @@ verdicts:
 | atomic retryable active-sequence removal | `876e4ca` | `docs/fable-sequence-removal-atomicity-v1-handoff.md` |
 | fail-stop durable-store writes after uncertain publication | `a5019aa` | `docs/fable-durable-store-write-fail-stop-v1-handoff.md` |
 | exclusive durable writer and read-only restore snapshots | `535a8d6` | `docs/fable-durable-store-single-writer-v1-handoff.md` |
+| same-key prefix logical integrity and monotonic MTP capability | `2e3aa22` | `docs/fable-prefix-generation-integrity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
