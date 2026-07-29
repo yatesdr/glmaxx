@@ -2,6 +2,49 @@ use std::fmt;
 
 use glm_format::{decode_e2m1, decode_e4m3, encode_e2m1, encode_e4m3};
 
+const F32_EXPONENT_MASK: u32 = 0x7f80_0000;
+const F32_FRACTION_MASK: u32 = 0x007f_ffff;
+const F32_EXPONENT_STEP: u32 = 0x0080_0000;
+
+fn ceil_positive_power_of_two(value: f32) -> Result<f32, KvError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(KvError::Scale);
+    }
+
+    let bits = value.to_bits();
+    let exponent = bits & F32_EXPONENT_MASK;
+    let fraction = bits & F32_FRACTION_MASK;
+    if exponent == 0 {
+        // Positive subnormals are integer multiples of 2^-149. The next
+        // power-of-two coefficient is therefore also the exact next
+        // representable power of two; 1 << 23 is the minimum normal value.
+        return Ok(f32::from_bits(fraction.next_power_of_two()));
+    }
+    if fraction == 0 {
+        return Ok(value);
+    }
+
+    let next_exponent = exponent + F32_EXPONENT_STEP;
+    if next_exponent == F32_EXPONENT_MASK {
+        return Err(KvError::Scale);
+    }
+    Ok(f32::from_bits(next_exponent))
+}
+
+fn is_positive_finite_power_of_two(value: f32) -> bool {
+    if !value.is_finite() || value <= 0.0 {
+        return false;
+    }
+    let bits = value.to_bits();
+    let exponent = bits & F32_EXPONENT_MASK;
+    let fraction = bits & F32_FRACTION_MASK;
+    if exponent == 0 {
+        fraction.is_power_of_two()
+    } else {
+        fraction == 0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KvRecord(pub [u8; 368]);
 
@@ -115,10 +158,14 @@ impl IndexerKeyRecord {
             .iter()
             .fold(0.0_f32, |current, value| current.max(value.abs()));
         let raw_scale = amax.max(1.0e-4) / 448.0;
-        let scale = 2.0_f32.powf(raw_scale.log2().ceil());
+        let scale = ceil_positive_power_of_two(raw_scale)?;
         let mut bytes = [0_u8; 132];
         for (index, &value) in key.iter().enumerate() {
-            bytes[index] = encode_e4m3(value / scale).map_err(|_| KvError::NonFinite)?;
+            let code = encode_e4m3(value / scale).map_err(|_| KvError::NonFinite)?;
+            if !(decode_e4m3(code) * scale).is_finite() {
+                return Err(KvError::NonFinite);
+            }
+            bytes[index] = code;
         }
         bytes[128..132].copy_from_slice(&scale.to_le_bytes());
         Ok(Self(bytes))
@@ -126,7 +173,7 @@ impl IndexerKeyRecord {
 
     pub fn decode(&self) -> Result<[f32; 128], KvError> {
         let scale = f32::from_le_bytes(self.0[128..132].try_into().unwrap());
-        if !scale.is_finite() || scale <= 0.0 || scale.log2().fract() != 0.0 {
+        if !is_positive_finite_power_of_two(scale) {
             return Err(KvError::Scale);
         }
         let mut output = [0.0_f32; 128];
@@ -135,7 +182,11 @@ impl IndexerKeyRecord {
             if !decoded.is_finite() {
                 return Err(KvError::Encoding);
             }
-            *value = decoded * scale;
+            let restored = decoded * scale;
+            if !restored.is_finite() {
+                return Err(KvError::Encoding);
+            }
+            *value = restored;
         }
         Ok(output)
     }
@@ -177,7 +228,7 @@ mod tests {
         let key = std::array::from_fn(|index| (index as f32 - 63.0) / 11.0);
         let record = IndexerKeyRecord::encode(&key).unwrap();
         let scale = f32::from_le_bytes(record.0[128..132].try_into().unwrap());
-        assert_eq!(scale.log2().fract(), 0.0);
+        assert!(is_positive_finite_power_of_two(scale));
         assert!(
             record
                 .decode()
@@ -185,6 +236,88 @@ mod tests {
                 .iter()
                 .all(|value| value.is_finite())
         );
+    }
+
+    #[test]
+    fn power_of_two_ceiling_is_exact_at_every_f32_exponent_boundary() {
+        for shift in 0..23 {
+            let exact = f32::from_bits(1 << shift);
+            assert_eq!(ceil_positive_power_of_two(exact), Ok(exact));
+            if shift > 1 {
+                let below = f32::from_bits((1 << shift) - 1);
+                assert_eq!(ceil_positive_power_of_two(below), Ok(exact));
+            }
+            let above = f32::from_bits((1 << shift) + 1);
+            let expected = f32::from_bits(1 << (shift + 1));
+            assert_eq!(ceil_positive_power_of_two(above), Ok(expected));
+        }
+
+        for exponent in 1..=254_u32 {
+            let exact_bits = exponent << 23;
+            let exact = f32::from_bits(exact_bits);
+            assert_eq!(ceil_positive_power_of_two(exact), Ok(exact));
+            assert_eq!(
+                ceil_positive_power_of_two(f32::from_bits(exact_bits - 1)),
+                Ok(exact)
+            );
+            let above = f32::from_bits(exact_bits + 1);
+            if exponent == 254 {
+                assert_eq!(ceil_positive_power_of_two(above), Err(KvError::Scale));
+            } else {
+                assert_eq!(
+                    ceil_positive_power_of_two(above),
+                    Ok(f32::from_bits((exponent + 1) << 23))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn power_of_two_validation_is_bit_exact_and_fail_closed() {
+        for shift in 0..23 {
+            assert!(is_positive_finite_power_of_two(f32::from_bits(1 << shift)));
+        }
+        for exponent in 1..=254_u32 {
+            assert!(is_positive_finite_power_of_two(f32::from_bits(
+                exponent << 23
+            )));
+            assert!(!is_positive_finite_power_of_two(f32::from_bits(
+                (exponent << 23) | 1
+            )));
+        }
+        for invalid in [
+            0.0,
+            -0.0,
+            -1.0,
+            1.5,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            assert!(!is_positive_finite_power_of_two(invalid));
+        }
+
+        let mut record = IndexerKeyRecord::encode(&[0.0; 128]).unwrap();
+        record.0[128..132].copy_from_slice(&1.5_f32.to_le_bytes());
+        assert_eq!(record.decode(), Err(KvError::Scale));
+    }
+
+    #[test]
+    fn indexer_extreme_finite_key_fails_closed_before_nonfinite_restore() {
+        let raw_scale = f32::MAX / 448.0;
+        let scale = ceil_positive_power_of_two(raw_scale).unwrap();
+        assert!(scale.is_finite());
+        assert!(scale >= raw_scale);
+
+        let mut key = [0.0; 128];
+        key[0] = f32::MAX;
+        key[127] = -f32::MAX;
+        assert_eq!(IndexerKeyRecord::encode(&key), Err(KvError::NonFinite));
+
+        let mut corrupt = IndexerKeyRecord([0; 132]);
+        corrupt.0[0] = encode_e4m3(448.0).unwrap();
+        corrupt.0[128..132].copy_from_slice(&2.0_f32.powi(127).to_le_bytes());
+        assert_eq!(corrupt.decode(), Err(KvError::Encoding));
     }
 
     #[test]
