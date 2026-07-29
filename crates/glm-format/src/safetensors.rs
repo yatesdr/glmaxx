@@ -1,0 +1,1096 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    fs::File,
+    io::{self, Write},
+    os::unix::fs::FileExt,
+    path::{Component, Path, PathBuf},
+};
+
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, Visitor},
+};
+use sha2::{Digest, Sha256};
+
+use crate::{Exl3Error, Exl3Metadata, Exl3Trellis};
+
+const MAX_HEADER_BYTES: u64 = 100_000_000;
+const MAX_INDEX_BYTES: u64 = 100_000_000;
+const HASH_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum SafeDtype {
+    Bool,
+    F4,
+    F6E2m3,
+    F6E3m2,
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F16,
+    Bf16,
+    F32,
+    F64,
+    F8E4m3,
+    F8E5m2,
+    F8E8m0,
+    F8E4m3Fnuz,
+    F8E5m2Fnuz,
+    C64,
+}
+
+impl SafeDtype {
+    fn parse(value: &str) -> Result<Self, SafeTensorError> {
+        match value {
+            "BOOL" => Ok(Self::Bool),
+            "F4" => Ok(Self::F4),
+            "F6_E2M3" => Ok(Self::F6E2m3),
+            "F6_E3M2" => Ok(Self::F6E3m2),
+            "U8" => Ok(Self::U8),
+            "I8" => Ok(Self::I8),
+            "U16" => Ok(Self::U16),
+            "I16" => Ok(Self::I16),
+            "U32" => Ok(Self::U32),
+            "I32" => Ok(Self::I32),
+            "U64" => Ok(Self::U64),
+            "I64" => Ok(Self::I64),
+            "F16" => Ok(Self::F16),
+            "BF16" => Ok(Self::Bf16),
+            "F32" => Ok(Self::F32),
+            "F64" => Ok(Self::F64),
+            "F8_E4M3" => Ok(Self::F8E4m3),
+            "F8_E5M2" => Ok(Self::F8E5m2),
+            "F8_E8M0" => Ok(Self::F8E8m0),
+            "F8_E4M3FNUZ" => Ok(Self::F8E4m3Fnuz),
+            "F8_E5M2FNUZ" => Ok(Self::F8E5m2Fnuz),
+            "C64" => Ok(Self::C64),
+            _ => Err(SafeTensorError::UnsupportedDtype(value.to_owned())),
+        }
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        match self {
+            Self::F4 => 4,
+            Self::F6E2m3 | Self::F6E3m2 => 6,
+            Self::Bool
+            | Self::U8
+            | Self::I8
+            | Self::F8E4m3
+            | Self::F8E5m2
+            | Self::F8E8m0
+            | Self::F8E4m3Fnuz
+            | Self::F8E5m2Fnuz => 8,
+            Self::U16 | Self::I16 | Self::F16 | Self::Bf16 => 16,
+            Self::U32 | Self::I32 | Self::F32 => 32,
+            Self::U64 | Self::I64 | Self::F64 | Self::C64 => 64,
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bool => "BOOL",
+            Self::F4 => "F4",
+            Self::F6E2m3 => "F6_E2M3",
+            Self::F6E3m2 => "F6_E3M2",
+            Self::U8 => "U8",
+            Self::I8 => "I8",
+            Self::U16 => "U16",
+            Self::I16 => "I16",
+            Self::U32 => "U32",
+            Self::I32 => "I32",
+            Self::U64 => "U64",
+            Self::I64 => "I64",
+            Self::F16 => "F16",
+            Self::Bf16 => "BF16",
+            Self::F32 => "F32",
+            Self::F64 => "F64",
+            Self::F8E4m3 => "F8_E4M3",
+            Self::F8E5m2 => "F8_E5M2",
+            Self::F8E8m0 => "F8_E8M0",
+            Self::F8E4m3Fnuz => "F8_E4M3FNUZ",
+            Self::F8E5m2Fnuz => "F8_E5M2FNUZ",
+            Self::C64 => "C64",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafeTensorDescriptor {
+    pub dtype: SafeDtype,
+    pub shape: Vec<u64>,
+    /// Half-open offsets relative to the safetensors data region.
+    pub data_offsets: [u64; 2],
+    pub elements: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug)]
+pub struct SafeTensorFile {
+    path: PathBuf,
+    file: File,
+    file_bytes: u64,
+    data_offset: u64,
+    header_sha256: [u8; 32],
+    metadata: BTreeMap<String, String>,
+    tensors: BTreeMap<String, SafeTensorDescriptor>,
+}
+
+impl SafeTensorFile {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
+        let path = path.as_ref().to_owned();
+        let file = File::open(&path).map_err(SafeTensorError::Io)?;
+        let file_bytes = file.metadata().map_err(SafeTensorError::Io)?.len();
+        if file_bytes < 10 {
+            return Err(SafeTensorError::Truncated);
+        }
+        let mut length_bytes = [0_u8; 8];
+        read_exact_at(&file, &mut length_bytes, 0)?;
+        let header_bytes = u64::from_le_bytes(length_bytes);
+        if !(2..=MAX_HEADER_BYTES).contains(&header_bytes) {
+            return Err(SafeTensorError::HeaderLength(header_bytes));
+        }
+        let data_offset = 8_u64
+            .checked_add(header_bytes)
+            .ok_or(SafeTensorError::Overflow)?;
+        if data_offset > file_bytes {
+            return Err(SafeTensorError::Truncated);
+        }
+        if !data_offset.is_multiple_of(8) {
+            return Err(SafeTensorError::Header);
+        }
+        let mut header =
+            vec![0_u8; usize::try_from(header_bytes).map_err(|_| SafeTensorError::Overflow)?];
+        read_exact_at(&file, &mut header, 8)?;
+        if header.first() != Some(&b'{') {
+            return Err(SafeTensorError::Header);
+        }
+        let raw: RawHeader = serde_json::from_slice(&header).map_err(SafeTensorError::Json)?;
+        if raw.tensors.is_empty() {
+            return Err(SafeTensorError::TensorCount);
+        }
+
+        let data_bytes = file_bytes
+            .checked_sub(data_offset)
+            .ok_or(SafeTensorError::Overflow)?;
+        let mut tensors = BTreeMap::new();
+        for (name, raw_tensor) in raw.tensors {
+            validate_tensor_name(&name)?;
+            let dtype = SafeDtype::parse(&raw_tensor.dtype)?;
+            let elements = raw_tensor
+                .shape
+                .iter()
+                .try_fold(1_u64, |product, &extent| {
+                    product.checked_mul(extent).ok_or(SafeTensorError::Overflow)
+                })?;
+            let storage_bits = elements
+                .checked_mul(dtype.bits())
+                .ok_or(SafeTensorError::Overflow)?;
+            let bytes = storage_bits.div_ceil(8);
+            if raw_tensor.data_offsets[0] > raw_tensor.data_offsets[1]
+                || raw_tensor.data_offsets[1] > data_bytes
+                || raw_tensor.data_offsets[1] - raw_tensor.data_offsets[0] != bytes
+            {
+                return Err(SafeTensorError::ByteAccounting(name));
+            }
+            tensors.insert(
+                name,
+                SafeTensorDescriptor {
+                    dtype,
+                    shape: raw_tensor.shape,
+                    data_offsets: raw_tensor.data_offsets,
+                    elements,
+                    bytes,
+                },
+            );
+        }
+        validate_contiguous_data(&tensors, data_bytes)?;
+
+        Ok(Self {
+            path,
+            file,
+            file_bytes,
+            data_offset,
+            header_sha256: Sha256::digest(&header).into(),
+            metadata: raw.metadata,
+            tensors,
+        })
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn file_bytes(&self) -> u64 {
+        self.file_bytes
+    }
+
+    #[must_use]
+    pub const fn data_offset(&self) -> u64 {
+        self.data_offset
+    }
+
+    #[must_use]
+    pub const fn header_sha256(&self) -> [u8; 32] {
+        self.header_sha256
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
+    }
+
+    #[must_use]
+    pub fn tensors(&self) -> &BTreeMap<String, SafeTensorDescriptor> {
+        &self.tensors
+    }
+
+    #[must_use]
+    pub fn tensor(&self, name: &str) -> Option<&SafeTensorDescriptor> {
+        self.tensors.get(name)
+    }
+
+    pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, SafeTensorError> {
+        let descriptor = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let mut bytes =
+            vec![0_u8; usize::try_from(descriptor.bytes).map_err(|_| SafeTensorError::Overflow)?];
+        let absolute = self
+            .data_offset
+            .checked_add(descriptor.data_offsets[0])
+            .ok_or(SafeTensorError::Overflow)?;
+        read_exact_at(&self.file, &mut bytes, absolute)?;
+        Ok(bytes)
+    }
+
+    pub fn read_tensor_range(
+        &self,
+        name: &str,
+        relative_offset: u64,
+        output: &mut [u8],
+    ) -> Result<(), SafeTensorError> {
+        let descriptor = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let end = relative_offset
+            .checked_add(output.len() as u64)
+            .ok_or(SafeTensorError::Overflow)?;
+        if end > descriptor.bytes {
+            return Err(SafeTensorError::TensorRange(name.to_owned()));
+        }
+        let absolute = self
+            .data_offset
+            .checked_add(descriptor.data_offsets[0])
+            .and_then(|offset| offset.checked_add(relative_offset))
+            .ok_or(SafeTensorError::Overflow)?;
+        read_exact_at(&self.file, output, absolute)
+    }
+
+    pub fn copy_tensor(&self, name: &str, output: &mut impl Write) -> Result<(), SafeTensorError> {
+        let descriptor = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let mut buffer = vec![
+            0_u8;
+            usize::try_from(descriptor.bytes.min(HASH_CHUNK_BYTES as u64))
+                .map_err(|_| SafeTensorError::Overflow)?
+        ];
+        let mut consumed = 0_u64;
+        while consumed < descriptor.bytes {
+            let chunk = usize::try_from((descriptor.bytes - consumed).min(buffer.len() as u64))
+                .map_err(|_| SafeTensorError::Overflow)?;
+            self.read_tensor_range(name, consumed, &mut buffer[..chunk])?;
+            output
+                .write_all(&buffer[..chunk])
+                .map_err(SafeTensorError::Io)?;
+            consumed += chunk as u64;
+        }
+        Ok(())
+    }
+
+    pub fn hash_tensor(&self, name: &str) -> Result<[u8; 32], SafeTensorError> {
+        let descriptor = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![
+            0_u8;
+            usize::try_from(descriptor.bytes.min(HASH_CHUNK_BYTES as u64))
+                .map_err(|_| SafeTensorError::Overflow)?
+        ];
+        let mut consumed = 0_u64;
+        while consumed < descriptor.bytes {
+            let remaining = descriptor.bytes - consumed;
+            let chunk = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| SafeTensorError::Overflow)?;
+            self.read_tensor_range(name, consumed, &mut buffer[..chunk])?;
+            hasher.update(&buffer[..chunk]);
+            consumed += chunk as u64;
+        }
+        Ok(hasher.finalize().into())
+    }
+
+    /// Hashes the complete source file through the already-open descriptor.
+    ///
+    /// Header hashes are useful for cheap structural identity, but conversion
+    /// provenance must use this full-file digest (or per-tensor digests) so a
+    /// same-shape data mutation cannot masquerade as the original checkpoint.
+    pub fn hash_file(&self) -> Result<[u8; 32], SafeTensorError> {
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![
+            0_u8;
+            usize::try_from(self.file_bytes.min(HASH_CHUNK_BYTES as u64))
+                .map_err(|_| SafeTensorError::Overflow)?
+        ];
+        let mut consumed = 0_u64;
+        while consumed < self.file_bytes {
+            let chunk = usize::try_from((self.file_bytes - consumed).min(buffer.len() as u64))
+                .map_err(|_| SafeTensorError::Overflow)?;
+            read_exact_at(&self.file, &mut buffer[..chunk], consumed)?;
+            hasher.update(&buffer[..chunk]);
+            consumed += chunk as u64;
+        }
+        if self.file.metadata().map_err(SafeTensorError::Io)?.len() != self.file_bytes {
+            return Err(SafeTensorError::SourceChanged(self.path.clone()));
+        }
+        Ok(hasher.finalize().into())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ShardedLocation {
+    shard: PathBuf,
+    header_sha256: [u8; 32],
+    descriptor: SafeTensorDescriptor,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShardedSafetensors {
+    index_path: PathBuf,
+    index_sha256: [u8; 32],
+    locations: BTreeMap<String, ShardedLocation>,
+    shards: BTreeSet<PathBuf>,
+}
+
+impl ShardedSafetensors {
+    pub fn open(index_path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
+        let index_path = index_path.as_ref().to_owned();
+        let index_file = File::open(&index_path).map_err(SafeTensorError::Io)?;
+        let index_bytes = index_file.metadata().map_err(SafeTensorError::Io)?.len();
+        if index_bytes == 0 || index_bytes > MAX_INDEX_BYTES {
+            return Err(SafeTensorError::Index);
+        }
+        let mut bytes =
+            vec![0_u8; usize::try_from(index_bytes).map_err(|_| SafeTensorError::Overflow)?];
+        read_exact_at(&index_file, &mut bytes, 0)?;
+        let raw: RawIndex = serde_json::from_slice(&bytes).map_err(SafeTensorError::Json)?;
+        if raw.weight_map.0.is_empty() {
+            return Err(SafeTensorError::TensorCount);
+        }
+        let root = index_path.parent().ok_or(SafeTensorError::Index)?;
+        let mut by_shard: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+        for (tensor, shard) in raw.weight_map.0 {
+            validate_tensor_name(&tensor)?;
+            let shard = validate_shard_path(&shard)?;
+            if !by_shard.entry(shard).or_default().insert(tensor) {
+                return Err(SafeTensorError::Index);
+            }
+        }
+
+        let mut locations = BTreeMap::new();
+        let mut shards = BTreeSet::new();
+        for (relative, expected_tensors) in by_shard {
+            let path = root.join(&relative);
+            let shard = SafeTensorFile::open(&path)?;
+            let actual_tensors: BTreeSet<_> = shard.tensors().keys().cloned().collect();
+            if actual_tensors != expected_tensors {
+                return Err(SafeTensorError::ShardInventory(relative));
+            }
+            for name in expected_tensors {
+                let descriptor = shard
+                    .tensor(&name)
+                    .cloned()
+                    .ok_or_else(|| SafeTensorError::MissingTensor(name.clone()))?;
+                if locations
+                    .insert(
+                        name,
+                        ShardedLocation {
+                            shard: relative.clone(),
+                            header_sha256: shard.header_sha256(),
+                            descriptor,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(SafeTensorError::Index);
+                }
+            }
+            shards.insert(relative);
+        }
+        Ok(Self {
+            index_path,
+            index_sha256: Sha256::digest(&bytes).into(),
+            locations,
+            shards,
+        })
+    }
+
+    #[must_use]
+    pub fn index_path(&self) -> &Path {
+        &self.index_path
+    }
+
+    #[must_use]
+    pub const fn index_sha256(&self) -> [u8; 32] {
+        self.index_sha256
+    }
+
+    #[must_use]
+    pub fn tensor(&self, name: &str) -> Option<&SafeTensorDescriptor> {
+        self.locations
+            .get(name)
+            .map(|location| &location.descriptor)
+    }
+
+    #[must_use]
+    pub fn tensor_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.locations.keys().map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn shards(&self) -> &BTreeSet<PathBuf> {
+        &self.shards
+    }
+
+    pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, SafeTensorError> {
+        let shard = self.open_verified_shard(name)?;
+        shard.read_tensor(name)
+    }
+
+    pub fn hash_tensor(&self, name: &str) -> Result<[u8; 32], SafeTensorError> {
+        let shard = self.open_verified_shard(name)?;
+        shard.hash_tensor(name)
+    }
+
+    fn open_verified_shard(&self, name: &str) -> Result<SafeTensorFile, SafeTensorError> {
+        let location = self
+            .locations
+            .get(name)
+            .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let root = self.index_path.parent().ok_or(SafeTensorError::Index)?;
+        let shard = SafeTensorFile::open(root.join(&location.shard))?;
+        if shard.header_sha256() != location.header_sha256
+            || shard.tensor(name) != Some(&location.descriptor)
+        {
+            return Err(SafeTensorError::ShardChanged(location.shard.clone()));
+        }
+        Ok(shard)
+    }
+}
+
+pub fn load_exl3_projection(
+    file: &SafeTensorFile,
+    stem: &str,
+    metadata: Exl3Metadata,
+) -> Result<Exl3Trellis, SafeTensorError> {
+    load_exl3_projection_impl(
+        |name| file.tensor(name),
+        |name| file.read_tensor(name),
+        stem,
+        metadata,
+    )
+}
+
+pub fn load_exl3_projection_sharded(
+    files: &ShardedSafetensors,
+    stem: &str,
+    metadata: Exl3Metadata,
+) -> Result<Exl3Trellis, SafeTensorError> {
+    load_exl3_projection_impl(
+        |name| files.tensor(name),
+        |name| files.read_tensor(name),
+        stem,
+        metadata,
+    )
+}
+
+fn load_exl3_projection_impl<'a>(
+    descriptor: impl Fn(&str) -> Option<&'a SafeTensorDescriptor>,
+    read: impl Fn(&str) -> Result<Vec<u8>, SafeTensorError>,
+    stem: &str,
+    metadata: Exl3Metadata,
+) -> Result<Exl3Trellis, SafeTensorError> {
+    metadata.validate().map_err(SafeTensorError::Exl3)?;
+    let mcg_name = format!("{stem}.mcg");
+    let suh_name = format!("{stem}.suh");
+    let svh_name = format!("{stem}.svh");
+    let trellis_name = format!("{stem}.trellis");
+    let marker =
+        descriptor(&mcg_name).ok_or_else(|| SafeTensorError::MissingTensor(mcg_name.clone()))?;
+    if !matches!(marker.shape.as_slice(), [] | [1])
+        || !matches!(marker.dtype, SafeDtype::I32 | SafeDtype::U32)
+    {
+        return Err(SafeTensorError::Component(mcg_name));
+    }
+    validate_component(
+        &descriptor,
+        &suh_name,
+        &[u64::from(metadata.logical_k)],
+        &[SafeDtype::F16],
+    )?;
+    validate_component(
+        &descriptor,
+        &svh_name,
+        &[u64::from(metadata.logical_n)],
+        &[SafeDtype::F16],
+    )?;
+    validate_component(
+        &descriptor,
+        &trellis_name,
+        &[
+            u64::from(metadata.logical_k / 16),
+            u64::from(metadata.logical_n / 16),
+            u64::from(16 * u32::from(metadata.bits)),
+        ],
+        &[SafeDtype::I16],
+    )?;
+
+    let marker = read(&mcg_name)?;
+    let suh = read(&suh_name)?;
+    let svh = read(&svh_name)?;
+    let trellis = read(&trellis_name)?;
+    let mut aux = Vec::with_capacity(
+        marker
+            .len()
+            .checked_add(suh.len())
+            .and_then(|bytes| bytes.checked_add(svh.len()))
+            .ok_or(SafeTensorError::Overflow)?,
+    );
+    aux.extend_from_slice(&marker);
+    aux.extend_from_slice(&suh);
+    aux.extend_from_slice(&svh);
+    Exl3Trellis::from_container_planes(metadata, &trellis, &aux).map_err(SafeTensorError::Exl3)
+}
+
+fn validate_component<'a>(
+    descriptor: &impl Fn(&str) -> Option<&'a SafeTensorDescriptor>,
+    name: &str,
+    shape: &[u64],
+    dtypes: &[SafeDtype],
+) -> Result<(), SafeTensorError> {
+    let descriptor =
+        descriptor(name).ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+    if descriptor.shape != shape || !dtypes.contains(&descriptor.dtype) {
+        return Err(SafeTensorError::Component(name.to_owned()));
+    }
+    Ok(())
+}
+
+fn validate_contiguous_data(
+    tensors: &BTreeMap<String, SafeTensorDescriptor>,
+    data_bytes: u64,
+) -> Result<(), SafeTensorError> {
+    let mut ranges: Vec<_> = tensors
+        .iter()
+        .map(|(name, descriptor)| (descriptor.data_offsets[0], descriptor.data_offsets[1], name))
+        .collect();
+    ranges.sort_unstable();
+    let mut cursor = 0_u64;
+    for (start, end, _) in ranges {
+        if start != cursor {
+            return Err(SafeTensorError::NonContiguousData);
+        }
+        cursor = end;
+    }
+    if cursor != data_bytes {
+        return Err(SafeTensorError::NonContiguousData);
+    }
+    Ok(())
+}
+
+fn validate_tensor_name(name: &str) -> Result<(), SafeTensorError> {
+    if name.is_empty()
+        || name == "__metadata__"
+        || name
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        return Err(SafeTensorError::TensorName(name.to_owned()));
+    }
+    Ok(())
+}
+
+fn validate_shard_path(value: &str) -> Result<PathBuf, SafeTensorError> {
+    let path = Path::new(value);
+    if path.as_os_str().is_empty()
+        || path.extension().and_then(|extension| extension.to_str()) != Some("safetensors")
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(SafeTensorError::ShardPath(value.to_owned()));
+    }
+    Ok(path.to_owned())
+}
+
+fn read_exact_at(
+    file: &File,
+    mut output: &mut [u8],
+    mut offset: u64,
+) -> Result<(), SafeTensorError> {
+    while !output.is_empty() {
+        let read = file.read_at(output, offset).map_err(SafeTensorError::Io)?;
+        if read == 0 {
+            return Err(SafeTensorError::Truncated);
+        }
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or(SafeTensorError::Overflow)?;
+        output = &mut output[read..];
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTensor {
+    dtype: String,
+    shape: Vec<u64>,
+    data_offsets: [u64; 2],
+}
+
+#[derive(Debug, Default)]
+struct RawHeader {
+    metadata: BTreeMap<String, String>,
+    tensors: BTreeMap<String, RawTensor>,
+}
+
+impl<'de> Deserialize<'de> for RawHeader {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RawHeaderVisitor;
+
+        impl<'de> Visitor<'de> for RawHeaderVisitor {
+            type Value = RawHeader;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a safetensors header object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut header = RawHeader::default();
+                let mut saw_metadata = false;
+                while let Some(name) = map.next_key::<String>()? {
+                    if name == "__metadata__" {
+                        if saw_metadata {
+                            return Err(serde::de::Error::duplicate_field("__metadata__"));
+                        }
+                        saw_metadata = true;
+                        header.metadata = map.next_value()?;
+                    } else {
+                        let tensor = map.next_value()?;
+                        if header.tensors.insert(name.clone(), tensor).is_some() {
+                            return Err(serde::de::Error::custom(format!(
+                                "duplicate tensor key {name}"
+                            )));
+                        }
+                    }
+                }
+                Ok(header)
+            }
+        }
+        deserializer.deserialize_map(RawHeaderVisitor)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIndex {
+    #[serde(default, rename = "metadata")]
+    _metadata: BTreeMap<String, serde_json::Value>,
+    weight_map: UniqueStringMap,
+}
+
+#[derive(Debug, Default)]
+struct UniqueStringMap(BTreeMap<String, String>);
+
+impl<'de> Deserialize<'de> for UniqueStringMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct UniqueStringMapVisitor;
+
+        impl<'de> Visitor<'de> for UniqueStringMapVisitor {
+            type Value = UniqueStringMap;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a map with unique string keys and values")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut values = BTreeMap::new();
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    if values.insert(key.clone(), value).is_some() {
+                        return Err(serde::de::Error::custom(format!("duplicate map key {key}")));
+                    }
+                }
+                Ok(UniqueStringMap(values))
+            }
+        }
+        deserializer.deserialize_map(UniqueStringMapVisitor)
+    }
+}
+
+#[derive(Debug)]
+pub enum SafeTensorError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    Truncated,
+    HeaderLength(u64),
+    Header,
+    Index,
+    TensorCount,
+    TensorName(String),
+    UnsupportedDtype(String),
+    ByteAccounting(String),
+    NonContiguousData,
+    MissingTensor(String),
+    TensorRange(String),
+    Component(String),
+    ShardPath(String),
+    ShardInventory(PathBuf),
+    ShardChanged(PathBuf),
+    SourceChanged(PathBuf),
+    Overflow,
+    Exl3(Exl3Error),
+}
+
+impl fmt::Display for SafeTensorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for SafeTensorError {}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::{EXL3_MCG_MULTIPLIER, Exl3Projection};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempPath(PathBuf);
+
+    impl TempPath {
+        fn new(extension: &str) -> Self {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "glmaxx-safetensors-{}-{sequence}.{extension}",
+                std::process::id()
+            ));
+            Self(path)
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            if self.0.is_dir() {
+                let _ = fs::remove_dir_all(&self.0);
+            } else {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+    }
+
+    fn write_safe(path: &Path, entries: Vec<(&str, &str, Vec<u64>, Vec<u8>)>) {
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (name, dtype, shape, bytes) in entries {
+            let start = data.len();
+            data.extend_from_slice(&bytes);
+            header.insert(
+                name.to_owned(),
+                json!({
+                    "dtype": dtype,
+                    "shape": shape,
+                    "data_offsets": [start, data.len()]
+                }),
+            );
+        }
+        header.insert(
+            "__metadata__".into(),
+            json!({"format": "pt", "fixture": "glmaxx"}),
+        );
+        let mut encoded = serde_json::to_vec(&header).unwrap();
+        while !(8 + encoded.len()).is_multiple_of(8) {
+            encoded.push(b' ');
+        }
+        let mut file = Vec::new();
+        file.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        file.extend_from_slice(&encoded);
+        file.extend_from_slice(&data);
+        fs::write(path, file).unwrap();
+    }
+
+    fn words_bytes(words: &[u16]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    fn fixture(rank: u8) -> Exl3Trellis {
+        let metadata = Exl3Metadata::new(Exl3Projection::Gate, 78, 0, rank, 3, 128, 128).unwrap();
+        Exl3Trellis {
+            trellis: (0..metadata.trellis_words)
+                .map(|index| (index as u16).wrapping_mul(40_503))
+                .collect(),
+            suh: vec![0x3c00; 128],
+            svh: vec![0x3c00; 128],
+            mcg_marker: EXL3_MCG_MULTIPLIER,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn file_inventory_hash_and_tensor_reads_are_exact() {
+        let path = TempPath::new("safetensors");
+        write_safe(
+            &path.0,
+            vec![
+                ("first", "U8", vec![4], vec![1, 2, 3, 4]),
+                ("second", "I16", vec![2], vec![5, 0, 6, 0]),
+            ],
+        );
+        let file = SafeTensorFile::open(&path.0).unwrap();
+        assert_eq!(file.tensors().len(), 2);
+        assert_eq!(file.metadata()["fixture"], "glmaxx");
+        assert_eq!(file.tensor("second").unwrap().dtype, SafeDtype::I16);
+        assert_eq!(file.read_tensor("first").unwrap(), [1, 2, 3, 4]);
+        let mut middle = [0_u8; 2];
+        file.read_tensor_range("first", 1, &mut middle).unwrap();
+        assert_eq!(middle, [2, 3]);
+        let mut copied = Vec::new();
+        file.copy_tensor("second", &mut copied).unwrap();
+        assert_eq!(copied, [5, 0, 6, 0]);
+        assert!(matches!(
+            file.read_tensor_range("first", 3, &mut [0; 2]),
+            Err(SafeTensorError::TensorRange(_))
+        ));
+        let expected: [u8; 32] = Sha256::digest([5, 0, 6, 0]).into();
+        assert_eq!(file.hash_tensor("second").unwrap(), expected);
+        let expected_file: [u8; 32] = Sha256::digest(fs::read(&path.0).unwrap()).into();
+        assert_eq!(file.hash_file().unwrap(), expected_file);
+    }
+
+    #[test]
+    fn subbyte_f4_uses_ceil_bit_accounting() {
+        let path = TempPath::new("safetensors");
+        write_safe(&path.0, vec![("f4", "F4", vec![3], vec![0x21, 0x03])]);
+        let file = SafeTensorFile::open(&path.0).unwrap();
+        let descriptor = file.tensor("f4").unwrap();
+        assert_eq!(descriptor.dtype, SafeDtype::F4);
+        assert_eq!(descriptor.elements, 3);
+        assert_eq!(descriptor.bytes, 2);
+    }
+
+    #[test]
+    fn exl3_projection_imports_directly_from_source_components() {
+        let source = fixture(0);
+        let path = TempPath::new("safetensors");
+        write_safe(
+            &path.0,
+            vec![
+                (
+                    "projection.mcg",
+                    "I32",
+                    vec![1],
+                    source.mcg_marker.to_le_bytes().to_vec(),
+                ),
+                ("projection.suh", "F16", vec![128], words_bytes(&source.suh)),
+                ("projection.svh", "F16", vec![128], words_bytes(&source.svh)),
+                (
+                    "projection.trellis",
+                    "I16",
+                    vec![8, 8, 48],
+                    words_bytes(&source.trellis),
+                ),
+            ],
+        );
+        let file = SafeTensorFile::open(&path.0).unwrap();
+        let imported = load_exl3_projection(&file, "projection", source.metadata.clone()).unwrap();
+        assert_eq!(imported, source);
+    }
+
+    #[test]
+    fn holes_wrong_lengths_and_unsupported_dtypes_fail_closed() {
+        let path = TempPath::new("safetensors");
+        let mut header = br#"{"x":{"dtype":"U8","shape":[1],"data_offsets":[1,2]}}"#.to_vec();
+        while !(8 + header.len()).is_multiple_of(8) {
+            header.push(b' ');
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&[0, 1]);
+        fs::write(&path.0, bytes).unwrap();
+        assert!(matches!(
+            SafeTensorFile::open(&path.0),
+            Err(SafeTensorError::NonContiguousData)
+        ));
+
+        write_safe(&path.0, vec![("x", "F4_E2M1", vec![1], vec![0])]);
+        assert!(matches!(
+            SafeTensorFile::open(&path.0),
+            Err(SafeTensorError::UnsupportedDtype(_))
+        ));
+    }
+
+    #[test]
+    fn sharded_index_enforces_exact_inventory_and_detects_header_change() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let shard_a = directory.0.join("a.safetensors");
+        let shard_b = directory.0.join("b.safetensors");
+        write_safe(&shard_a, vec![("a", "U8", vec![2], vec![1, 2])]);
+        write_safe(&shard_b, vec![("b", "U8", vec![2], vec![3, 4])]);
+        let index = directory.0.join("model.safetensors.index.json");
+        fs::write(
+            &index,
+            serde_json::to_vec(&json!({
+                "metadata": {"total_size": 4},
+                "weight_map": {
+                    "a": "a.safetensors",
+                    "b": "b.safetensors"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let set = ShardedSafetensors::open(&index).unwrap();
+        assert_eq!(set.tensor_names().collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(set.read_tensor("b").unwrap(), [3, 4]);
+        write_safe(&shard_b, vec![("b", "U8", vec![1], vec![4])]);
+        assert!(matches!(
+            set.read_tensor("b"),
+            Err(SafeTensorError::ShardChanged(_))
+        ));
+    }
+
+    #[test]
+    fn exl3_projection_can_span_safetensor_shards() {
+        let source = fixture(0);
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let shard_a = directory.0.join("a.safetensors");
+        let shard_b = directory.0.join("b.safetensors");
+        write_safe(
+            &shard_a,
+            vec![
+                (
+                    "projection.mcg",
+                    "I32",
+                    vec![],
+                    source.mcg_marker.to_le_bytes().to_vec(),
+                ),
+                ("projection.suh", "F16", vec![128], words_bytes(&source.suh)),
+            ],
+        );
+        write_safe(
+            &shard_b,
+            vec![
+                ("projection.svh", "F16", vec![128], words_bytes(&source.svh)),
+                (
+                    "projection.trellis",
+                    "I16",
+                    vec![8, 8, 48],
+                    words_bytes(&source.trellis),
+                ),
+            ],
+        );
+        let index = directory.0.join("model.safetensors.index.json");
+        fs::write(
+            &index,
+            br#"{"metadata":{"total_size":6660},"weight_map":{"projection.mcg":"a.safetensors","projection.suh":"a.safetensors","projection.svh":"b.safetensors","projection.trellis":"b.safetensors"}}"#,
+        )
+        .unwrap();
+        let set = ShardedSafetensors::open(&index).unwrap();
+        let imported =
+            load_exl3_projection_sharded(&set, "projection", source.metadata.clone()).unwrap();
+        assert_eq!(imported, source);
+        let marker_hash: [u8; 32] = Sha256::digest(source.mcg_marker.to_le_bytes()).into();
+        assert_eq!(set.hash_tensor("projection.mcg").unwrap(), marker_hash);
+    }
+
+    #[test]
+    fn index_rejects_traversal_and_unmapped_shard_tensors() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let index = directory.0.join("model.safetensors.index.json");
+        fs::write(
+            &index,
+            br#"{"metadata":{},"weight_map":{"a":"../a.safetensors"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&index),
+            Err(SafeTensorError::ShardPath(_))
+        ));
+
+        let shard = directory.0.join("a.safetensors");
+        write_safe(
+            &shard,
+            vec![
+                ("a", "U8", vec![1], vec![1]),
+                ("hidden", "U8", vec![1], vec![2]),
+            ],
+        );
+        fs::write(
+            &index,
+            br#"{"metadata":{},"weight_map":{"a":"a.safetensors"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&index),
+            Err(SafeTensorError::ShardInventory(_))
+        ));
+
+        fs::write(
+            &index,
+            br#"{"metadata":{},"weight_map":{"a":"a.safetensors","a":"b.safetensors"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&index),
+            Err(SafeTensorError::Json(_))
+        ));
+    }
+}

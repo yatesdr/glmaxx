@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
@@ -15,7 +17,7 @@ use glm_engine::{
 };
 use glm_format::{
     Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4, RankFile,
-    RankFileBuilder, TensorPayload, TensorRecord,
+    RankFileBuilder, SafeTensorFile, ShardedSafetensors, TensorPayload, TensorRecord,
 };
 use glm_reference::{
     DECODE_ROWS, ModelConstants, NUMERICAL_CASES, PREFILL_ROWS, ROUTING_CASES, compact_routes,
@@ -100,6 +102,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("exl3-proof requires a source payload path")?;
             exl3_proof(Path::new(path))?;
         }
+        Some("safetensors-inventory") => {
+            let path = arguments
+                .get(2)
+                .ok_or("safetensors-inventory requires a safetensors file or index")?;
+            safetensors_inventory(Path::new(path))?;
+        }
+        Some("exl3-safetensors-proof") => {
+            let path = arguments
+                .get(2)
+                .ok_or("exl3-safetensors-proof requires a safetensors file or index")?;
+            let layer = parse_argument::<u16>(&arguments, 3, "layer")?;
+            let expert = parse_argument::<u16>(&arguments, 4, "expert")?;
+            let rank = parse_argument::<u8>(&arguments, 5, "rank")?;
+            let projection = arguments
+                .get(6)
+                .ok_or("exl3-safetensors-proof requires gate, up, or down")?;
+            exl3_safetensors_proof(Path::new(path), layer, expert, rank, projection.as_str())?;
+        }
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-smoke") => {
             let rows = arguments
@@ -153,11 +173,245 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|gpu-smoke [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+
+fn parse_argument<T: FromStr>(
+    arguments: &[String],
+    index: usize,
+    name: &str,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let value = arguments
+        .get(index)
+        .ok_or_else(|| format!("missing {name} argument"))?;
+    value
+        .parse()
+        .map_err(|_| format!("invalid {name} argument: {value}").into())
+}
+
+#[derive(Serialize)]
+struct SafetensorsInventory {
+    schema: &'static str,
+    kind: &'static str,
+    source: String,
+    structure_sha256: String,
+    tensor_count: usize,
+    shard_count: usize,
+    tensor_payload_bytes: u64,
+    dtype_counts: BTreeMap<&'static str, usize>,
+    dtype_bytes: BTreeMap<&'static str, u64>,
+}
+
+fn safetensors_inventory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let is_index = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".safetensors.index.json"));
+    let mut dtype_counts = BTreeMap::new();
+    let mut dtype_bytes = BTreeMap::new();
+    let (kind, identity, tensor_count, shard_count, tensor_payload_bytes) = if is_index {
+        let files = ShardedSafetensors::open(path)?;
+        let mut total = 0_u64;
+        for name in files.tensor_names() {
+            let descriptor = files
+                .tensor(name)
+                .ok_or("validated sharded tensor disappeared")?;
+            *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
+            *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
+            total = total
+                .checked_add(descriptor.bytes)
+                .ok_or("safetensors byte total overflow")?;
+        }
+        (
+            "sharded-index",
+            files.index_sha256(),
+            files.tensor_names().len(),
+            files.shards().len(),
+            total,
+        )
+    } else {
+        let file = SafeTensorFile::open(path)?;
+        let mut total = 0_u64;
+        for descriptor in file.tensors().values() {
+            *dtype_counts.entry(descriptor.dtype.name()).or_insert(0) += 1;
+            *dtype_bytes.entry(descriptor.dtype.name()).or_insert(0) += descriptor.bytes;
+            total = total
+                .checked_add(descriptor.bytes)
+                .ok_or("safetensors byte total overflow")?;
+        }
+        (
+            "single-file",
+            file.header_sha256(),
+            file.tensors().len(),
+            1,
+            total,
+        )
+    };
+    let report = SafetensorsInventory {
+        schema: "glmaxx.safetensors-inventory.v1",
+        kind,
+        source: path.display().to_string(),
+        structure_sha256: hex(&identity),
+        tensor_count,
+        shard_count,
+        tensor_payload_bytes,
+        dtype_counts,
+        dtype_bytes,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct Exl3SafetensorsComponent {
+    name: String,
+    dtype: &'static str,
+    shape: Vec<u64>,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct Exl3SafetensorsProof {
+    schema: &'static str,
+    model_revision: &'static str,
+    source_revision: &'static str,
+    source_version: &'static str,
+    source: String,
+    source_kind: &'static str,
+    structure_sha256: String,
+    tensor_stem: String,
+    projection: &'static str,
+    layer: u16,
+    expert: u16,
+    rank: u8,
+    logical_shape_k_n: [u32; 2],
+    components: Vec<Exl3SafetensorsComponent>,
+    source_payload_bytes: usize,
+    source_payload_sha256: String,
+    native_metadata_sha256: String,
+    native_primary_sha256: String,
+    native_aux_sha256: String,
+    reconstructed_f16_bytes: usize,
+    reconstructed_sha256: String,
+}
+
+fn exl3_safetensors_proof(
+    path: &Path,
+    layer: u16,
+    expert: u16,
+    rank: u8,
+    projection_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (projection, canonical_projection, logical_k, logical_n) = match projection_name {
+        "gate" => (Exl3Projection::Gate, "gate", 6_144, 512),
+        "up" => (Exl3Projection::Up, "up", 6_144, 512),
+        "down" => (Exl3Projection::Down, "down", 512, 6_144),
+        _ => return Err("projection must be gate, up, or down".into()),
+    };
+    let metadata = Exl3Metadata::new(projection, layer, expert, rank, 3, logical_k, logical_n)?;
+    let stem =
+        format!("model.layers.{layer}.mlp.experts.{expert}.{canonical_projection}_proj.rank{rank}");
+    let names = [
+        format!("{stem}.mcg"),
+        format!("{stem}.suh"),
+        format!("{stem}.svh"),
+        format!("{stem}.trellis"),
+    ];
+    let is_index = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".safetensors.index.json"));
+
+    let (source_kind, structure_hash, tensor, components, source_bytes) = if is_index {
+        let source = ShardedSafetensors::open(path)?;
+        let mut components = Vec::with_capacity(names.len());
+        let mut source_bytes = Vec::new();
+        for name in &names {
+            let descriptor = source
+                .tensor(name)
+                .ok_or_else(|| format!("missing validated component {name}"))?;
+            let bytes = source.read_tensor(name)?;
+            components.push(Exl3SafetensorsComponent {
+                name: name.clone(),
+                dtype: descriptor.dtype.name(),
+                shape: descriptor.shape.clone(),
+                bytes: descriptor.bytes,
+                sha256: hex(&sha256(&bytes)),
+            });
+            source_bytes.extend_from_slice(&bytes);
+        }
+        (
+            "sharded-index",
+            source.index_sha256(),
+            glm_format::load_exl3_projection_sharded(&source, &stem, metadata)?,
+            components,
+            source_bytes,
+        )
+    } else {
+        let source = SafeTensorFile::open(path)?;
+        let mut components = Vec::with_capacity(names.len());
+        let mut source_bytes = Vec::new();
+        for name in &names {
+            let descriptor = source
+                .tensor(name)
+                .ok_or_else(|| format!("missing validated component {name}"))?;
+            let bytes = source.read_tensor(name)?;
+            components.push(Exl3SafetensorsComponent {
+                name: name.clone(),
+                dtype: descriptor.dtype.name(),
+                shape: descriptor.shape.clone(),
+                bytes: descriptor.bytes,
+                sha256: hex(&sha256(&bytes)),
+            });
+            source_bytes.extend_from_slice(&bytes);
+        }
+        (
+            "single-file",
+            source.header_sha256(),
+            glm_format::load_exl3_projection(&source, &stem, metadata)?,
+            components,
+            source_bytes,
+        )
+    };
+
+    let primary = tensor.primary_plane()?;
+    let aux = tensor.aux_plane()?;
+    let native_metadata = tensor.metadata.encode();
+    let reconstructed = tensor.reconstruct_native_f16()?;
+    let mut reconstructed_bytes = Vec::with_capacity(reconstructed.len() * 2);
+    for word in reconstructed {
+        reconstructed_bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    let report = Exl3SafetensorsProof {
+        schema: "glmaxx.exl3-safetensors-proof.v1",
+        model_revision: glm_format::EXL3_MODEL_REVISION,
+        source_revision: glm_format::EXL3_SOURCE_REVISION,
+        source_version: glm_format::EXL3_SOURCE_VERSION,
+        source: path.display().to_string(),
+        source_kind,
+        structure_sha256: hex(&structure_hash),
+        tensor_stem: stem,
+        projection: canonical_projection,
+        layer,
+        expert,
+        rank,
+        logical_shape_k_n: [logical_k, logical_n],
+        components,
+        source_payload_bytes: source_bytes.len(),
+        source_payload_sha256: hex(&sha256(&source_bytes)),
+        native_metadata_sha256: hex(&sha256(&native_metadata)),
+        native_primary_sha256: hex(&sha256(&primary)),
+        native_aux_sha256: hex(&sha256(&aux)),
+        reconstructed_f16_bytes: reconstructed_bytes.len(),
+        reconstructed_sha256: hex(&sha256(&reconstructed_bytes)),
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

@@ -5,6 +5,7 @@ mod crc32c;
 mod exl3;
 mod float;
 mod nvfp4;
+mod safetensors;
 
 pub use container::{
     HEADER_BYTES, RankFile, RankFileBuilder, RankFileError, TensorDescriptor, TensorPayload,
@@ -20,6 +21,10 @@ pub use float::{decode_e2m1, decode_e4m3, encode_e2m1, encode_e4m3};
 pub use nvfp4::{
     Codec, LAYOUT_SOURCE_SHA256, Nvfp4Error, Nvfp4Metadata, PackedNvfp4, QUANT_POLICY_SHA256,
     SCALE_LAYOUT_SM120_K_MAJOR, VALUE_LAYOUT_SM120_ROW_MAJOR, scale_offset,
+};
+pub use safetensors::{
+    SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, ShardedSafetensors,
+    load_exl3_projection, load_exl3_projection_sharded,
 };
 
 pub const CUTLASS_COMMIT: &str = "e05f953a5b3d38adc240df2ff928e0421c2abba3";
