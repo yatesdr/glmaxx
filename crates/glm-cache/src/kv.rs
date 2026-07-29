@@ -74,12 +74,18 @@ impl KvRecord {
             };
             bytes[256 + group] = scale_code;
             let scale = decode_e4m3(scale_code) * outer;
+            if !scale.is_finite() {
+                return Err(KvError::NonFinite);
+            }
             for lane in 0..16 {
                 let code = if scale_code == 0 {
                     0
                 } else {
                     encode_e2m1(nope[start + lane] / scale).map_err(|_| KvError::NonFinite)?
                 };
+                if !(decode_e2m1(code) * scale).is_finite() {
+                    return Err(KvError::NonFinite);
+                }
                 let index = start + lane;
                 if index & 1 == 0 {
                     bytes[index / 2] = code;
@@ -100,11 +106,15 @@ impl KvRecord {
         };
         bytes[288..292].copy_from_slice(&rope_scale.to_le_bytes());
         for (index, &value) in rope.iter().enumerate() {
-            bytes[304 + index] = if value == 0.0 {
+            let code = if value == 0.0 {
                 0
             } else {
                 encode_e4m3(value / rope_scale).map_err(|_| KvError::NonFinite)?
             };
+            if !(decode_e4m3(code) * rope_scale).is_finite() {
+                return Err(KvError::NonFinite);
+            }
+            bytes[304 + index] = code;
         }
         Ok(Self(bytes))
     }
@@ -132,7 +142,12 @@ impl KvRecord {
             } else {
                 byte >> 4
             };
-            *value = decode_e2m1(code) * decode_e4m3(self.0[256 + index / 16]) * outer;
+            let group_scale = decode_e4m3(self.0[256 + index / 16]) * outer;
+            let restored = decode_e2m1(code) * group_scale;
+            if !group_scale.is_finite() || !restored.is_finite() {
+                return Err(KvError::Encoding);
+            }
+            *value = restored;
         }
         let mut rope = [0.0_f32; 64];
         for (index, value) in rope.iter_mut().enumerate() {
@@ -140,7 +155,11 @@ impl KvRecord {
             if !decoded.is_finite() {
                 return Err(KvError::Encoding);
             }
-            *value = decoded * rope_scale;
+            let restored = decoded * rope_scale;
+            if !restored.is_finite() {
+                return Err(KvError::Encoding);
+            }
+            *value = restored;
         }
         Ok((nope, rope))
     }
@@ -355,6 +374,35 @@ mod tests {
         assert_eq!(bad_scale.decode(), Err(KvError::Encoding));
         bad_scale.0[256] = 0x80;
         assert_eq!(bad_scale.decode(), Err(KvError::Encoding));
+    }
+
+    #[test]
+    fn finite_kv_factors_cannot_reconstruct_nonfinite_values() {
+        let mut bad_nope = KvRecord::encode(&[0.0; 512], &[0.0; 64]).unwrap();
+        bad_nope.0[0] = 0x07;
+        bad_nope.0[256] = encode_e4m3(448.0).unwrap();
+        bad_nope.0[292..296].copy_from_slice(&f32::MAX.to_le_bytes());
+        assert_eq!(bad_nope.decode(), Err(KvError::Encoding));
+
+        let mut bad_rope = KvRecord::encode(&[0.0; 512], &[0.0; 64]).unwrap();
+        bad_rope.0[288..292].copy_from_slice(&f32::MAX.to_le_bytes());
+        bad_rope.0[304] = encode_e4m3(448.0).unwrap();
+        assert_eq!(bad_rope.decode(), Err(KvError::Encoding));
+
+        let mut nope = [0.0; 512];
+        nope[0] = f32::MAX;
+        nope[511] = -f32::MAX;
+        let mut rope = [0.0; 64];
+        rope[0] = f32::MAX;
+        rope[63] = -f32::MAX;
+        let record = KvRecord::encode(&nope, &rope).unwrap();
+        let (decoded_nope, decoded_rope) = record.decode().unwrap();
+        assert!(
+            decoded_nope
+                .iter()
+                .chain(&decoded_rope)
+                .all(|value| value.is_finite())
+        );
     }
 
     #[test]
