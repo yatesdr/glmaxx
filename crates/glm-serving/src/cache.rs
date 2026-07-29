@@ -59,6 +59,10 @@ pub struct PrefixRestoreCoordinator {
     pending: BTreeMap<u64, PendingRestore>,
 }
 
+pub(crate) struct PrefixReleasePlan {
+    entries: BTreeMap<(u8, [u8; 32]), u32>,
+}
+
 impl PrefixRestoreCoordinator {
     pub fn new(
         index: PrefixIndex,
@@ -303,13 +307,36 @@ impl PrefixRestoreCoordinator {
     }
 
     pub fn release(&mut self, page_keys: &[PrefixPageKey]) -> Result<(), PrefixRestoreError> {
-        let plan = self.release_plan(page_keys)?;
-        for ((rank, page_key), count) in plan {
+        let plan = self.plan_release_many(std::iter::once(page_keys))?;
+        self.commit_release(plan);
+        Ok(())
+    }
+
+    pub(crate) fn plan_release_many<'a>(
+        &self,
+        page_sets: impl IntoIterator<Item = &'a [PrefixPageKey]>,
+    ) -> Result<PrefixReleasePlan, PrefixRestoreError> {
+        let mut entries = BTreeMap::new();
+        for page_keys in page_sets {
+            for (ordinal, key) in page_keys.iter().copied().enumerate() {
+                let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
+                let rank = owner_rank(ordinal);
+                let count = entries.entry((rank, key.0)).or_insert(0_u32);
+                *count = count.checked_add(1).ok_or(PrefixRestoreError::Overflow)?;
+            }
+        }
+        for (&(rank, page_key), &count) in &entries {
+            self.ranks[usize::from(rank)].validate_unpin_count(page_key, count)?;
+        }
+        Ok(PrefixReleasePlan { entries })
+    }
+
+    pub(crate) fn commit_release(&mut self, plan: PrefixReleasePlan) {
+        for ((rank, page_key), count) in plan.entries {
             self.ranks[usize::from(rank)]
                 .unpin_count(page_key, count)
                 .expect("prefix release was preflighted under exclusive coordinator access");
         }
-        Ok(())
     }
 
     #[must_use]
@@ -334,23 +361,6 @@ impl PrefixRestoreCoordinator {
             }
         }
         first_error.map_or(Ok(()), |error| Err(error.into()))
-    }
-
-    fn release_plan(
-        &self,
-        page_keys: &[PrefixPageKey],
-    ) -> Result<BTreeMap<(u8, [u8; 32]), u32>, PrefixRestoreError> {
-        let mut plan = BTreeMap::new();
-        for (ordinal, key) in page_keys.iter().copied().enumerate() {
-            let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
-            let rank = owner_rank(ordinal);
-            let count = plan.entry((rank, key.0)).or_insert(0_u32);
-            *count = count.checked_add(1).ok_or(PrefixRestoreError::Overflow)?;
-        }
-        for (&(rank, page_key), &count) in &plan {
-            self.ranks[usize::from(rank)].validate_unpin_count(page_key, count)?;
-        }
-        Ok(plan)
     }
 }
 

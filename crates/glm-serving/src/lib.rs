@@ -9,7 +9,8 @@ use std::{
 };
 
 use glm_engine::{
-    CollectiveKind, CollectiveSchedule, GraphProfile, StepMode, Tp4WorkerPool, WorkerError,
+    CollectiveKind, CollectiveSchedule, CommittedTokens, GraphProfile, MAX_ACTIVE_SEQUENCES,
+    MAX_MTP_DEPTH, StepMode, Tp4WorkerPool, WorkerError,
 };
 #[cfg(test)]
 use glm_scheduler::SamplingCollective;
@@ -19,12 +20,14 @@ use glm_scheduler::{
 };
 use glm_tokenizer::EOS_TOKEN_IDS;
 
-const MAXIMUM_STEP_EVENTS: usize = 512;
+const MAXIMUM_STEP_EVENTS: usize = MAX_ACTIVE_SEQUENCES as usize * (MAX_MTP_DEPTH as usize + 2);
 
 mod backend;
 mod cache;
 mod http;
 mod metrics;
+
+use cache::PrefixReleasePlan;
 
 pub use backend::{CoordinatorApiBackend, CoordinatorBackendConfig, CoordinatorBackendError};
 pub use cache::{
@@ -145,6 +148,75 @@ pub struct ServingCoordinator {
 struct PendingAdmission {
     spec: RequestSpec,
     tokens: Box<[u32]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestReleaseMode {
+    Tokens,
+    Prefix,
+}
+
+struct RequestReleasePlan {
+    requests: BTreeMap<u64, RequestReleaseMode>,
+    retained_prompt_bytes: u64,
+    prefix: Option<PrefixReleasePlan>,
+}
+
+struct SuccessfulStepPublication {
+    events: StagedEvents,
+    releases: RequestReleasePlan,
+}
+
+struct StagedEvents {
+    entries: [Option<RequestEvent>; MAXIMUM_STEP_EVENTS],
+    len: usize,
+}
+
+impl StagedEvents {
+    fn new() -> Self {
+        Self {
+            entries: [None; MAXIMUM_STEP_EVENTS],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, event: RequestEvent) -> Result<(), ServingError> {
+        let slot = self
+            .entries
+            .get_mut(self.len)
+            .ok_or(ServingError::Overflow)?;
+        *slot = Some(event);
+        self.len += 1;
+        Ok(())
+    }
+}
+
+struct StagedRequestReleases {
+    entries: [Option<(u64, RequestReleaseMode)>; MAX_ACTIVE_SEQUENCES as usize],
+    len: usize,
+}
+
+impl StagedRequestReleases {
+    fn new() -> Self {
+        Self {
+            entries: [None; MAX_ACTIVE_SEQUENCES as usize],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, release: (u64, RequestReleaseMode)) -> Result<(), ServingError> {
+        let slot = self
+            .entries
+            .get_mut(self.len)
+            .ok_or(ServingError::Overflow)?;
+        *slot = Some(release);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u64, RequestReleaseMode)> + '_ {
+        self.entries[..self.len].iter().flatten().copied()
+    }
 }
 
 impl ServingCoordinator {
@@ -455,8 +527,10 @@ impl ServingCoordinator {
                         .iter()
                         .zip(output_rows)
                         .all(|((_, progress), output)| {
-                            u32::from(output.count())
-                                <= progress.maximum_new_tokens - progress.generated
+                            progress
+                                .maximum_new_tokens
+                                .checked_sub(progress.generated)
+                                .is_some_and(|remaining| u32::from(output.count()) <= remaining)
                                 && output_has_valid_termination(output)
                         })
             }
@@ -464,73 +538,24 @@ impl ServingCoordinator {
         if !output_fits_requests {
             return self.fail_selected_step(&batch, ServingError::Output);
         }
+        let publication =
+            match self.plan_successful_step_publication(&batch, &starting_progress, output_rows) {
+                Ok(publication) => publication,
+                Err(error) => return self.fail_selected_step(&batch, error),
+            };
         if let Err(error) = self
             .scheduler
             .complete_batch_with_results(true, &completions)
         {
             return self.fail_selected_step(&batch, ServingError::Scheduler(error));
         }
-        for (row_index, row) in batch.rows.iter().enumerate() {
-            let starting = starting_progress
-                .get(row_index)
-                .map(|(_, progress)| *progress)
-                .ok_or(ServingError::Request)?;
-            let progress = self
-                .scheduler
-                .request_progress(row.request_id)
-                .ok_or(ServingError::Request)?;
-            match batch.kind {
-                BatchKind::Prefill => self.events.push_back(RequestEvent::PrefillProgress {
-                    request_id: row.request_id,
-                    prompt_done: progress.prompt_done,
-                    prompt_tokens: progress.prompt_tokens,
-                }),
-                BatchKind::Decode | BatchKind::Verify { .. } => {
-                    let output = output_rows.get(row_index).ok_or(ServingError::Output)?;
-                    for (offset, &token_id) in output.token_ids().iter().enumerate() {
-                        let offset = u32::try_from(offset).map_err(|_| ServingError::Overflow)?;
-                        let draft_ordinal = (matches!(batch.kind, BatchKind::Verify { .. })
-                            && offset < u32::from(output.accepted_draft_count()))
-                        .then(|| u8::try_from(offset).map_err(|_| ServingError::Overflow))
-                        .transpose()?;
-                        let position = starting
-                            .generated
-                            .checked_add(offset)
-                            .ok_or(ServingError::Overflow)?;
-                        self.events.push_back(RequestEvent::Token {
-                            request_id: row.request_id,
-                            position,
-                            token_id,
-                            // A verify result commits N accepted draft tokens
-                            // followed by an optional target/residual/bonus
-                            // token. Accepted EOS is the draft-only case.
-                            speculative: draft_ordinal.is_some(),
-                            draft_ordinal,
-                        });
-                    }
-                }
-            }
-            if matches!(batch.kind, BatchKind::Prefill)
-                && progress.prompt_done == progress.prompt_tokens
-            {
-                self.release_request_tokens(row.request_id)?;
-            }
-            if progress.state == RequestState::Finished {
-                let stopped = output_rows
-                    .get(row_index)
-                    .and_then(|output| output.token_ids().last())
-                    .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id));
-                self.release_request_prefix(row.request_id)?;
-                self.events.push_back(RequestEvent::Finished {
-                    request_id: row.request_id,
-                    reason: if stopped {
-                        RequestFinishReason::Stop
-                    } else {
-                        RequestFinishReason::Length
-                    },
-                });
-            }
-        }
+        self.commit_request_releases(publication.releases);
+        self.events.extend(
+            publication.events.entries[..publication.events.len]
+                .iter()
+                .flatten()
+                .copied(),
+        );
         let total_step_time = step_start.elapsed();
         Ok(Some(ServingStepObservation {
             step_id: plan.step_id,
@@ -582,6 +607,97 @@ impl ServingCoordinator {
         self.retained_prompt_bytes
     }
 
+    fn plan_successful_step_publication(
+        &self,
+        batch: &ScheduledBatch,
+        starting_progress: &[(u64, RequestProgress)],
+        output_rows: &[CommittedTokens],
+    ) -> Result<SuccessfulStepPublication, ServingError> {
+        if starting_progress.len() != batch.rows.len()
+            || (!matches!(batch.kind, BatchKind::Prefill) && output_rows.len() != batch.rows.len())
+        {
+            return Err(ServingError::Output);
+        }
+        let mut events = StagedEvents::new();
+        let mut releases = StagedRequestReleases::new();
+        for (row_index, row) in batch.rows.iter().enumerate() {
+            let (request_id, starting) = starting_progress
+                .get(row_index)
+                .copied()
+                .ok_or(ServingError::Request)?;
+            if request_id != row.request_id {
+                return Err(ServingError::Request);
+            }
+            match batch.kind {
+                BatchKind::Prefill => {
+                    let prompt_done = starting
+                        .prompt_done
+                        .checked_add(row.prompt_tokens)
+                        .ok_or(ServingError::Overflow)?;
+                    if prompt_done > starting.prompt_tokens {
+                        return Err(ServingError::Request);
+                    }
+                    events.push(RequestEvent::PrefillProgress {
+                        request_id,
+                        prompt_done,
+                        prompt_tokens: starting.prompt_tokens,
+                    })?;
+                    if prompt_done == starting.prompt_tokens {
+                        releases.push((request_id, RequestReleaseMode::Tokens))?;
+                    }
+                }
+                BatchKind::Decode | BatchKind::Verify { .. } => {
+                    let output = output_rows.get(row_index).ok_or(ServingError::Output)?;
+                    for (offset, &token_id) in output.token_ids().iter().enumerate() {
+                        let offset = u32::try_from(offset).map_err(|_| ServingError::Overflow)?;
+                        let draft_ordinal = (matches!(batch.kind, BatchKind::Verify { .. })
+                            && offset < u32::from(output.accepted_draft_count()))
+                        .then(|| u8::try_from(offset).map_err(|_| ServingError::Overflow))
+                        .transpose()?;
+                        let position = starting
+                            .generated
+                            .checked_add(offset)
+                            .ok_or(ServingError::Overflow)?;
+                        events.push(RequestEvent::Token {
+                            request_id,
+                            position,
+                            token_id,
+                            speculative: draft_ordinal.is_some(),
+                            draft_ordinal,
+                        })?;
+                    }
+                    let generated = starting
+                        .generated
+                        .checked_add(u32::from(output.count()))
+                        .ok_or(ServingError::Overflow)?;
+                    if generated > starting.maximum_new_tokens {
+                        return Err(ServingError::Output);
+                    }
+                    let stopped = output
+                        .token_ids()
+                        .last()
+                        .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id));
+                    if stopped || generated == starting.maximum_new_tokens {
+                        releases.push((request_id, RequestReleaseMode::Prefix))?;
+                        events.push(RequestEvent::Finished {
+                            request_id,
+                            reason: if stopped {
+                                RequestFinishReason::Stop
+                            } else {
+                                RequestFinishReason::Length
+                            },
+                        })?;
+                    }
+                }
+            }
+        }
+        self.require_event_space(events.len)?;
+        Ok(SuccessfulStepPublication {
+            events,
+            releases: self.plan_request_releases(releases.iter())?,
+        })
+    }
+
     fn emit_terminal_transitions(&mut self) -> Result<(), ServingError> {
         // Cancellations are made visible by Scheduler::next_batch before it
         // reports idle. Keep a compact terminal marker so draining the event
@@ -594,22 +710,17 @@ impl ServingCoordinator {
             .filter(|id| !self.terminal_events.contains(id))
             .collect();
         self.require_event_space(cancelled.len())?;
+        let releases = self.plan_request_releases(
+            cancelled
+                .iter()
+                .copied()
+                .map(|request_id| (request_id, RequestReleaseMode::Prefix)),
+        )?;
+        self.commit_request_releases(releases);
         for request_id in cancelled {
-            self.release_request_prefix(request_id)?;
             self.events
                 .push_back(RequestEvent::Cancelled { request_id });
             self.terminal_events.insert(request_id);
-        }
-        Ok(())
-    }
-
-    fn emit_failed_rows(&mut self, batch: &ScheduledBatch) -> Result<(), ServingError> {
-        self.require_event_space(batch.rows.len())?;
-        for row in &batch.rows {
-            self.release_request_prefix(row.request_id)?;
-            self.events.push_back(RequestEvent::Failed {
-                request_id: row.request_id,
-            });
         }
         Ok(())
     }
@@ -619,8 +730,21 @@ impl ServingCoordinator {
         batch: &ScheduledBatch,
         error: ServingError,
     ) -> Result<T, ServingError> {
+        let releases = self.plan_request_releases(
+            batch
+                .rows
+                .iter()
+                .map(|row| (row.request_id, RequestReleaseMode::Prefix)),
+        );
+        let event_space = self.require_event_space(batch.rows.len());
         self.scheduler.complete_batch(false)?;
-        self.emit_failed_rows(batch)?;
+        let releases = releases?;
+        event_space?;
+        self.commit_request_releases(releases);
+        self.events
+            .extend(batch.rows.iter().map(|row| RequestEvent::Failed {
+                request_id: row.request_id,
+            }));
         Err(error)
     }
 
@@ -642,43 +766,73 @@ impl ServingCoordinator {
             .ok_or(ServingError::Overflow)
     }
 
-    fn release_request_prefix(&mut self, request_id: u64) -> Result<(), ServingError> {
-        let retained_prompt_bytes = self.retained_prompt_bytes_after_token_release(request_id)?;
-        if let Some(restored) = self.prefix_leases.get(&request_id) {
+    fn plan_request_releases(
+        &self,
+        releases: impl IntoIterator<Item = (u64, RequestReleaseMode)>,
+    ) -> Result<RequestReleasePlan, ServingError> {
+        let mut requests = BTreeMap::new();
+        for (request_id, mode) in releases {
+            requests
+                .entry(request_id)
+                .and_modify(|prior| {
+                    if mode == RequestReleaseMode::Prefix {
+                        *prior = RequestReleaseMode::Prefix;
+                    }
+                })
+                .or_insert(mode);
+        }
+        let retained_prompt_bytes =
+            requests
+                .keys()
+                .try_fold(self.retained_prompt_bytes, |retained, request_id| {
+                    self.request_tokens
+                        .get(request_id)
+                        .map_or(Ok(retained), |tokens| {
+                            retained
+                                .checked_sub(prompt_bytes(tokens.len())?)
+                                .ok_or(ServingError::Overflow)
+                        })
+                })?;
+        let page_sets: Vec<_> = requests
+            .iter()
+            .filter(|(_, mode)| **mode == RequestReleaseMode::Prefix)
+            .filter_map(|(request_id, _)| {
+                self.prefix_leases
+                    .get(request_id)
+                    .map(|restored| restored.page_keys.as_slice())
+            })
+            .collect();
+        let prefix = if page_sets.is_empty() {
+            None
+        } else {
+            Some(
+                self.prefix_cache
+                    .as_ref()
+                    .ok_or(ServingError::CacheUnavailable)?
+                    .plan_release_many(page_sets)?,
+            )
+        };
+        Ok(RequestReleasePlan {
+            requests,
+            retained_prompt_bytes,
+            prefix,
+        })
+    }
+
+    fn commit_request_releases(&mut self, plan: RequestReleasePlan) {
+        if let Some(prefix) = plan.prefix {
             self.prefix_cache
                 .as_mut()
-                .ok_or(ServingError::CacheUnavailable)?
-                .release(&restored.page_keys)?;
+                .expect("prefix cache was preflighted under exclusive serving access")
+                .commit_release(prefix);
         }
-        self.prefix_leases.remove(&request_id);
-        if let Some(retained_prompt_bytes) = retained_prompt_bytes {
+        for (request_id, mode) in plan.requests {
+            if mode == RequestReleaseMode::Prefix {
+                self.prefix_leases.remove(&request_id);
+            }
             self.request_tokens.remove(&request_id);
-            self.retained_prompt_bytes = retained_prompt_bytes;
         }
-        Ok(())
-    }
-
-    fn release_request_tokens(&mut self, request_id: u64) -> Result<(), ServingError> {
-        if let Some(retained_prompt_bytes) =
-            self.retained_prompt_bytes_after_token_release(request_id)?
-        {
-            self.request_tokens.remove(&request_id);
-            self.retained_prompt_bytes = retained_prompt_bytes;
-        }
-        Ok(())
-    }
-
-    fn retained_prompt_bytes_after_token_release(
-        &self,
-        request_id: u64,
-    ) -> Result<Option<u64>, ServingError> {
-        let Some(tokens) = self.request_tokens.get(&request_id) else {
-            return Ok(None);
-        };
-        self.retained_prompt_bytes
-            .checked_sub(prompt_bytes(tokens.len())?)
-            .map(Some)
-            .ok_or(ServingError::Overflow)
+        self.retained_prompt_bytes = plan.retained_prompt_bytes;
     }
 
     fn release_prompt_reservation(&mut self, token_count: usize) -> Result<(), ServingError> {
@@ -909,6 +1063,16 @@ mod tests {
         .unwrap()
     }
 
+    fn release_prefix(
+        serving: &mut ServingCoordinator,
+        request_id: u64,
+    ) -> Result<(), ServingError> {
+        let plan = serving
+            .plan_request_releases(std::iter::once((request_id, RequestReleaseMode::Prefix)))?;
+        serving.commit_request_releases(plan);
+        Ok(())
+    }
+
     fn worker_reservation_step() -> (StepPlan, CollectiveSchedule) {
         let schedule = CollectiveSchedule::new(vec![CollectiveOp {
             ordinal: 0,
@@ -999,6 +1163,52 @@ mod tests {
         assert_eq!(decode.collectives.sampling_bytes, 8);
         assert_eq!(decode.collectives.dcp_candidate_route_id, 4);
         assert_eq!(decode.collectives.sampling_route_id, 6);
+    }
+
+    #[test]
+    fn maximum_verify_publication_fits_the_fixed_event_boundary_exactly() {
+        let serving = coordinator(None);
+        let batch = ScheduledBatch {
+            step_id: 1,
+            kind: BatchKind::Verify { depth: 6 },
+            graph_id: 3,
+            rows: (1..=glm_engine::MAX_ACTIVE_SEQUENCES)
+                .map(|request_id| glm_scheduler::BatchRow {
+                    request_id: u64::from(request_id),
+                    prompt_tokens: 0,
+                })
+                .collect(),
+            query_rows: u32::from(glm_engine::MAX_ACTIVE_SEQUENCES) * 7,
+            sampling: SamplingCollective::Greedy,
+        };
+        let starting_progress: Vec<_> = batch
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.request_id,
+                    RequestProgress {
+                        state: RequestState::Decoding,
+                        prompt_tokens: 64,
+                        prompt_done: 64,
+                        maximum_new_tokens: 7,
+                        generated: 0,
+                        mtp_depth: 6,
+                    },
+                )
+            })
+            .collect();
+        let committed = CommittedTokens::verify(&[1, 2, 3, 4, 5, 6], Some(7)).unwrap();
+        let output_rows = vec![committed; usize::from(glm_engine::MAX_ACTIVE_SEQUENCES)];
+
+        let publication = serving
+            .plan_successful_step_publication(&batch, &starting_progress, &output_rows)
+            .unwrap();
+        assert_eq!(publication.events.len, MAXIMUM_STEP_EVENTS);
+        assert_eq!(
+            publication.releases.requests.len(),
+            usize::from(glm_engine::MAX_ACTIVE_SEQUENCES)
+        );
     }
 
     #[test]
@@ -1453,7 +1663,7 @@ mod tests {
             .release(&[key])
             .unwrap();
         assert!(matches!(
-            serving.release_request_prefix(77),
+            release_prefix(&mut serving, 77),
             Err(ServingError::Cache(PrefixRestoreError::Residency(
                 glm_cache::ResidencyError::State
             )))
@@ -1466,7 +1676,7 @@ mod tests {
             .restore_longest(999, &tokens)
             .unwrap();
         assert_eq!(repaired.page_keys, [key]);
-        serving.release_request_prefix(77).unwrap();
+        release_prefix(&mut serving, 77).unwrap();
         assert!(!serving.prefix_leases.contains_key(&77));
         assert!(serving.tick().unwrap());
         let events = serving.drain_events();
@@ -1513,6 +1723,223 @@ mod tests {
             serving.drain_events(),
             vec![RequestEvent::Cancelled { request_id: 78 }]
         );
+        drop(serving);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_terminal_cleanup_failure_does_not_partially_publish_the_batch() {
+        let root = temporary_store("serving-terminal-cleanup");
+        let namespace = PrefixNamespace::new(NamespaceInputs {
+            model_revision_sha256: [11; 32],
+            tokenizer_sha256: [12; 32],
+            chat_template_sha256: [13; 32],
+            weight_policy_hash: [14; 32],
+            target_kv_abi_sha256: [15; 32],
+            draft_kv_abi_sha256: [16; 32],
+            rope_parameters_sha256: [17; 32],
+        })
+        .unwrap();
+        let tokens_a: Vec<u32> = (0..64).collect();
+        let tokens_b: Vec<u32> = (1_000..1_064).collect();
+        let index = PrefixIndex::new(namespace);
+        let key_a = index.derive_keys(&tokens_a)[0];
+        let key_b = index.derive_keys(&tokens_b)[0];
+        let mut store = FileTierStore::open(&root).unwrap();
+        let records: Vec<_> = [key_a, key_b]
+            .into_iter()
+            .enumerate()
+            .map(|(record_index, key)| {
+                store
+                    .publish(DurablePageRequest {
+                        namespace: namespace.0,
+                        page_key: key.0,
+                        generation: 1,
+                        mtp: false,
+                        pieces: [TierPiece::TargetKv, TierPiece::TargetIndexer]
+                            .into_iter()
+                            .map(|piece| PagePieceBytes {
+                                piece,
+                                bytes: vec![
+                                    u8::try_from(record_index + 1).unwrap();
+                                    piece.expected_bytes() as usize
+                                ],
+                            })
+                            .collect(),
+                    })
+                    .unwrap()
+            })
+            .collect();
+        let page_bytes: u64 = records[0]
+            .pieces
+            .iter()
+            .map(|piece| piece.byte_length)
+            .sum();
+        drop(store);
+
+        let mut prefix = PrefixRestoreCoordinator::new(
+            index,
+            &root,
+            ResidencyConfig {
+                hbm_bytes: page_bytes * 2,
+                dram_bytes: page_bytes * 2,
+            },
+            2,
+        )
+        .unwrap();
+        prefix
+            .register_prefix(&tokens_a, vec![records[0].clone()])
+            .unwrap();
+        prefix
+            .register_prefix(&tokens_b, vec![records[1].clone()])
+            .unwrap();
+        let mut serving = coordinator(None);
+        serving.attach_prefix_cache(prefix).unwrap();
+        for (request_id, tokens) in [
+            (100, tokens_a.as_slice()),
+            (101, tokens_a.as_slice()),
+            (102, tokens_b.as_slice()),
+        ] {
+            serving
+                .admit_tokens(
+                    RequestSpec {
+                        id: request_id,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 1,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    tokens,
+                )
+                .unwrap();
+        }
+        let _ = serving.drain_events();
+
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key_b])
+            .unwrap();
+        assert!(matches!(
+            serving.tick_observed(),
+            Err(ServingError::Cache(PrefixRestoreError::Residency(
+                glm_cache::ResidencyError::State
+            )))
+        ));
+        for request_id in [100, 101, 102] {
+            assert_eq!(
+                serving.request_progress(request_id).unwrap().state,
+                RequestState::Failed
+            );
+            assert!(serving.prefix_leases.contains_key(&request_id));
+        }
+        assert!(serving.drain_events().is_empty());
+        assert!(!serving.tick().unwrap());
+
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key_a])
+            .expect("the earlier valid row must retain its pin");
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key_a])
+            .expect("both shared-prefix pins must survive the failed plan");
+        let repaired_a_first = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(900, &tokens_a)
+            .unwrap();
+        let repaired_a_second = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(902, &tokens_a)
+            .unwrap();
+        let repaired_b = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(901, &tokens_b)
+            .unwrap();
+        assert_eq!(repaired_a_first.page_keys, [key_a]);
+        assert_eq!(repaired_a_second.page_keys, [key_a]);
+        assert_eq!(repaired_b.page_keys, [key_b]);
+        release_prefix(&mut serving, 100).unwrap();
+        release_prefix(&mut serving, 101).unwrap();
+        release_prefix(&mut serving, 102).unwrap();
+
+        for (request_id, tokens) in [(103, tokens_a.as_slice()), (104, tokens_b.as_slice())] {
+            serving
+                .admit_tokens(
+                    RequestSpec {
+                        id: request_id,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 1,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    tokens,
+                )
+                .unwrap();
+            serving.cancel(request_id).unwrap();
+        }
+        let _ = serving.drain_events();
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key_b])
+            .unwrap();
+        assert!(matches!(
+            serving.tick(),
+            Err(ServingError::Cache(PrefixRestoreError::Residency(
+                glm_cache::ResidencyError::State
+            )))
+        ));
+        for request_id in [103, 104] {
+            assert_eq!(
+                serving.request_progress(request_id).unwrap().state,
+                RequestState::Cancelled
+            );
+            assert!(serving.prefix_leases.contains_key(&request_id));
+        }
+        assert!(serving.drain_events().is_empty());
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(&[key_a])
+            .expect("cancellation preflight must retain every earlier pin");
+        let _ = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(903, &tokens_a)
+            .unwrap();
+        let _ = serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .restore_longest(904, &tokens_b)
+            .unwrap();
+        assert!(!serving.tick().unwrap());
+        assert_eq!(
+            serving.drain_events(),
+            vec![
+                RequestEvent::Cancelled { request_id: 103 },
+                RequestEvent::Cancelled { request_id: 104 },
+            ]
+        );
+        assert!(!serving.prefix_leases.contains_key(&103));
+        assert!(!serving.prefix_leases.contains_key(&104));
         drop(serving);
         fs::remove_dir_all(root).unwrap();
     }
