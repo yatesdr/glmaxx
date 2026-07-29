@@ -3,15 +3,16 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`757d5cf44074a167a6434f708939719ef8550e1e`
+`dc16273b019cf3a3dd8eb810cf9caeb26c99bced`
 
-The complete local gate most recently ran against the KV
-finite-reconstruction implementation bytes committed as
-`abd851d91d371846c824d4a6a7208c2e89821166`; its provenance record was then
-committed at `757d5cf44074a167a6434f708939719ef8550e1e`. The target CUDA/kernel and
-strict production-manifest baseline remains `4bf7bb5`; the later CPU
+The complete local gate most recently ran against the asynchronous
+restore-identity implementation bytes committed as
+`4b60040566d530ddd12d8a72e10adb9d0fcdb22f`; its provenance record was then
+committed at `dc16273b019cf3a3dd8eb810cf9caeb26c99bced`. The target CUDA/kernel
+and strict production-manifest baseline remains `4bf7bb5`; the later CPU
 candidates add review integrity, cache-lifecycle evidence, bit-exact
-indexer-scale handling, atomic publication, and finite KV reconstruction.
+indexer-scale handling, atomic publication, finite KV reconstruction, and
+exact restore-result identity.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -19,12 +20,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at KV finite-reconstruction candidate `abd851d`
+The latest local run at restore-identity candidate `4b60040`
 passed:
 
-- `scripts/local-checks.sh`: 231 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 232 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 31 then-present candidate-based review-handoff hash proofs;
+  and all 33 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -91,6 +92,12 @@ absent.
 The target/draft KV finite-reconstruction correction is pinned in
 `docs/kv-finite-reconstruction-proof-v1.md`. It rejects overflow from finite
 record factors before non-finite cache values can become observable. Its
+dedicated handoff passed local provenance validation; independent acceptance
+is absent.
+
+The asynchronous restore-identity correction is pinned in
+`docs/restore-identity-proof-v1.md`. Pending pages now require exact request
+ID, logical ordinal, and full durable-record equality before adoption. Its
 dedicated handoff passed local provenance validation; independent acceptance
 is absent.
 
@@ -198,6 +205,7 @@ verdicts:
 | atomic no-replace rank-set publication | `aaeffea` | `docs/fable-atomic-rank-publication-v1-handoff.md` |
 | finite target/draft KV and indexer reconstruction | `757d5cf` | `docs/fable-kv-finite-reconstruction-v1-handoff.md` |
 | current-tree-bound review acceptance and qualification re-pin | `60311cf` | `docs/fable-current-tree-review-acceptance-v3-handoff.md` |
+| exact asynchronous restore request/result identity | `dc16273` | `docs/fable-restore-identity-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
