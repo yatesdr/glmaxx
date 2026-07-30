@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`b7a2ac4bd45b1cb7a15c69c33d7d2248da826ad5`
+`10a068ba55cc0e8dbe39161f925a0dcf0a17d8ef`
 
-`review-proof-all` verified 103 current handoffs and skipped the two historical
+`review-proof-all` verified 104 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -123,6 +123,7 @@ result path; follow the output instructions in that handoff.
 | 101 | `docs/fable-kv-reconstruction-rounding-v2-handoff.md` | `1212fe9bf39f690401df8e49dcaca44708502a20` | `docs/reviews/fable-kv-reconstruction-rounding-v2.md` | `kv-reconstruction-rounding-v2-design-accepted` |
 | 102 | `docs/fable-tp4-worker-admission-state-v1-handoff.md` | `46f251e8af7d0b75593c7ad66c00ae41dcd3f7a8` | `docs/reviews/fable-tp4-worker-admission-state-v1.md` | `tp4-worker-admission-state-v1-accepted` |
 | 103 | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` | `b7a2ac4bd45b1cb7a15c69c33d7d2248da826ad5` | `docs/reviews/fable-nonblocking-http-transport-v1-r2.md` | `nonblocking-http-transport-v1-r2-design-accepted` |
+| 104 | `docs/fable-coordinator-api-backend-v3-handoff.md` | `10a068ba55cc0e8dbe39161f925a0dcf0a17d8ef` | `docs/reviews/fable-coordinator-api-backend-v3.md` | `coordinator-api-backend-v3-accepted` |
 
 ## Verification command
 
@@ -133,5 +134,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 103 current handoffs and two
+The expected queue count for this document is 104 current handoffs and two
 explicitly skipped historical umbrella handoffs.
