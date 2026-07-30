@@ -3,7 +3,7 @@
 Date: 2026-07-30
 
 Implementation candidate:
-`ede94408b7bd2ac2662e6181197e77f7f2cbe565`
+`e197500180614e90b1a2a67672516ee5ad6ecdf0`
 
 Status: `HOST_PROOF_COMPLETE_REVIEW_AND_SM120_EXECUTION_PENDING`
 
@@ -34,6 +34,11 @@ launch a model kernel.
 of that same allocation. No 59,585-entry vector is copied after the physical
 checkpoint upload, and the globally adopted arena cannot be paired with a
 layout supplied by a later caller.
+
+The plan header, rank entries, and layout slices are crate-private after
+construction. External callers receive only copy/read-only accessors, so safe
+Rust cannot mutate a layout after `plan_sha256` is computed and then submit
+that detached layout for adoption.
 
 The binding remains behind `WeightArenaExecutionPermit`. Adoption requires:
 
@@ -84,7 +89,9 @@ The deterministic fake CUDA backend proves:
   alignment each prevent adoption;
 - absent metadata and auxiliary planes resolve to `None`; and
 - the resident arena shares the same layout allocation as the load plan via
-  `Arc::ptr_eq`.
+  `Arc::ptr_eq`; and
+- the post-construction plan API exposes no external mutable header, rank, or
+  tensor-layout field.
 
 At the candidate above:
 
