@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`c1ab9d2214f592e02de2cf3e7f2dfb257930b347`
+`8c27c1e6082f35cc225a8ed76255bd2724c47c6c`
 
-`review-proof-all` verified 92 current handoffs and skipped the two historical
+`review-proof-all` verified 93 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -112,6 +112,7 @@ result path; follow the output instructions in that handoff.
 | 90 | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` | `a0f2bee3edd1754aebefe1643eecd0a63cd4d4b7` | `docs/reviews/fable-sm120-rank-executor-v1-r2.md` | `sm120-rank-executor-v1-accepted` |
 | 91 | `docs/fable-step-execution-abi-v3-handoff.md` | `bab7866b6bd494d3e70ba28463043555f5b583c8` | `docs/reviews/fable-step-execution-abi-v3.md` | `step-execution-abi-v3-design-accepted` |
 | 92 | `docs/fable-exl3-warp-staging-cpu-v2-handoff.md` | `c1ab9d2214f592e02de2cf3e7f2dfb257930b347` | `docs/reviews/fable-exl3-warp-staging-cpu-v2.md` | `exl3-warp-staging-cpu-v2-accepted` |
+| 93 | `docs/fable-direct-tier-extent-cpu-v1-handoff.md` | `8c27c1e6082f35cc225a8ed76255bd2724c47c6c` | `docs/reviews/fable-direct-tier-extent-cpu-v1.md` | `direct-tier-extent-cpu-v1-accepted` |
 
 ## Verification command
 
@@ -122,5 +123,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 92 current handoffs and two
+The expected queue count for this document is 93 current handoffs and two
 explicitly skipped historical umbrella handoffs.
