@@ -91,6 +91,12 @@ black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
 fairness, cancellation/slow-client/rank/tier/restart faults, raw per-request
 evidence, the complete SM120 posture matrix, and a six-hour soak. No driver
 or load result exists yet.
+The NVFP4 canonical decoder correction is pinned in
+`docs/nvfp4-metadata-canonicality-proof-v1.md`. It rejects resigned
+rounding/dtype/global-scale-mode and reserved-field lies, inconsistent
+amax/global-scale pairs, nonzero codes behind zero scales, and nonzero
+value/scale padding while preserving partial-tile 2D scale repetition. It is
+a CPU format result only.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
