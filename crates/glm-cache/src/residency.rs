@@ -15,6 +15,9 @@ use crate::{
     FileTierReader, RestoredPage, StoreError, Tier, TierRecord, TierRecordRelation, owner_rank,
 };
 
+const RESTORE_QUOTA_POISONED: usize = 1_usize << (usize::BITS - 1);
+const RESTORE_QUOTA_COUNT_MASK: usize = !RESTORE_QUOTA_POISONED;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RestoreRequest {
     pub request_id: u64,
@@ -68,30 +71,34 @@ struct RestoreCommand {
 }
 
 struct OutstandingPermit {
-    outstanding: Arc<AtomicUsize>,
+    quota_word: Arc<AtomicUsize>,
 }
 
 impl Drop for OutstandingPermit {
     fn drop(&mut self) {
-        let released =
-            self.outstanding
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    current.checked_sub(1)
-                });
-        debug_assert!(released.is_ok(), "restore outstanding counter underflow");
+        self.quota_word
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                let count = current & RESTORE_QUOTA_COUNT_MASK;
+                Some(if count == 0 {
+                    current | RESTORE_QUOTA_POISONED
+                } else {
+                    (current & RESTORE_QUOTA_POISONED) | (count - 1)
+                })
+            })
+            .expect("restore quota update closure always returns a value");
     }
 }
 
 pub struct RestoreService {
     sender: Option<SyncSender<RestoreCommand>>,
     worker: Option<JoinHandle<()>>,
-    outstanding: Arc<AtomicUsize>,
+    quota_word: Arc<AtomicUsize>,
     maximum_outstanding: usize,
 }
 
 impl RestoreService {
     pub fn spawn(root: &Path, maximum_outstanding: usize) -> Result<Self, RestoreError> {
-        if maximum_outstanding == 0 {
+        if maximum_outstanding == 0 || maximum_outstanding > RESTORE_QUOTA_COUNT_MASK {
             return Err(RestoreError::Config);
         }
         let mut store = FileTierReader::open(root)?;
@@ -112,7 +119,7 @@ impl RestoreService {
         Ok(Self {
             sender: Some(sender),
             worker: Some(worker),
-            outstanding: Arc::new(AtomicUsize::new(0)),
+            quota_word: Arc::new(AtomicUsize::new(0)),
             maximum_outstanding,
         })
     }
@@ -132,7 +139,7 @@ impl RestoreService {
             request,
             response,
             permit: OutstandingPermit {
-                outstanding: Arc::clone(&self.outstanding),
+                quota_word: Arc::clone(&self.quota_word),
             },
         };
         let Some(sender) = &self.sender else {
@@ -149,16 +156,29 @@ impl RestoreService {
 
     #[must_use]
     pub fn outstanding(&self) -> usize {
-        self.outstanding.load(Ordering::Acquire)
+        self.quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_COUNT_MASK
+    }
+
+    #[must_use]
+    pub fn quota_poisoned(&self) -> bool {
+        self.quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_POISONED != 0
     }
 
     fn reserve_slot(&self) -> Result<(), RestoreError> {
-        self.outstanding
+        self.quota_word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < self.maximum_outstanding).then_some(current + 1)
+                let count = current & RESTORE_QUOTA_COUNT_MASK;
+                (current & RESTORE_QUOTA_POISONED == 0 && count < self.maximum_outstanding)
+                    .then_some(current + 1)
             })
             .map(|_| ())
-            .map_err(|_| RestoreError::Saturated)
+            .map_err(|current| {
+                if current & RESTORE_QUOTA_POISONED != 0 {
+                    RestoreError::Poisoned
+                } else {
+                    RestoreError::Saturated
+                }
+            })
     }
 }
 
@@ -718,6 +738,7 @@ pub enum RestoreError {
     Config,
     Request,
     Saturated,
+    Poisoned,
     Missing,
     Stale,
     Timeout,
@@ -851,7 +872,7 @@ mod tests {
 
     #[test]
     fn restore_quota_is_owned_by_operation_after_handle_abandonment() {
-        let outstanding = Arc::new(AtomicUsize::new(1));
+        let quota_word = Arc::new(AtomicUsize::new(1));
         let (response, receiver) = mpsc::sync_channel(1);
         let command = RestoreCommand {
             request: RestoreRequest {
@@ -864,7 +885,7 @@ mod tests {
             },
             response,
             permit: OutstandingPermit {
-                outstanding: Arc::clone(&outstanding),
+                quota_word: Arc::clone(&quota_word),
             },
         };
         let handle = RestoreHandle { receiver };
@@ -872,9 +893,48 @@ mod tests {
             handle.receive_timeout(Duration::ZERO),
             Err(RestoreError::Timeout)
         ));
-        assert_eq!(outstanding.load(Ordering::Acquire), 1);
+        assert_eq!(
+            quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_COUNT_MASK,
+            1
+        );
         drop(command);
-        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert_eq!(
+            quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_COUNT_MASK,
+            0
+        );
+        assert_eq!(
+            quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_POISONED,
+            0
+        );
+    }
+
+    #[test]
+    fn quota_underflow_poison_is_release_visible_and_blocks_admission() {
+        let quota_word = Arc::new(AtomicUsize::new(0));
+        drop(OutstandingPermit {
+            quota_word: Arc::clone(&quota_word),
+        });
+        assert_eq!(
+            quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_COUNT_MASK,
+            0
+        );
+        assert_ne!(
+            quota_word.load(Ordering::Acquire) & RESTORE_QUOTA_POISONED,
+            0
+        );
+
+        let service = RestoreService {
+            sender: None,
+            worker: None,
+            quota_word,
+            maximum_outstanding: 1,
+        };
+        assert!(service.quota_poisoned());
+        assert_eq!(service.outstanding(), 0);
+        assert!(matches!(
+            service.reserve_slot(),
+            Err(RestoreError::Poisoned)
+        ));
     }
 
     #[test]
