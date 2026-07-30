@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`fc96d90836e32d7c582a1bddbf1521a28638ccfa`
+`04e4c3ac60a50ba6bb3a9767bbe43c3d68cec614`
 
-`review-proof-all` verified 107 current handoffs and skipped the two historical
+`review-proof-all` verified 108 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 89 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 90 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -127,6 +127,7 @@ result path; follow the output instructions in that handoff.
 | 105 | `docs/fable-streaming-write-single-pass-v1-r2-handoff.md` | `f39f23495b80dd7527c379788d39f58987ed2b52` | `docs/reviews/fable-streaming-write-single-pass-v1-r2.md` | `streaming-write-single-pass-v1-accepted` |
 | 106 | `docs/fable-fixed-page-transaction-v1-r2-handoff.md` | `b59114734e1fb18761725444e27fbe9c64b6ad43` | `docs/reviews/fable-fixed-page-transaction-v1-r2.md` | `fixed-page-transaction-v1-r2-design-accepted` |
 | 107 | `docs/fable-checkpoint-load-transaction-v1-r3-handoff.md` | `fc96d90836e32d7c582a1bddbf1521a28638ccfa` | `docs/reviews/fable-checkpoint-load-transaction-v1-r3.md` | `checkpoint-load-transaction-v1-r3-accepted` |
+| 108 | `docs/fable-cache-arena-budget-v2-r2-handoff.md` | `04e4c3ac60a50ba6bb3a9767bbe43c3d68cec614` | `docs/reviews/fable-cache-arena-budget-v2-r2.md` | `cache-arena-budget-v2-r2-cpu-accepted` |
 
 ## Verification command
 
@@ -137,5 +138,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 107 current handoffs and two
+The expected queue count for this document is 108 current handoffs and two
 explicitly skipped historical umbrella handoffs.

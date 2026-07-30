@@ -618,6 +618,7 @@ verdicts:
 | step execution input | `a5ef076` with transaction amendment at `e7bc477` | `docs/fable-step-execution-io-v1-handoff.md` |
 | active KV page table | `3404e07` | `docs/fable-active-sequence-page-table-v1-handoff.md` |
 | cache arena budget | `c33648a` | `docs/fable-cache-arena-budget-v2-handoff.md` |
+| corrected cache arena static planner and pressure proof | `04e4c3a` | `docs/fable-cache-arena-budget-v2-r2-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |
