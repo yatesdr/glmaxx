@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`d64753549881f7ecb5a3920bff888d81ee3345a0`
+`b62325a47eaee6b78bd70ec29e3ea29cea48533e`
 
-`review-proof-all` verified 84 current handoffs and skipped the two historical
+`review-proof-all` verified 85 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -104,6 +104,7 @@ result path; follow the output instructions in that handoff.
 | 82 | `docs/fable-cuda-checkpoint-arena-cpu-v1-handoff.md` | `c870454025ea9a401646155c010e1032b23659d8` | `docs/reviews/fable-cuda-checkpoint-arena-cpu-v1.md` | `cuda-checkpoint-arena-cpu-v1-accepted` |
 | 83 | `docs/fable-rank-local-checkpoint-loader-v1-handoff.md` | `9c345421557a0a4e290831c61afcf65cf3f53a10` | `docs/reviews/fable-rank-local-checkpoint-loader-v1.md` | `rank-local-checkpoint-loader-v1-accepted` |
 | 84 | `docs/fable-tp4-checkpoint-load-protocol-v1-handoff.md` | `d64753549881f7ecb5a3920bff888d81ee3345a0` | `docs/reviews/fable-tp4-checkpoint-load-protocol-v1.md` | `tp4-checkpoint-load-protocol-v1-accepted` |
+| 85 | `docs/fable-native-checkpoint-rank-adapter-v1-handoff.md` | `b62325a47eaee6b78bd70ec29e3ea29cea48533e` | `docs/reviews/fable-native-checkpoint-rank-adapter-v1.md` | `native-checkpoint-rank-adapter-v1-accepted` |
 
 ## Verification command
 
@@ -114,5 +115,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 84 current handoffs and two
+The expected queue count for this document is 85 current handoffs and two
 explicitly skipped historical umbrella handoffs.
