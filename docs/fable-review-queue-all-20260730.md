@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`7267b505fd4b83c9b421e5050277bf806a1e4867`
+`59f70da4dbeca8a5d542f3e5947002d3ee975bdb`
 
-`review-proof-all` verified 121 current handoffs and skipped the two historical
+`review-proof-all` verified 122 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 103 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 104 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -141,6 +141,7 @@ result path; follow the output instructions in that handoff.
 | 119 | `docs/fable-tp4-layer6-replay-v1-handoff.md` | `4a1e3766d15440f63873b3c50203080121be0d7e` | `docs/reviews/fable-tp4-layer6-replay-v1.md` | `tp4-layer6-replay-v1-design-accepted` |
 | 120 | `docs/fable-hybrid-serving-manifest-v1-handoff.md` | `67db1a33de774762f724ca8157fccb1a0d689e4d` | `docs/reviews/fable-hybrid-serving-manifest-v1.md` | `hybrid-serving-manifest-v1-design-accepted` |
 | 121 | `docs/fable-direct-tier-checksum-authority-cpu-v1-handoff.md` | `7267b505fd4b83c9b421e5050277bf806a1e4867` | `docs/reviews/fable-direct-tier-checksum-authority-cpu-v1.md` | `direct-tier-checksum-authority-cpu-v1-accepted` |
+| 122 | `docs/fable-direct-tier-checksum-workers-cpu-v1-handoff.md` | `59f70da4dbeca8a5d542f3e5947002d3ee975bdb` | `docs/reviews/fable-direct-tier-checksum-workers-cpu-v1.md` | `direct-tier-checksum-workers-cpu-v1-accepted` |
 
 ## Verification command
 
@@ -151,5 +152,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 121 current handoffs and two
+The expected queue count for this document is 122 current handoffs and two
 explicitly skipped historical umbrella handoffs.

@@ -133,6 +133,17 @@ atomic `HashWait`, canonical SHA acceptance, replay rejection, corrupt-byte
 quarantine, and zero terminal resource accounting. This is a synchronous CPU
 authority proof only: worker threads, io_uring, storage, CUDA, model
 execution, and performance remain absent.
+The fixed checksum-worker CPU proof is pinned in
+`docs/direct-tier-checksum-workers-cpu-v1.md`. Candidate `59f70da` adds two
+bounded queues and a fixed named worker group, hashes target and combined
+target+MTP extents from the authority's exact preallocated aligned
+allocation, removes retained mutable-slice access, and fails the entire
+checksum pool on worker panic or channel loss. Its deterministic proof covers
+two dispatched/running jobs, same-allocation binding, abandonment,
+corruption, shutdown, restart rejection, and zero terminal accounting; a
+queued-job panic regression proves pool-wide cleanup. This remains CPU
+checksum-worker evidence only: no io_uring, registered memory, storage,
+affinity/NUMA, CUDA, model execution, or performance claim is implied.
 The direct-tier scheduling CPU proof is pinned in
 `docs/direct-tier-scheduler-cpu-proof-v1.md`. It implements preallocated
 deterministic R0/R1/W0/W1 ordering, preserves read-reserved buffers,
@@ -747,6 +758,7 @@ verdicts:
 | corrected direct-tier admission/service arbitration CPU proof | `e188fc7` | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` |
 | consolidated direct-tier read-class fairness CPU proof | `b602a9c` | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` |
 | bounded direct-tier checksum authority CPU proof | `7267b50` | `docs/fable-direct-tier-checksum-authority-cpu-v1-handoff.md` |
+| fixed direct-tier checksum workers CPU proof | `59f70da` | `docs/fable-direct-tier-checksum-workers-cpu-v1-handoff.md` |
 | Linux direct-tier feature and fault probe design | `a3771e3` | `docs/fable-direct-tier-linux-probe-v1-handoff.md` |
 | cn4 read-only environment capture design | `d961d96` | `docs/fable-cn4-environment-capture-v1-handoff.md` |
 | matched runtime control and comparison design | `660a070` | `docs/fable-matched-runtime-control-v1-handoff.md` |
