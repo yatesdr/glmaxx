@@ -104,6 +104,15 @@ pub struct SequencePageView {
     pub shared_prefix: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SequencePageSnapshot {
+    pub sequence_id: u64,
+    pub mtp: bool,
+    pub committed_tokens: u64,
+    pub tentative_tokens: u8,
+    pub pages: Vec<SequencePageView>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableStats {
     pub target_pages_used: [u32; 4],
@@ -177,6 +186,11 @@ impl SequencePageTable {
             prefixes: BTreeMap::new(),
             sequences: BTreeMap::new(),
         })
+    }
+
+    #[must_use]
+    pub const fn config(&self) -> PageTableConfig {
+        self.config
     }
 
     /// Attaches only complete sealed pages. Missing keys allocate restored HBM
@@ -512,6 +526,24 @@ impl SequencePageTable {
             .collect()
     }
 
+    pub fn snapshots(&self) -> Result<Vec<SequencePageSnapshot>, SequencePageError> {
+        self.sequences
+            .iter()
+            .map(|(&sequence_id, sequence)| {
+                Ok(SequencePageSnapshot {
+                    sequence_id,
+                    mtp: sequence.mtp,
+                    committed_tokens: sequence.committed_tokens,
+                    tentative_tokens: sequence
+                        .tentative
+                        .as_ref()
+                        .map_or(0, |tail| tail.reserved_tokens),
+                    pages: self.pages(sequence_id)?,
+                })
+            })
+            .collect()
+    }
+
     pub fn stats(&self) -> Result<PageTableStats, SequencePageError> {
         let mut target_pages_used = [0_u32; 4];
         let mut draft_pages_used = [0_u32; 4];
@@ -552,56 +584,69 @@ impl SequencePageTable {
             .sequences
             .get(&sequence_id)
             .ok_or(SequencePageError::Sequence)?;
-        if sequence.tentative.is_some()
-            || sequence
-                .committed_tokens
-                .checked_add(token_count)
-                .is_none_or(|tokens| tokens > MAXIMUM_CONTEXT_TOKENS)
-        {
+        let new_committed_tokens = sequence
+            .committed_tokens
+            .checked_add(token_count)
+            .filter(|&tokens| tokens <= MAXIMUM_CONTEXT_TOKENS)
+            .ok_or(SequencePageError::Transaction)?;
+        if sequence.tentative.is_some() {
             return Err(SequencePageError::Transaction);
         }
-        for _ in 0..token_count {
-            let need_page = self.sequences[&sequence_id]
-                .pages
-                .last()
-                .is_none_or(|entry| {
-                    self.physical[&entry.physical].valid_tokens == PAGE_TOKENS as u8
-                });
-            if need_page {
-                let sequence = &self.sequences[&sequence_id];
-                let ordinal =
-                    u64::try_from(sequence.pages.len()).map_err(|_| SequencePageError::Overflow)?;
-                let physical = self.allocate_page(ordinal, sequence.mtp)?;
-                self.sequences
-                    .get_mut(&sequence_id)
-                    .ok_or(SequencePageError::Sequence)?
-                    .pages
-                    .push(SequencePage { ordinal, physical });
-            }
-            let physical = self.sequences[&sequence_id]
-                .pages
-                .last()
-                .ok_or(SequencePageError::Invariant)?
-                .physical;
+        let mut remaining = token_count;
+        if let Some(physical) = sequence.pages.last().map(|page| page.physical) {
             let page = self
                 .physical
                 .get_mut(&physical)
                 .ok_or(SequencePageError::Invariant)?;
-            if page.state != PageState::HbmMutable || page.references != 1 {
+            if page.state == PageState::HbmMutable
+                && page.references == 1
+                && page.valid_tokens < PAGE_TOKENS as u8
+            {
+                let available = PAGE_TOKENS
+                    .checked_sub(u64::from(page.valid_tokens))
+                    .ok_or(SequencePageError::Invariant)?;
+                let appended = remaining.min(available);
+                page.valid_tokens = page
+                    .valid_tokens
+                    .checked_add(u8::try_from(appended).map_err(|_| SequencePageError::Overflow)?)
+                    .ok_or(SequencePageError::Overflow)?;
+                if page.valid_tokens == PAGE_TOKENS as u8 {
+                    page.state = page.state.transition(PageState::HbmSealed)?;
+                }
+                remaining = remaining
+                    .checked_sub(appended)
+                    .ok_or(SequencePageError::Invariant)?;
+            } else if page.state != PageState::HbmSealed || page.valid_tokens != PAGE_TOKENS as u8 {
                 return Err(SequencePageError::State);
             }
-            page.valid_tokens = page
-                .valid_tokens
-                .checked_add(1)
-                .ok_or(SequencePageError::Overflow)?;
-            if page.valid_tokens == PAGE_TOKENS as u8 {
+        }
+        while remaining != 0 {
+            let sequence = &self.sequences[&sequence_id];
+            let ordinal =
+                u64::try_from(sequence.pages.len()).map_err(|_| SequencePageError::Overflow)?;
+            let physical = self.allocate_page(ordinal, sequence.mtp)?;
+            let appended = remaining.min(PAGE_TOKENS);
+            let page = self
+                .physical
+                .get_mut(&physical)
+                .ok_or(SequencePageError::Invariant)?;
+            page.valid_tokens = u8::try_from(appended).map_err(|_| SequencePageError::Overflow)?;
+            if appended == PAGE_TOKENS {
                 page.state = page.state.transition(PageState::HbmSealed)?;
             }
             self.sequences
                 .get_mut(&sequence_id)
                 .ok_or(SequencePageError::Sequence)?
-                .committed_tokens += 1;
+                .pages
+                .push(SequencePage { ordinal, physical });
+            remaining = remaining
+                .checked_sub(appended)
+                .ok_or(SequencePageError::Invariant)?;
         }
+        self.sequences
+            .get_mut(&sequence_id)
+            .ok_or(SequencePageError::Sequence)?
+            .committed_tokens = new_committed_tokens;
         Ok(())
     }
 
@@ -891,6 +936,83 @@ mod tests {
             table.append_committed(1, 1),
             Err(SequencePageError::Transaction)
         );
+    }
+
+    #[test]
+    fn page_granular_append_matches_single_token_reference_at_every_boundary() {
+        for token_count in 1_u64..=257 {
+            let config = PageTableConfig {
+                target_pages_per_rank: 4,
+                draft_pages_per_rank: 4,
+            };
+            let mut bulk = SequencePageTable::new(config).unwrap();
+            let mut reference = SequencePageTable::new(config).unwrap();
+            bulk.admit_with_prefix(1, true, &[]).unwrap();
+            reference.admit_with_prefix(1, true, &[]).unwrap();
+
+            bulk.append_committed(1, token_count).unwrap();
+            for _ in 0..token_count {
+                reference.append_committed(1, 1).unwrap();
+            }
+
+            assert_eq!(bulk.committed_tokens(1), Some(token_count));
+            assert_eq!(bulk.pages(1).unwrap(), reference.pages(1).unwrap());
+            assert_eq!(bulk.stats().unwrap(), reference.stats().unwrap());
+        }
+    }
+
+    #[test]
+    fn every_tail_occupancy_and_mtp_depth_reserves_exactly_one_position_per_token() {
+        for tail_tokens in 0_u64..PAGE_TOKENS {
+            for depth in 1_u8..=7 {
+                let mut table = SequencePageTable::new(PageTableConfig {
+                    target_pages_per_rank: 4,
+                    draft_pages_per_rank: 4,
+                })
+                .unwrap();
+                table.admit_with_prefix(1, true, &[]).unwrap();
+                let committed = PAGE_TOKENS + tail_tokens;
+                table.append_committed(1, committed).unwrap();
+                let before = table.pages(1).unwrap();
+
+                table.begin_tentative(1, depth).unwrap();
+                let tentative = table.pages(1).unwrap();
+                let expected_positions = committed + u64::from(depth);
+                assert_eq!(
+                    tentative
+                        .iter()
+                        .map(|page| u64::from(page.valid_tokens))
+                        .sum::<u64>(),
+                    expected_positions,
+                    "tail={tail_tokens} depth={depth}"
+                );
+                assert_eq!(
+                    u64::try_from(tentative.len()).unwrap(),
+                    expected_positions.div_ceil(PAGE_TOKENS),
+                    "tail={tail_tokens} depth={depth}"
+                );
+                assert!(
+                    tentative
+                        .iter()
+                        .all(|page| page.valid_tokens <= PAGE_TOKENS as u8),
+                    "tail={tail_tokens} depth={depth}"
+                );
+                assert!(
+                    tentative
+                        .iter()
+                        .all(|page| page.draft_local_page_id.is_some()),
+                    "tail={tail_tokens} depth={depth}"
+                );
+
+                table.rollback_tentative(1).unwrap();
+                assert_eq!(
+                    table.pages(1).unwrap(),
+                    before,
+                    "tail={tail_tokens} depth={depth}"
+                );
+                assert_eq!(table.committed_tokens(1), Some(committed));
+            }
+        }
     }
 
     #[test]

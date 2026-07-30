@@ -3,6 +3,7 @@
 
 mod attention;
 mod budget;
+mod delta;
 mod kv;
 mod mtp;
 mod page;
@@ -13,6 +14,10 @@ mod store;
 mod tier;
 
 pub use budget::{Budget, BudgetError, CacheCapacity};
+pub use delta::{
+    MAXIMUM_DELTA_SEQUENCES, PAGE_TABLE_DELTA_SCHEMA, PageTableDelta, PageTableDeltaError,
+    PageTableMirror, RankPageEntry, SequencePageUpdate,
+};
 pub use kv::{IndexerKeyRecord, KvError, KvRecord};
 pub use mtp::{MtpError, SpeculativeTail, VerifyOutcome};
 pub use page::{AttachmentError, PageAttachments, PageState, PageTransitionError, owner_rank};
@@ -25,7 +30,7 @@ pub use residency::{
 };
 pub use sequence::{
     MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, PrefixPageAttachment,
-    SequencePageError, SequencePageTable, SequencePageView,
+    SequencePageError, SequencePageSnapshot, SequencePageTable, SequencePageView,
 };
 pub use store::{
     DurablePageRequest, FileTierReader, FileTierStore, PagePieceBytes, RestoredPage, StoreError,
