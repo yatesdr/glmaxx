@@ -1,0 +1,47 @@
+{
+  "schema": "glmaxx.direct-tier-state-cpu-proof.v1",
+  "buffer_alignment": 4096,
+  "buffer_generations": [
+    1,
+    2
+  ],
+  "stale_buffer_generation_rejected": true,
+  "descriptor_user_data": [
+    4294967296,
+    4294967297
+  ],
+  "descriptor_binding_exact": true,
+  "stale_descriptor_generation_rejected": true,
+  "shared_ticket_waiter_order": [
+    10,
+    20,
+    30
+  ],
+  "shared_ticket_physical_bytes": 2052096,
+  "tenant_logical_bytes": [
+    [
+      1,
+      4060928
+    ],
+    [
+      2,
+      2014464
+    ]
+  ],
+  "mtp_satisfies_target": true,
+  "target_rejected_for_mtp": true,
+  "original_cancel_both_orders_pass": true,
+  "logical_abandonment_pass": true,
+  "catalog_before_submit": "REPLAN_REQUIRED",
+  "catalog_after_submit": "SUBMITTED_RECORD_PINNED",
+  "cq_entries": 4,
+  "nodrop_independent": true,
+  "final_tickets": 0,
+  "final_waiters": 0,
+  "final_active_buffers": 0,
+  "final_descriptors": 0,
+  "final_cqes": 0,
+  "final_physical_bytes": 0,
+  "gpu_evidence": "none: deterministic CPU state machine only",
+  "verdict": "DIRECT_BUFFER_DESCRIPTOR_RESTORE_STATE_PASS"
+}

@@ -20,6 +20,10 @@ cargo run --release --offline -p glm-cli --bin glmaxx -- \
 cmp fixtures/direct-tier-extent-proof-v1.json \
   "${proof_dir}/direct-tier-extent-proof-v1.json"
 cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  direct-tier-state-proof "${proof_dir}/direct-tier-state-proof-v1.json"
+cmp fixtures/direct-tier-state-proof-v1.json \
+  "${proof_dir}/direct-tier-state-proof-v1.json"
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
   exl3-warp-proof "${proof_dir}/exl3-warp-staging-proof-v2.json"
 cmp fixtures/exl3-warp-staging-proof-v2.json \
   "${proof_dir}/exl3-warp-staging-proof-v2.json"

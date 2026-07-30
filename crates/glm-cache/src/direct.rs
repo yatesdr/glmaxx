@@ -150,7 +150,11 @@ impl DirectExtentBuffer {
         let storage_length = length
             .checked_add(alignment - 1)
             .ok_or(DirectExtentError::Overflow)?;
-        let storage = vec![0_u8; storage_length];
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(storage_length)
+            .map_err(|_| DirectExtentError::Allocation)?;
+        storage.resize(storage_length, 0);
         let address = storage.as_ptr() as usize;
         let aligned_address = address
             .checked_add(alignment - 1)
@@ -451,6 +455,7 @@ pub enum DirectExtentError {
     Padding,
     LegacyRecord,
     MigrationRequired,
+    Allocation,
     Overflow,
 }
 

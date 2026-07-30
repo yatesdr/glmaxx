@@ -106,6 +106,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", String::from_utf8(json)?);
             }
         }
+        Some("direct-tier-state-proof") => {
+            let report = direct_tier_state_proof()?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("exl3-warp-proof") => {
             let report = glm_format::prove_exl3_warp_staging_v2()?;
             let mut json = serde_json::to_vec_pretty(&report)?;
@@ -397,7 +408,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -2157,6 +2168,359 @@ fn direct_tier_pattern(length: u64, seed: u8) -> Vec<u8> {
     (0..length)
         .map(|index| seed.wrapping_add((index % 251) as u8))
         .collect()
+}
+
+#[derive(Serialize)]
+struct DirectTierStateProof {
+    schema: &'static str,
+    buffer_alignment: u64,
+    buffer_generations: [u64; 2],
+    stale_buffer_generation_rejected: bool,
+    descriptor_user_data: [u64; 2],
+    descriptor_binding_exact: bool,
+    stale_descriptor_generation_rejected: bool,
+    shared_ticket_waiter_order: Vec<u64>,
+    shared_ticket_physical_bytes: u64,
+    tenant_logical_bytes: [[u64; 2]; 2],
+    mtp_satisfies_target: bool,
+    target_rejected_for_mtp: bool,
+    original_cancel_both_orders_pass: bool,
+    logical_abandonment_pass: bool,
+    catalog_before_submit: &'static str,
+    catalog_after_submit: &'static str,
+    cq_entries: u32,
+    nodrop_independent: bool,
+    final_tickets: usize,
+    final_waiters: usize,
+    final_active_buffers: usize,
+    final_descriptors: usize,
+    final_cqes: u32,
+    final_physical_bytes: u64,
+    gpu_evidence: &'static str,
+    verdict: &'static str,
+}
+
+fn direct_tier_state_proof() -> Result<DirectTierStateProof, Box<dyn std::error::Error>> {
+    let mut buffers = glm_cache::DirectBufferPool::new(1)?;
+    let first = buffers.reserve(glm_cache::DirectBufferUse::CpuRead)?;
+    buffers.transition(first, glm_cache::DirectBufferState::ReadInflight)?;
+    buffers.release_abandoned_read(first)?;
+    let second = buffers.reserve(glm_cache::DirectBufferUse::CpuRead)?;
+    let stale_buffer_generation_rejected = matches!(
+        buffers.state(first),
+        Err(glm_cache::DirectBufferStateError::StaleGeneration)
+    );
+    buffers.transition(second, glm_cache::DirectBufferState::ReadInflight)?;
+    buffers.transition(second, glm_cache::DirectBufferState::HashingForRead)?;
+    buffers.transition(second, glm_cache::DirectBufferState::HostReady)?;
+    buffers.transition(second, glm_cache::DirectBufferState::Free)?;
+
+    let binding = glm_cache::DirectDescriptorBinding {
+        buffer: second,
+        operation_generation: 9,
+        operation: glm_cache::DirectOperationKind::Read,
+    };
+    let mut descriptors = glm_cache::DirectDescriptorTable::new(1)?;
+    let original = descriptors.allocate(binding)?;
+    let cancel = descriptors.issue_cancel(original)?;
+    let descriptor_binding_exact =
+        descriptors.resolve(original)? == binding && descriptors.resolve(cancel)? == binding;
+    descriptors.complete(cancel)?;
+    descriptors.complete(original)?;
+    let reused_descriptor = descriptors.allocate(glm_cache::DirectDescriptorBinding {
+        operation_generation: 10,
+        ..binding
+    })?;
+    let stale_descriptor_generation_rejected = matches!(
+        descriptors.resolve(original),
+        Err(glm_cache::DirectDescriptorError::StaleGeneration)
+    );
+    descriptors.complete(reused_descriptor)?;
+
+    let config = direct_tier_state_config();
+    let mut table = glm_cache::DirectRestoreTable::new(config, false)?;
+    let mtp_record = direct_tier_state_record(glm_cache::DirectTierCapability::Mtp, 1);
+    let ticket = table
+        .plan(
+            direct_tier_state_request(30, 1, glm_cache::DirectTierCapability::Target),
+            mtp_record.clone(),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    let mtp_satisfies_target = matches!(
+        table.plan(
+            direct_tier_state_request(10, 1, glm_cache::DirectTierCapability::Mtp),
+            mtp_record.clone(),
+            5,
+            [0x51; 32],
+        )?,
+        glm_cache::DirectRestoreAdmission::Joined(joined) if joined == ticket
+    ) && matches!(
+        table.plan(
+            direct_tier_state_request(20, 2, glm_cache::DirectTierCapability::Target),
+            mtp_record,
+            5,
+            [0x51; 32],
+        )?,
+        glm_cache::DirectRestoreAdmission::Joined(joined) if joined == ticket
+    );
+    let shared_ticket_waiter_order = table.waiter_order(ticket)?;
+    let shared_ticket_physical_bytes = table.physical_bytes();
+    let tenant_logical_bytes = [
+        [1, table.tenant_logical_bytes(1)],
+        [2, table.tenant_logical_bytes(2)],
+    ];
+    table.reserve_buffer(ticket)?;
+    table.submit_read(ticket)?;
+    table.complete_original(ticket, glm_cache::DirectReadCompletion::Exact)?;
+    table.complete_hash(ticket, true)?;
+    let delivered = table.finish_cpu_delivery(ticket)?;
+    if delivered != shared_ticket_waiter_order {
+        return Err("direct-tier waiter delivery order drift".into());
+    }
+
+    let target_rejected_for_mtp = matches!(
+        glm_cache::DirectRestoreTable::new(config, false)?.plan(
+            direct_tier_state_request(1, 1, glm_cache::DirectTierCapability::Mtp),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 2),
+            5,
+            [0x51; 32],
+        ),
+        Err(glm_cache::DirectRestoreError::Capability)
+    );
+    let original_cancel_both_orders_pass =
+        direct_tier_cancellation_order(false)? && direct_tier_cancellation_order(true)?;
+    let logical_abandonment_pass = direct_tier_logical_abandonment()?;
+    let (catalog_before_submit, catalog_after_submit) = direct_tier_catalog_binding()?;
+    let (cq_entries, nodrop_independent) = direct_tier_cq_proof()?;
+
+    let all_pass = stale_buffer_generation_rejected
+        && descriptor_binding_exact
+        && stale_descriptor_generation_rejected
+        && mtp_satisfies_target
+        && target_rejected_for_mtp
+        && original_cancel_both_orders_pass
+        && logical_abandonment_pass
+        && catalog_before_submit == "REPLAN_REQUIRED"
+        && catalog_after_submit == "SUBMITTED_RECORD_PINNED"
+        && nodrop_independent
+        && table.ticket_count() == 0
+        && table.waiter_count() == 0
+        && table.active_buffers() == 0
+        && table.outstanding_descriptors() == 0
+        && table.outstanding_cqes() == 0
+        && table.physical_bytes() == 0;
+    if !all_pass {
+        return Err("direct-tier state CPU proof failed".into());
+    }
+    Ok(DirectTierStateProof {
+        schema: "glmaxx.direct-tier-state-cpu-proof.v1",
+        buffer_alignment: glm_cache::DIRECT_IO_ALIGNMENT,
+        buffer_generations: [first.generation, second.generation],
+        stale_buffer_generation_rejected,
+        descriptor_user_data: [original.user_data(), cancel.user_data()],
+        descriptor_binding_exact,
+        stale_descriptor_generation_rejected,
+        shared_ticket_waiter_order,
+        shared_ticket_physical_bytes,
+        tenant_logical_bytes,
+        mtp_satisfies_target,
+        target_rejected_for_mtp,
+        original_cancel_both_orders_pass,
+        logical_abandonment_pass,
+        catalog_before_submit,
+        catalog_after_submit,
+        cq_entries,
+        nodrop_independent,
+        final_tickets: table.ticket_count(),
+        final_waiters: table.waiter_count(),
+        final_active_buffers: table.active_buffers(),
+        final_descriptors: table.outstanding_descriptors(),
+        final_cqes: table.outstanding_cqes(),
+        final_physical_bytes: table.physical_bytes(),
+        gpu_evidence: "none: deterministic CPU state machine only",
+        verdict: "DIRECT_BUFFER_DESCRIPTOR_RESTORE_STATE_PASS",
+    })
+}
+
+fn direct_tier_state_config() -> glm_cache::DirectRestoreConfig {
+    glm_cache::DirectRestoreConfig {
+        maximum_tickets: 4,
+        maximum_waiters_per_ticket: 4,
+        maximum_physical_bytes: glm_cache::MTP_PHYSICAL_BYTES * 4,
+        maximum_logical_bytes_per_tenant: glm_cache::MTP_LOGICAL_BYTES * 4,
+        buffer_slots: 2,
+        descriptor_capacity: 2,
+    }
+}
+
+fn direct_tier_state_request(
+    request_id: u64,
+    tenant_id: u64,
+    required_capability: glm_cache::DirectTierCapability,
+) -> glm_cache::DirectRestoreRequest {
+    glm_cache::DirectRestoreRequest {
+        request_id,
+        tenant_id,
+        required_capability,
+    }
+}
+
+fn direct_tier_state_record(
+    capability: glm_cache::DirectTierCapability,
+    key: u8,
+) -> glm_cache::DirectExtentRecord {
+    let mut pieces = vec![
+        glm_cache::DirectPieceRecord {
+            piece: TierPiece::TargetKv,
+            extent_offset: glm_cache::TARGET_KV_EXTENT_OFFSET,
+            logical_length: glm_cache::TARGET_KV_EXTENT_LENGTH,
+            sha256: [0x31; 32],
+        },
+        glm_cache::DirectPieceRecord {
+            piece: TierPiece::TargetIndexer,
+            extent_offset: glm_cache::TARGET_INDEXER_EXTENT_OFFSET,
+            logical_length: glm_cache::TARGET_INDEXER_EXTENT_LENGTH,
+            sha256: [0x32; 32],
+        },
+    ];
+    if capability == glm_cache::DirectTierCapability::Mtp {
+        pieces.push(glm_cache::DirectPieceRecord {
+            piece: TierPiece::DraftSidecar,
+            extent_offset: glm_cache::DRAFT_SIDECAR_EXTENT_OFFSET,
+            logical_length: glm_cache::DRAFT_SIDECAR_EXTENT_LENGTH,
+            sha256: [0x33; 32],
+        });
+    }
+    glm_cache::DirectExtentRecord {
+        format_version: glm_cache::DIRECT_TIER_FORMAT_VERSION,
+        namespace: [0x11; 32],
+        page_key: [key; 32],
+        durable_revision: 7,
+        capability,
+        segment_id: 3,
+        physical_offset: glm_cache::DIRECT_IO_ALIGNMENT * u64::from(key),
+        physical_length: capability.physical_bytes(),
+        physical_sha256: [0x41_u8.wrapping_add(key); 32],
+        pieces,
+    }
+}
+
+fn direct_tier_cancellation_order(
+    original_first: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut table = glm_cache::DirectRestoreTable::new(direct_tier_state_config(), false)?;
+    let ticket = table
+        .plan(
+            direct_tier_state_request(1, 1, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(
+                glm_cache::DirectTierCapability::Target,
+                if original_first { 3 } else { 4 },
+            ),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    table.reserve_buffer(ticket)?;
+    table.submit_read(ticket)?;
+    if table.cancel_waiter(1, true)? != glm_cache::DirectCancellation::AsyncCancelSubmitted {
+        return Ok(false);
+    }
+    if original_first {
+        table.complete_original(ticket, glm_cache::DirectReadCompletion::Cancelled)?;
+        if table.active_buffers() != 1 {
+            return Ok(false);
+        }
+        table.complete_cancel(ticket)?;
+    } else {
+        table.complete_cancel(ticket)?;
+        if table.active_buffers() != 1 {
+            return Ok(false);
+        }
+        table.complete_original(ticket, glm_cache::DirectReadCompletion::Cancelled)?;
+    }
+    Ok(table.ticket_count() == 0
+        && table.active_buffers() == 0
+        && table.outstanding_descriptors() == 0
+        && table.outstanding_cqes() == 0
+        && table.physical_bytes() == 0)
+}
+
+fn direct_tier_logical_abandonment() -> Result<bool, Box<dyn std::error::Error>> {
+    let mut table = glm_cache::DirectRestoreTable::new(direct_tier_state_config(), false)?;
+    let ticket = table
+        .plan(
+            direct_tier_state_request(1, 1, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 5),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    table.reserve_buffer(ticket)?;
+    table.submit_read(ticket)?;
+    if table.cancel_waiter(1, false)? != glm_cache::DirectCancellation::AbandonedWithoutAsyncCancel
+    {
+        return Ok(false);
+    }
+    let retained = table.active_buffers() == 1 && table.physical_bytes() != 0;
+    table.complete_original(ticket, glm_cache::DirectReadCompletion::Exact)?;
+    Ok(retained
+        && table.ticket_count() == 0
+        && table.active_buffers() == 0
+        && table.outstanding_descriptors() == 0)
+}
+
+fn direct_tier_catalog_binding() -> Result<(&'static str, &'static str), Box<dyn std::error::Error>>
+{
+    let mut table = glm_cache::DirectRestoreTable::new(direct_tier_state_config(), false)?;
+    let ticket = table
+        .plan(
+            direct_tier_state_request(1, 1, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 6),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    let before = match table.catalog_binding(ticket, 6, [0x52; 32])? {
+        glm_cache::DirectCatalogBinding::ReplanRequired => "REPLAN_REQUIRED",
+        _ => "WRONG",
+    };
+    table.reserve_buffer(ticket)?;
+    table.submit_read(ticket)?;
+    let after = match table.catalog_binding(ticket, 6, [0x52; 32])? {
+        glm_cache::DirectCatalogBinding::SubmittedRecordPinned => "SUBMITTED_RECORD_PINNED",
+        _ => "WRONG",
+    };
+    table.cancel_waiter(1, false)?;
+    table.complete_original(ticket, glm_cache::DirectReadCompletion::Exact)?;
+    Ok((before, after))
+}
+
+fn direct_tier_cq_proof() -> Result<(u32, bool), Box<dyn std::error::Error>> {
+    let mut traces = Vec::new();
+    for nodrop in [false, true] {
+        let mut tracker = glm_cache::DirectCqTracker::new(2, 4, nodrop)?;
+        tracker.try_submit(glm_cache::DirectCqKind::Original)?;
+        tracker.try_submit(glm_cache::DirectCqKind::Original)?;
+        tracker.try_submit(glm_cache::DirectCqKind::AsyncCancel)?;
+        tracker.try_submit(glm_cache::DirectCqKind::Fsync)?;
+        let saturated = matches!(
+            tracker.try_submit(glm_cache::DirectCqKind::AsyncCancel),
+            Err(glm_cache::DirectRestoreError::CqWait)
+        );
+        let high = tracker.outstanding();
+        for kind in [
+            glm_cache::DirectCqKind::AsyncCancel,
+            glm_cache::DirectCqKind::Original,
+            glm_cache::DirectCqKind::Original,
+            glm_cache::DirectCqKind::Fsync,
+        ] {
+            tracker.complete(kind)?;
+        }
+        traces.push((saturated, high, tracker.outstanding()));
+    }
+    Ok((4, traces[0] == traces[1] && traces[0] == (true, 4, 0)))
 }
 
 fn exl3_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {

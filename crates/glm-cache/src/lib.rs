@@ -5,6 +5,8 @@ mod attention;
 mod budget;
 mod delta;
 mod direct;
+mod direct_restore;
+mod direct_state;
 mod kv;
 mod mtp;
 mod page;
@@ -27,6 +29,16 @@ pub use direct::{
     TARGET_KV_EXTENT_LENGTH, TARGET_KV_EXTENT_OFFSET, TARGET_ONLY_LOGICAL_BYTES,
     TARGET_ONLY_PHYSICAL_BYTES, decode_direct_extent, encode_direct_extent,
     validate_direct_io_span,
+};
+pub use direct_restore::{
+    DirectCancellation, DirectCatalogBinding, DirectCqKind, DirectCqTracker, DirectReadCompletion,
+    DirectRestoreAdmission, DirectRestoreConfig, DirectRestoreError, DirectRestoreRequest,
+    DirectRestoreState, DirectRestoreTable, DirectRestoreTicketId,
+};
+pub use direct_state::{
+    DirectBufferId, DirectBufferPool, DirectBufferState, DirectBufferStateError, DirectBufferUse,
+    DirectCompletionKind, DirectCompletionToken, DirectDescriptorBinding, DirectDescriptorError,
+    DirectDescriptorTable, DirectOperationKind,
 };
 pub use kv::{IndexerKeyRecord, KvError, KvRecord};
 pub use mtp::{MtpError, SpeculativeTail, VerifyOutcome};
