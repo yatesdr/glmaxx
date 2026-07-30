@@ -98,6 +98,7 @@ register pressure, and occupancy—not merely store fewer bytes.
 - [Direct DRAM/NVMe tier I/O candidate](docs/direct-tier-io-v1.md)
 - [Direct tier I/O adversarial handoff](docs/fable-direct-tier-io-v1-handoff.md)
 - [Linux direct-tier feature/fault probe candidate](docs/direct-tier-linux-probe-v1.md)
+- [cn4 read-only environment capture candidate](docs/cn4-environment-capture-v1.md)
 - [Quality and MTP numerical acceptance candidate](docs/quality-acceptance-v1.md)
 - [Quality acceptance adversarial handoff](docs/fable-quality-acceptance-v1-handoff.md)
 - [Quality corpus source and materialization candidate](docs/quality-corpus-manifest-v1.md)

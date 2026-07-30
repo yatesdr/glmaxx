@@ -53,6 +53,13 @@ artifact is invalid, and never copies or promotes reviewer-owned bytes. On
 the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
 rejected, and 75 configured results absent. This transient inbox inventory is
 diagnostic only and does not change the eight machine-accepted results.
+The next cn4 window is prepared by
+`docs/cn4-environment-capture-v1.md`, which specifies a Rust-owned,
+read-only, secret-minimized common environment record covering source,
+executable, container, toolchains, host/NUMA, GPU firmware, PCIe topology,
+and before/after occupancy. It is an unreviewed design only. No command was
+implemented or run, no cn4 connection occurred, and no GPU authorization or
+evidence is implied.
 The retained HTTP server now synchronously joins connection workers after a
 worker or accept-thread spawn failure, surfaces cleanup panics, and proves
 its saturation rollback against barrier-held physical TP4 work.
