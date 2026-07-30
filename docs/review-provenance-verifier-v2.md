@@ -71,6 +71,26 @@ staged review, create the required result, increment any acceptance count,
 or open a gate. `review-proof-all` remains the only repository-wide
 acceptance inventory.
 
+For a complete operator-owned review inbox, the batch form is:
+
+```text
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  review-acceptance-lint-all docs/reviews [temporary-output]
+```
+
+It maps each regular staging file to a configured handoff by the required
+result basename. Duplicate required basenames fail the whole command as
+ambiguous. Every matched artifact uses the exact single-review verifier;
+invalid artifacts are retained as structured per-review errors so one bad
+file cannot hide the state of the rest. The command exits unsuccessfully
+after writing the report when any matched artifact is rejected. Absent
+reviews and unmatched status/README files are reported but do not fabricate
+failures or acceptances.
+
+The batch schema is `glmaxx.review-staged-acceptance-suite.v1`. Its only
+passing verdict is `STAGED_CONTENT_PASS_NOT_RECORDED`; this still performs no
+copy, promotion, acceptance-count update, or gate opening.
+
 ## Output
 
 `glmaxx.review-provenance-proof.v2` and
@@ -121,6 +141,8 @@ The unit proof covers:
 - rejection of a prose-wrapped token by the staging-only acceptance lint;
 - staging-path content validation without relaxing the required-path rule
   used by recorded results;
+- batch discovery of ready, rejected, absent, and unmatched staged files;
+- fail-closed rejection of duplicate required-result basenames;
 - rejection when a handoff is supplied as its own review;
 - rejection of token-plus-hash text that does not separately attest the
   candidate commit; and

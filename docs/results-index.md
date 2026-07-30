@@ -45,6 +45,13 @@ prefix/residency coherence, atomic sequence removal, TP4 startup handshake,
 and TP4 physical-step quota. Their root artifacts are byte-identical to
 Fable's staged review bytes. Each acceptance is limited to its stated scope
 and does not authorize cn4.
+The CPU-only staged-review batch verifier maps unique required-result
+basenames across the full review inbox, retains every per-artifact rejection,
+reports absent and unmatched files, exits unsuccessfully when any matched
+artifact is invalid, and never copies or promotes reviewer-owned bytes. On
+the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
+rejected, and 75 configured results absent. This transient inbox inventory is
+diagnostic only and does not change the eight machine-accepted results.
 The retained HTTP server now synchronously joins connection workers after a
 worker or accept-thread spawn failure, surfaces cleanup panics, and proves
 its saturation rollback against barrier-held physical TP4 work.

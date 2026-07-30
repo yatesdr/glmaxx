@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -74,6 +74,40 @@ pub struct ReviewSuiteProof {
     pub verdict: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StagedReviewLintState {
+    Ready,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StagedReviewLintEntry {
+    pub handoff_path: String,
+    pub required_result_path: String,
+    pub staged_review_path: String,
+    pub state: StagedReviewLintState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<ReviewProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StagedReviewLintSuite {
+    pub schema: &'static str,
+    pub repository_head: String,
+    pub staging_directory: String,
+    pub configured_handoffs: usize,
+    pub present_staged_reviews: usize,
+    pub ready_staged_reviews: usize,
+    pub rejected_staged_reviews: usize,
+    pub absent_staged_reviews: usize,
+    pub unmatched_staging_files: Vec<String>,
+    pub entries: Vec<StagedReviewLintEntry>,
+    pub verdict: &'static str,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedInput {
     path: String,
@@ -140,6 +174,149 @@ pub fn verify_staged_review_acceptance(
     })?;
     require_staged_acceptance(artifact, requested_token)?;
     Ok(proof)
+}
+
+/// Validates every staged review whose basename uniquely matches a configured
+/// handoff result. The suite is diagnostic only: it neither copies nor accepts
+/// review artifacts, and it preserves every single-review acceptance rule.
+pub fn verify_all_staged_review_acceptances(
+    repository: &Path,
+    staging_directory: &Path,
+) -> Result<StagedReviewLintSuite, ReviewProofError> {
+    let root = repository_root(repository)?;
+    let head = git_text(&root, &["rev-parse", "HEAD"])?;
+    let staging = repository_file(&root, staging_directory)?;
+    if !staging.is_dir() {
+        return Err(ReviewProofError::Format(format!(
+            "staging path is not a directory: {}",
+            staging.display()
+        )));
+    }
+    let staging_relative = relative_string(&root, &staging)?;
+
+    let mut bindings = BTreeMap::<String, (PathBuf, String, String)>::new();
+    let mut configured_handoffs = 0usize;
+    for handoff in current_handoff_paths(&root)? {
+        let handoff_relative = relative_string(&root, &handoff)?;
+        let bytes = fs::read(&handoff)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| ReviewProofError::Utf8(handoff_relative.clone()))?;
+        if !has_candidate_label(text) {
+            if HISTORICAL_HANDOFFS.contains(&handoff_relative.as_str()) {
+                continue;
+            }
+            return Err(ReviewProofError::Format(format!(
+                "nonhistorical handoff has no candidate commit label: {handoff_relative}"
+            )));
+        }
+        let parsed = parse_handoff(text)?;
+        let Some(required_result_path) = parsed.required_result_path else {
+            continue;
+        };
+        configured_handoffs = configured_handoffs
+            .checked_add(1)
+            .ok_or_else(|| ReviewProofError::Format("handoff count overflow".to_owned()))?;
+        let basename = Path::new(&required_result_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                ReviewProofError::Format(format!(
+                    "required result has no UTF-8 basename: {required_result_path}"
+                ))
+            })?
+            .to_owned();
+        if let Some((_, prior_handoff, prior_result)) = bindings.get(&basename) {
+            return Err(ReviewProofError::Format(format!(
+                "staged review basename {basename} is ambiguous between \
+                 {prior_handoff} ({prior_result}) and {handoff_relative} \
+                 ({required_result_path})"
+            )));
+        }
+        bindings.insert(basename, (handoff, handoff_relative, required_result_path));
+    }
+
+    let mut entries = Vec::new();
+    let mut matched_basenames = BTreeSet::new();
+    for (basename, (handoff, handoff_relative, required_result_path)) in &bindings {
+        let staged = staging.join(basename);
+        if !staged.try_exists()? {
+            continue;
+        }
+        matched_basenames.insert(basename.clone());
+        let staged_relative = relative_string(&root, &staged)?;
+        let result = if staged.symlink_metadata()?.file_type().is_file() {
+            verify_staged_review_acceptance(&root, handoff, &staged)
+        } else {
+            Err(ReviewProofError::Format(format!(
+                "staged review is not a regular file: {staged_relative}"
+            )))
+        };
+        match result {
+            Ok(proof) => entries.push(StagedReviewLintEntry {
+                handoff_path: handoff_relative.clone(),
+                required_result_path: required_result_path.clone(),
+                staged_review_path: staged_relative,
+                state: StagedReviewLintState::Ready,
+                proof: Some(proof),
+                error: None,
+            }),
+            Err(error) => entries.push(StagedReviewLintEntry {
+                handoff_path: handoff_relative.clone(),
+                required_result_path: required_result_path.clone(),
+                staged_review_path: staged_relative,
+                state: StagedReviewLintState::Rejected,
+                proof: None,
+                error: Some(error.to_string()),
+            }),
+        }
+    }
+
+    let mut unmatched_staging_files = Vec::new();
+    for entry in fs::read_dir(&staging)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let basename = entry
+            .file_name()
+            .to_str()
+            .ok_or_else(|| ReviewProofError::Utf8("staging directory entry".to_owned()))?
+            .to_owned();
+        if !matched_basenames.contains(&basename) {
+            unmatched_staging_files.push(relative_string(&root, &entry.path())?);
+        }
+    }
+    unmatched_staging_files.sort();
+
+    entries.sort_by(|left, right| left.handoff_path.cmp(&right.handoff_path));
+    let present_staged_reviews = entries.len();
+    let ready_staged_reviews = entries
+        .iter()
+        .filter(|entry| entry.state == StagedReviewLintState::Ready)
+        .count();
+    let rejected_staged_reviews = present_staged_reviews
+        .checked_sub(ready_staged_reviews)
+        .expect("ready staged reviews are a subset of present reviews");
+    let absent_staged_reviews = configured_handoffs
+        .checked_sub(present_staged_reviews)
+        .expect("present staged reviews are a subset of configured handoffs");
+    Ok(StagedReviewLintSuite {
+        schema: "glmaxx.review-staged-acceptance-suite.v1",
+        repository_head: head,
+        staging_directory: staging_relative,
+        configured_handoffs,
+        present_staged_reviews,
+        ready_staged_reviews,
+        rejected_staged_reviews,
+        absent_staged_reviews,
+        unmatched_staging_files,
+        entries,
+        verdict: if rejected_staged_reviews == 0 {
+            "STAGED_CONTENT_PASS_NOT_RECORDED"
+        } else {
+            "STAGED_CONTENT_REJECTED"
+        },
+    })
 }
 
 fn require_staged_acceptance(
@@ -219,22 +396,7 @@ fn verify_review_handoff_with_policy(
 pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof, ReviewProofError> {
     let root = repository_root(repository)?;
     let head = git_text(&root, &["rev-parse", "HEAD"])?;
-    let docs = root.join("docs");
-    let mut candidates = Vec::new();
-    for entry in fs::read_dir(&docs)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| ReviewProofError::Utf8("docs directory entry".to_owned()))?;
-        if name.starts_with("fable-") && name.ends_with("-handoff.md") {
-            candidates.push(entry.path());
-        }
-    }
-    candidates.sort();
+    let candidates = current_handoff_paths(&root)?;
 
     let mut verified_handoffs = Vec::new();
     let mut skipped_historical_handoffs = Vec::new();
@@ -304,6 +466,26 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
         withheld_review_results,
         verdict: "PASS",
     })
+}
+
+fn current_handoff_paths(root: &Path) -> Result<Vec<PathBuf>, ReviewProofError> {
+    let docs = root.join("docs");
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&docs)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| ReviewProofError::Utf8("docs directory entry".to_owned()))?;
+        if name.starts_with("fable-") && name.ends_with("-handoff.md") {
+            candidates.push(entry.path());
+        }
+    }
+    candidates.sort();
+    Ok(candidates)
 }
 
 fn verify_review_artifact(
@@ -844,8 +1026,90 @@ impl From<std::io::Error> for ReviewProofError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    static TEMP_REPOSITORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TempRepository {
+        path: PathBuf,
+    }
+
+    impl TempRepository {
+        fn new(label: &str) -> Self {
+            let id = TEMP_REPOSITORY_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("glmaxx-review-{label}-{}-{id}", std::process::id()));
+            if path.try_exists().unwrap() {
+                fs::remove_dir_all(&path).unwrap();
+            }
+            fs::create_dir_all(path.join("docs/reviews")).unwrap();
+            fs::create_dir_all(path.join("src")).unwrap();
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["init", "--quiet"])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            fs::write(path.join("src/lib.rs"), b"candidate\n").unwrap();
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["add", "src/lib.rs"])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args([
+                    "-c",
+                    "user.name=glmaxx-test",
+                    "-c",
+                    "user.email=glmaxx-test@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "candidate",
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            Self { path }
+        }
+
+        fn head(&self) -> String {
+            git_text(&self.path, &["rev-parse", "HEAD"]).unwrap()
+        }
+
+        fn write_handoff(&self, name: &str, required_result: Option<&str>) {
+            let result = required_result.map_or_else(String::new, |path| {
+                format!("\nRequired result path:\n`{path}`\n")
+            });
+            let text = format!(
+                "# Review\n\nReview candidate commit:\n`{}`\n\n\
+                 Requested acceptance token, only if every blocker and major is resolved:\n\
+                 `example-{name}-accepted`\n{result}\n\
+                 | Input at candidate commit | SHA-256 |\n\
+                 |---|---|\n\
+                 | `src/lib.rs` | `{}` |\n",
+                self.head(),
+                sha256_hex(b"candidate\n")
+            );
+            fs::write(
+                self.path.join(format!("docs/fable-{name}-handoff.md")),
+                text,
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TempRepository {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn modern_handoff() -> String {
         format!(
@@ -1064,6 +1328,74 @@ mod tests {
         )
         .unwrap();
         assert!(require_staged_acceptance(&ready, "example-v1-accepted").is_ok());
+    }
+
+    #[test]
+    fn staged_acceptance_suite_reports_ready_rejected_absent_and_unmatched() {
+        let repository = TempRepository::new("staged-suite");
+        repository.write_handoff("ready", Some("ready-review.md"));
+        repository.write_handoff("rejected", Some("rejected-review.md"));
+        repository.write_handoff("absent", Some("absent-review.md"));
+        repository.write_handoff("legacy-status", None);
+
+        let candidate = repository.head();
+        let input_hash = sha256_hex(b"candidate\n");
+        fs::write(
+            repository.path.join("docs/reviews/ready-review.md"),
+            format!("{candidate}\n{input_hash}\nexample-ready-accepted\n"),
+        )
+        .unwrap();
+        fs::write(
+            repository.path.join("docs/reviews/rejected-review.md"),
+            format!("{candidate}\nexample-rejected-accepted\n"),
+        )
+        .unwrap();
+        fs::write(
+            repository.path.join("docs/reviews/README.md"),
+            "operator-owned inbox\n",
+        )
+        .unwrap();
+
+        let proof =
+            verify_all_staged_review_acceptances(&repository.path, Path::new("docs/reviews"))
+                .unwrap();
+        assert_eq!(proof.configured_handoffs, 3);
+        assert_eq!(proof.present_staged_reviews, 2);
+        assert_eq!(proof.ready_staged_reviews, 1);
+        assert_eq!(proof.rejected_staged_reviews, 1);
+        assert_eq!(proof.absent_staged_reviews, 1);
+        assert_eq!(proof.unmatched_staging_files, ["docs/reviews/README.md"]);
+        assert_eq!(proof.verdict, "STAGED_CONTENT_REJECTED");
+        let rejected = proof
+            .entries
+            .iter()
+            .find(|entry| entry.state == StagedReviewLintState::Rejected)
+            .unwrap();
+        assert!(
+            rejected
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("does not attest"))
+        );
+        let ready = proof
+            .entries
+            .iter()
+            .find(|entry| entry.state == StagedReviewLintState::Ready)
+            .unwrap();
+        assert!(ready.proof.is_some());
+    }
+
+    #[test]
+    fn staged_acceptance_suite_rejects_ambiguous_result_basenames() {
+        let repository = TempRepository::new("staged-ambiguous");
+        repository.write_handoff("first", Some("first/result.md"));
+        repository.write_handoff("second", Some("second/result.md"));
+
+        let error =
+            verify_all_staged_review_acceptances(&repository.path, Path::new("docs/reviews"))
+                .unwrap_err();
+        assert!(matches!(error, ReviewProofError::Format(_)));
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     fn verify_review_artifact_text_for_test(
