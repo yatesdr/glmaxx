@@ -12,9 +12,10 @@ use crate::abi::active_experts_for_grouped;
 use crate::{
     CudaDriver, EXL3_KERNEL_ABI, Exl3Descriptor, Exl3KernelProjection, Fc1Descriptor,
     Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    RankLoadBackend, exl3_trellis_bytes, exl3_workspace_bytes, fc2_grouped_sfa_capacity_bytes,
-    fc2_grouped_workspace_bytes, fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan,
-    grouped_workspace_bytes, validate_descriptor, validate_exl3_descriptor, workspace_bytes,
+    RankLoadBackend, TOP_K, exl3_trellis_bytes, exl3_workspace_bytes,
+    fc2_grouped_sfa_capacity_bytes, fc2_grouped_workspace_bytes, fc2_workspace_bytes,
+    grouped_sfa_capacity_bytes, grouped_sfa_plan, grouped_workspace_bytes, validate_descriptor,
+    validate_exl3_descriptor, workspace_bytes,
 };
 
 unsafe extern "C" {
@@ -120,6 +121,7 @@ unsafe extern "C" {
         total_memory_bytes: *mut u64,
         device_uuid: *mut u8,
     ) -> i32;
+    fn glmaxx_device_memory_info(free_memory_bytes: *mut u64, total_memory_bytes: *mut u64) -> i32;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
     fn glmaxx_pinned_alloc(bytes: u64, pointer: *mut u64) -> i32;
@@ -247,6 +249,28 @@ impl NativeRankContext {
             events: BTreeSet::new(),
             _thread_affine: PhantomData,
         })
+    }
+
+    pub fn free_memory_bytes(&self) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        let mut free_memory_bytes = 0_u64;
+        let mut total_memory_bytes = 0_u64;
+        // SAFETY: both values are valid writable out-parameters and the
+        // owner-thread check ensures the rank's selected CUDA context is
+        // current on this thread.
+        check(unsafe {
+            glmaxx_device_memory_info(
+                std::ptr::from_mut(&mut free_memory_bytes),
+                std::ptr::from_mut(&mut total_memory_bytes),
+            )
+        })?;
+        if free_memory_bytes == 0
+            || total_memory_bytes != self.identity.total_memory_bytes
+            || free_memory_bytes > total_memory_bytes
+        {
+            return Err(KernelError::Topology);
+        }
+        Ok(free_memory_bytes)
     }
 
     fn require_owner(&self) -> Result<(), KernelError> {
@@ -2291,4 +2315,50 @@ pub fn validate_native_exl3_abi(
     logical_n: u32,
 ) -> Result<(), KernelError> {
     validate_native_exl3_library(rows, logical_k, logical_n)
+}
+
+/// Validates the native library routes required by the fixed checkpoint
+/// loader and returns their process-common capability digest.
+///
+/// The digest is deliberately derived from a canonical byte contract rather
+/// than a caller-provided label. A rank-set load cannot claim an EXL3 direct
+/// route unless the linked library reports the exact Rust ABI and workspace
+/// arithmetic for every fixed projection geometry.
+pub fn native_checkpoint_codec_capability_sha256() -> Result<[u8; 32], KernelError> {
+    validate_native_moe_abi(1, TOP_K)?;
+    validate_native_exl3_abi(1, HIDDEN, LOCAL_INTERMEDIATE)?;
+    validate_native_exl3_abi(1, LOCAL_INTERMEDIATE, HIDDEN)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"glmaxx.sm120.checkpoint-codec-capability.v1\0");
+    hasher.update(120_u32.to_le_bytes());
+    hasher.update(4_u32.to_le_bytes());
+    hasher.update(
+        u32::try_from(KERNEL_ABI.len())
+            .expect("fixed kernel ABI length fits u32")
+            .to_le_bytes(),
+    );
+    hasher.update(KERNEL_ABI.as_bytes());
+    hasher.update(
+        u32::try_from(EXL3_KERNEL_ABI.len())
+            .expect("fixed EXL3 ABI length fits u32")
+            .to_le_bytes(),
+    );
+    hasher.update(EXL3_KERNEL_ABI.as_bytes());
+    hasher.update(HIDDEN.to_le_bytes());
+    hasher.update(LOCAL_INTERMEDIATE.to_le_bytes());
+    hasher.update(TOP_K.to_le_bytes());
+    hasher.update([
+        1, // full-file SHA-256 verification
+        1, // NVFP4 block-16 source codec
+        1, // NVFP4 two-dimensional scale source codec
+        1, // EXL3 source codec
+        1, // EXL3 gate projection
+        1, // EXL3 up projection
+        1, // EXL3 down projection
+        1, // BF16 protected row-major tensors
+        1, // FP16 protected row-major tensors
+        1, // FP32 protected row-major tensors
+    ]);
+    Ok(hasher.finalize().into())
 }

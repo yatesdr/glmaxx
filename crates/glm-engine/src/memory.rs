@@ -6,6 +6,7 @@ use glm_cache::{
     PageTableConfig, TARGET_LAYERS,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::step::{MAX_ACTIVE_SEQUENCES, MAX_VERIFIER_ROWS};
 
@@ -237,6 +238,57 @@ pub struct SystemMemoryPlan {
     pub admitted_local_committed_slots: u64,
 }
 
+impl SystemMemoryPlan {
+    pub fn validate(&self) -> Result<(), MemoryPlanError> {
+        if self.schema != "glmaxx.system-memory-plan.v2" || self.ranks.len() != 4 {
+            return Err(MemoryPlanError::Identity);
+        }
+        let inputs = self
+            .ranks
+            .iter()
+            .map(|rank| RankMemoryInput {
+                rank: rank.rank,
+                profile: rank.profile,
+                mtp_enabled: rank.mtp_enabled,
+                measured_usable_hbm_bytes: rank.measured_usable_hbm_bytes,
+                weight_bytes: rank.terms.weights,
+                module_and_context_bytes: rank.terms.modules_and_contexts,
+                graph_resident_bytes: rank.terms.graphs,
+                maximum_prefill_workspace_bytes: rank.terms.maximum_workspace,
+                maximum_verifier_workspace_bytes: rank.terms.maximum_workspace,
+                collective_bytes: rank.terms.collectives,
+                staging_bytes: rank.terms.staging,
+                model_metadata_bytes: rank.terms.model_metadata,
+                page_table_bytes: rank.terms.page_tables,
+                allocator_padding_bytes: rank.terms.allocator_padding,
+                escrow_bytes: rank.terms.escrow,
+                target_committed_slots: rank.target_committed_slots,
+                target_page_slack_slots: rank.target_page_slack_slots,
+                target_tentative_slots: rank.target_tentative_slots,
+                draft_committed_slots: rank.draft_committed_slots,
+                draft_page_slack_slots: rank.draft_page_slack_slots,
+                draft_tentative_slots: rank.draft_tentative_slots,
+            })
+            .collect();
+        let rebuilt = plan_system_memory(inputs)?;
+        if &rebuilt != self {
+            return Err(MemoryPlanError::Identity);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_artifact_bytes(&self) -> Result<Vec<u8>, MemoryPlanError> {
+        self.validate()?;
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(|_| MemoryPlanError::Encoding)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn artifact_sha256(&self) -> Result<[u8; 32], MemoryPlanError> {
+        Ok(Sha256::digest(self.canonical_artifact_bytes()?).into())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CacheArenaLayout {
     pub page_tokens: u64,
@@ -454,6 +506,93 @@ impl ProfileBudgetArtifact {
         }
         Ok(())
     }
+
+    /// Reconstructs the executable memory plan from a completed, measured
+    /// profile-budget artifact.
+    ///
+    /// This prevents checkpoint startup from hashing an arbitrary file and
+    /// calling it a memory plan. The returned plan has independently
+    /// recomputed KV/indexer arithmetic and must match every budgeted rank
+    /// term.
+    pub fn system_memory_plan(&self) -> Result<SystemMemoryPlan, ProfileBudgetError> {
+        self.validate()?;
+        if self.measurement_status != "complete" || !self.conversion_allowed {
+            return Err(ProfileBudgetError::Status);
+        }
+        let inputs = self
+            .ranks
+            .iter()
+            .map(|rank| {
+                let measured_usable_hbm_bytes = rank
+                    .measured_post_context_usable_bytes
+                    .ok_or(ProfileBudgetError::Status)?;
+                Ok(RankMemoryInput {
+                    rank: rank.rank,
+                    profile: ProfileClass::CapacityExl3,
+                    mtp_enabled: true,
+                    measured_usable_hbm_bytes,
+                    weight_bytes: rank.terms.weight_bytes,
+                    module_and_context_bytes: rank.terms.module_and_context_bytes,
+                    graph_resident_bytes: rank.terms.graph_resident_bytes,
+                    maximum_prefill_workspace_bytes: rank.terms.maximum_workspace_bytes,
+                    maximum_verifier_workspace_bytes: rank.terms.maximum_workspace_bytes,
+                    collective_bytes: rank.terms.collective_bytes,
+                    staging_bytes: rank.terms.staging_bytes,
+                    model_metadata_bytes: rank.terms.model_metadata_bytes,
+                    page_table_bytes: rank.terms.target_draft_indexer_page_table_bytes,
+                    allocator_padding_bytes: rank.terms.allocator_padding_bytes,
+                    escrow_bytes: rank.terms.emergency_escrow_bytes,
+                    target_committed_slots: self
+                        .global_capacity
+                        .local_target_committed_slots_per_rank,
+                    target_page_slack_slots: self
+                        .global_capacity
+                        .local_target_page_slack_slots_per_rank,
+                    target_tentative_slots: self
+                        .global_capacity
+                        .local_target_tentative_slots_per_rank,
+                    draft_committed_slots: self
+                        .global_capacity
+                        .local_draft_committed_slots_per_rank,
+                    draft_page_slack_slots: self
+                        .global_capacity
+                        .local_draft_page_slack_slots_per_rank,
+                    draft_tentative_slots: self
+                        .global_capacity
+                        .local_draft_tentative_slots_per_rank,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let plan = plan_system_memory(inputs).map_err(ProfileBudgetError::MemoryPlan)?;
+        for planned in &plan.ranks {
+            let budgeted = self
+                .ranks
+                .iter()
+                .find(|rank| rank.rank == planned.rank)
+                .ok_or(ProfileBudgetError::RankSet)?;
+            if planned.required_bytes != budgeted.required_bytes
+                || planned.terms.weights != budgeted.terms.weight_bytes
+                || planned.terms.modules_and_contexts != budgeted.terms.module_and_context_bytes
+                || planned.terms.graphs != budgeted.terms.graph_resident_bytes
+                || planned.terms.maximum_workspace != budgeted.terms.maximum_workspace_bytes
+                || planned.terms.collectives != budgeted.terms.collective_bytes
+                || planned.terms.staging != budgeted.terms.staging_bytes
+                || planned.terms.target_kv != budgeted.terms.target_kv_committed_and_slack_bytes
+                || planned.terms.target_indexer_keys
+                    != budgeted.terms.target_indexer_key_committed_and_slack_bytes
+                || planned.terms.draft_kv != budgeted.terms.draft_kv_committed_and_slack_bytes
+                || planned.terms.draft_indexer_keys
+                    != budgeted.terms.draft_indexer_key_committed_and_slack_bytes
+                || planned.terms.model_metadata != budgeted.terms.model_metadata_bytes
+                || planned.terms.page_tables != budgeted.terms.target_draft_indexer_page_table_bytes
+                || planned.terms.allocator_padding != budgeted.terms.allocator_padding_bytes
+                || planned.terms.escrow != budgeted.terms.emergency_escrow_bytes
+            {
+                return Err(ProfileBudgetError::Arithmetic(planned.rank));
+            }
+        }
+        Ok(plan)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,6 +604,7 @@ pub enum ProfileBudgetError {
     Status,
     DoesNotFit,
     Overflow,
+    MemoryPlan(MemoryPlanError),
 }
 
 impl fmt::Display for ProfileBudgetError {
@@ -565,6 +705,7 @@ fn page_count(slots: u64) -> Result<u32, MemoryPlanError> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryPlanError {
+    Identity,
     Rank,
     RankCount,
     RankSet,
@@ -576,6 +717,7 @@ pub enum MemoryPlanError {
     DraftCapacity,
     UnexpectedDraft,
     PageAlignment,
+    Encoding,
     Overflow,
     DoesNotFit {
         rank: u8,
@@ -620,6 +762,51 @@ mod tests {
         artifact.measurement_status = "complete".into();
         artifact.conversion_allowed = true;
         assert_eq!(artifact.validate(), Err(ProfileBudgetError::Status));
+    }
+
+    #[test]
+    fn completed_profile_budget_reconstructs_one_exact_system_memory_plan() {
+        let mut artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        artifact.measurement_status = "complete".into();
+        artifact.conversion_allowed = true;
+        artifact.unmeasured_blockers.clear();
+        for rank in &mut artifact.ranks {
+            rank.measured_post_context_usable_bytes = Some(rank.planned_usable_hbm_floor_bytes);
+        }
+
+        let plan = artifact.system_memory_plan().unwrap();
+        plan.validate().unwrap();
+        assert_eq!(plan.schema, "glmaxx.system-memory-plan.v2");
+        assert_eq!(plan.ranks.len(), 4);
+        assert_eq!(plan.admitted_local_committed_slots, 262_144);
+        assert_eq!(plan.cache_arena.target_slots_per_rank, 266_688);
+        assert_eq!(plan.cache_arena.draft_slots_per_rank, 266_688);
+        for (planned, budgeted) in plan.ranks.iter().zip(&artifact.ranks) {
+            assert_eq!(planned.rank, budgeted.rank);
+            assert_eq!(planned.required_bytes, budgeted.required_bytes);
+            assert_eq!(
+                planned.measured_usable_hbm_bytes,
+                budgeted.measured_post_context_usable_bytes.unwrap()
+            );
+        }
+        let bytes = plan.canonical_artifact_bytes().unwrap();
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert_eq!(plan.artifact_sha256(), Ok(Sha256::digest(bytes).into()));
+
+        let mut tampered = plan;
+        tampered.aggregate_required_bytes += 1;
+        assert_eq!(tampered.validate(), Err(MemoryPlanError::Identity));
+    }
+
+    #[test]
+    fn pending_profile_budget_cannot_be_promoted_to_an_executable_memory_plan() {
+        let artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        assert_eq!(
+            artifact.system_memory_plan(),
+            Err(ProfileBudgetError::Status)
+        );
     }
 
     fn input(rank: u8) -> RankMemoryInput {

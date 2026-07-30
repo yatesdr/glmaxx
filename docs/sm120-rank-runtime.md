@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: native binding qualified on cn4; kernel execution, collectives, and
-weight residency remain pending
+Status: native binding qualified on cn4; checkpoint residency command
+prepared but not run; kernel execution and collectives remain pending
 
 ## Boundary
 
@@ -45,13 +45,18 @@ glmaxx_device_bind(device_index,
                    multiprocessor_count,
                    total_memory_bytes,
                    device_uuid[16])
+glmaxx_device_memory_info(free_memory_bytes,
+                          total_memory_bytes)
 ```
 
 The first function wraps `cudaGetDeviceCount`. The second calls
 `cudaSetDevice`, reads `cudaDeviceProp`, and returns only integer properties
 plus the 16-byte CUDA device UUID needed by the Rust startup gate. It does not
 create a stream, allocate memory, enable peer access, load weights, initialize
-collectives, or launch a kernel.
+collectives, or launch a kernel. The third is owner-thread-only and wraps
+`cudaMemGetInfo`; immediately before allocation, each persistent rank rejects
+the load unless its live post-context free bytes cover that rank's validated,
+hash-bound `SystemMemoryPlan`.
 
 Rust hashes the observed identity using SHA-256 over:
 

@@ -25,6 +25,6 @@ mod ffi;
 pub use ffi::{
     Exl3Replay, Fc1BenchmarkConfig, Fc1Timing, GraphReplay, GroupedFc1Timing, NativeDeviceIdentity,
     NativeExl3Fixture, NativeFc1Fixture, NativeFc2Fixture, NativeKernelDriver, NativeRankContext,
-    NativeRankLoadBackend, run_single_expert, validate_native_abi, validate_native_exl3_abi,
-    validate_native_moe_abi,
+    NativeRankLoadBackend, native_checkpoint_codec_capability_sha256, run_single_expert,
+    validate_native_abi, validate_native_exl3_abi, validate_native_moe_abi,
 };

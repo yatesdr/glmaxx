@@ -408,6 +408,21 @@ extern "C" int32_t glmaxx_device_bind(
   return static_cast<int32_t>(status);
 }
 
+extern "C" int32_t glmaxx_device_memory_info(
+    uint64_t* free_memory_bytes, uint64_t* total_memory_bytes) {
+  if (free_memory_bytes == nullptr || total_memory_bytes == nullptr) {
+    return -1;
+  }
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  const cudaError_t status = cudaMemGetInfo(&free_bytes, &total_bytes);
+  if (status == cudaSuccess) {
+    *free_memory_bytes = static_cast<uint64_t>(free_bytes);
+    *total_memory_bytes = static_cast<uint64_t>(total_bytes);
+  }
+  return static_cast<int32_t>(status);
+}
+
 extern "C" int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer) {
   if (bytes == 0 || pointer == nullptr) {
     return -1;

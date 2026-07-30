@@ -1002,6 +1002,19 @@ pub struct RankSetAbortCommand {
 }
 
 impl RankSetAbortCommand {
+    pub fn new(
+        plan: &RankSetLoadPlan,
+        load_attempt_generation: u64,
+    ) -> Result<Self, LoadPlanError> {
+        if load_attempt_generation == 0 {
+            return Err(LoadPlanError::Transition);
+        }
+        Ok(Self {
+            plan_sha256: plan.plan_sha256,
+            load_attempt_generation,
+        })
+    }
+
     #[must_use]
     pub const fn plan_sha256(self) -> [u8; 32] {
         self.plan_sha256
@@ -1058,10 +1071,7 @@ impl<'a> RankSetLoadCoordinator<'a> {
         }
         Ok(Self {
             plan,
-            abort_command: RankSetAbortCommand {
-                plan_sha256: plan.plan_sha256,
-                load_attempt_generation,
-            },
+            abort_command: RankSetAbortCommand::new(plan, load_attempt_generation)?,
             owner_allocation_generations,
             state: RankSetLoadCoordinatorState::Preparing,
             prepared_receipts: [None; RANK_SET_SIZE],
@@ -1616,6 +1626,8 @@ pub enum LoadPlanError {
     Reader,
     Manifest,
     Profile,
+    Capability,
+    Memory,
 }
 
 impl fmt::Display for LoadPlanError {

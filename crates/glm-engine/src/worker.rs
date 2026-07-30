@@ -273,6 +273,27 @@ impl fmt::Display for WeightLoadFailure {
 
 impl std::error::Error for WeightLoadFailure {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightShutdownOutcome {
+    pub plan_sha256: [u8; 32],
+    pub load_attempt_generation: u64,
+    pub cleanup_acknowledgements: [RankWeightCleanupAck; RANK_SET_SIZE],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightShutdownFailure {
+    pub cause: WeightLoadFailureCause,
+    pub cleanup_acknowledgements: Box<[Option<RankWeightCleanupAck>; RANK_SET_SIZE]>,
+}
+
+impl fmt::Display for WeightShutdownFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for WeightShutdownFailure {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MockWorkerFault {
     DivergentOutput { rank: u8, step_id: u64 },
@@ -430,6 +451,15 @@ struct WeightLoadCommand {
     permit: ExclusivePermit,
 }
 
+struct WeightShutdownCommand {
+    plan: Arc<RankSetLoadPlan>,
+    load_attempt_generation: u64,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+    response: SyncSender<Result<WeightShutdownOutcome, WeightShutdownFailure>>,
+    permit: ExclusivePermit,
+}
+
 enum PoolCommand {
     Initialize {
         table: Arc<SequencePageTable>,
@@ -448,6 +478,7 @@ enum PoolCommand {
         permit: ExclusivePermit,
     },
     LoadWeights(WeightLoadCommand),
+    ShutdownWeights(WeightShutdownCommand),
     Execute(DispatchCommand),
 }
 
@@ -771,6 +802,51 @@ impl Tp4WorkerPool {
         })?
     }
 
+    /// Releases one globally adopted rank set and terminates this worker
+    /// generation.
+    ///
+    /// Success is returned only after four rank-exact cleanup
+    /// acknowledgements prove that no resource from the load attempt remains
+    /// live. The generation is terminal on both success and failure so an
+    /// ambiguous or already-released arena can never execute another step.
+    pub fn shutdown_weights(
+        &self,
+        plan: Arc<RankSetLoadPlan>,
+        load_attempt_generation: u64,
+        owner_allocation_generations: [u64; RANK_SET_SIZE],
+        phase_timeout: Duration,
+    ) -> Result<WeightShutdownOutcome, WeightShutdownFailure> {
+        let empty_failure = |cause| WeightShutdownFailure {
+            cause,
+            cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+        };
+        if load_attempt_generation == 0
+            || owner_allocation_generations.contains(&0)
+            || phase_timeout.is_zero()
+        {
+            return Err(empty_failure(WeightLoadFailureCause::Config));
+        }
+        let permit = self
+            .try_reserve_exclusive()
+            .map_err(|()| empty_failure(WeightLoadFailureCause::Saturated))?;
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or_else(|| empty_failure(WeightLoadFailureCause::Closed))?
+            .send(PoolCommand::ShutdownWeights(WeightShutdownCommand {
+                plan,
+                load_attempt_generation,
+                owner_allocation_generations,
+                phase_timeout,
+                response,
+                permit,
+            }))
+            .map_err(|_| empty_failure(WeightLoadFailureCause::Closed))?;
+        receiver
+            .recv()
+            .map_err(|_| empty_failure(WeightLoadFailureCause::Closed))?
+    }
+
     #[must_use]
     pub fn outstanding(&self) -> usize {
         self.outstanding
@@ -928,7 +1004,7 @@ fn dispatch_loop(
     let mut initialized = false;
     let mut weights_loaded = false;
     while let Ok(command) = receiver.recv() {
-        let (failed, terminal) = match command {
+        let terminal = match command {
             PoolCommand::Initialize {
                 table,
                 generation,
@@ -944,7 +1020,7 @@ fn dispatch_loop(
                 let failed = result.is_err();
                 drop(permit);
                 let _ = response.send(result);
-                (failed, failed)
+                failed
             }
             PoolCommand::ApplyDelta {
                 delta,
@@ -959,7 +1035,7 @@ fn dispatch_loop(
                 let failed = result.is_err();
                 drop(permit);
                 let _ = response.send(result);
-                (failed, failed)
+                failed
             }
             PoolCommand::CheckpointDeviceIdentities {
                 phase_timeout,
@@ -970,7 +1046,7 @@ fn dispatch_loop(
                 let failed = result.is_err();
                 drop(permit);
                 let _ = response.send(result);
-                (failed, failed)
+                failed
             }
             PoolCommand::LoadWeights(command) => {
                 let WeightLoadCommand {
@@ -1000,7 +1076,37 @@ fn dispatch_loop(
                 let failed = result.is_err();
                 drop(permit);
                 let _ = response.send(result);
-                (failed, failed)
+                failed
+            }
+            PoolCommand::ShutdownWeights(command) => {
+                let WeightShutdownCommand {
+                    plan,
+                    load_attempt_generation,
+                    owner_allocation_generations,
+                    phase_timeout,
+                    response,
+                    permit,
+                } = command;
+                let result = if weights_loaded {
+                    shutdown_rank_weights(
+                        &rank_senders,
+                        &plan,
+                        load_attempt_generation,
+                        owner_allocation_generations,
+                        phase_timeout,
+                    )
+                } else {
+                    Err(WeightShutdownFailure {
+                        cause: WeightLoadFailureCause::Coordinator(LoadPlanError::Transition),
+                        cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+                    })
+                };
+                weights_loaded = false;
+                drop(permit);
+                let _ = response.send(result);
+                // A normal teardown deliberately retires the worker
+                // generation; a teardown failure is equally terminal.
+                true
             }
             PoolCommand::Execute(command) => {
                 let DispatchCommand {
@@ -1024,13 +1130,13 @@ fn dispatch_loop(
                 drop(permit);
                 let failed = result.is_err();
                 let _ = response.send(result);
-                (failed, failed)
+                failed
             }
         };
         if terminal {
-            debug_assert!(failed);
             // Any rank, mirror, backend, or consensus failure is fatal for
-            // this worker generation.
+            // this worker generation. A successful weight teardown also
+            // retires the generation by contract.
             break;
         }
     }
@@ -1628,6 +1734,40 @@ fn cleanup_rank_weights(
         });
     }
     (acknowledgements, cleanup_failure)
+}
+
+fn shutdown_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    plan: &RankSetLoadPlan,
+    load_attempt_generation: u64,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> Result<WeightShutdownOutcome, WeightShutdownFailure> {
+    let command = RankSetAbortCommand::new(plan, load_attempt_generation).map_err(|error| {
+        WeightShutdownFailure {
+            cause: WeightLoadFailureCause::Coordinator(error),
+            cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+        }
+    })?;
+    let (cleanup_acknowledgements, cleanup_failure) = cleanup_rank_weights(
+        rank_senders,
+        command,
+        owner_allocation_generations,
+        phase_timeout,
+    );
+    if let Some(cause) = cleanup_failure {
+        return Err(WeightShutdownFailure {
+            cause,
+            cleanup_acknowledgements: Box::new(cleanup_acknowledgements),
+        });
+    }
+    let cleanup_acknowledgements = cleanup_acknowledgements
+        .map(|acknowledgement| acknowledgement.expect("complete cleanup was validated"));
+    Ok(WeightShutdownOutcome {
+        plan_sha256: plan.plan_sha256(),
+        load_attempt_generation,
+        cleanup_acknowledgements,
+    })
 }
 
 fn collect_rank_messages<T>(
@@ -3044,6 +3184,98 @@ mod tests {
                 .step_id,
             1
         );
+    }
+
+    #[test]
+    fn successful_weight_shutdown_requires_four_exact_acks_and_retires_generation() {
+        let (pool, states, cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+            phase: None,
+            cleanup_rank: None,
+            delayed_prepare: None,
+        });
+        let plan = Arc::new(weight_load_plan());
+        let owner_generations = [41, 42, 43, 44];
+        pool.load_weights(
+            Arc::clone(&plan),
+            17,
+            owner_generations,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        let outcome = pool
+            .shutdown_weights(
+                Arc::clone(&plan),
+                17,
+                owner_generations,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(outcome.plan_sha256, plan.plan_sha256());
+        assert_eq!(outcome.load_attempt_generation, 17);
+        for rank in 0..RANK_SET_SIZE {
+            let acknowledgement = outcome.cleanup_acknowledgements[rank];
+            assert_eq!(usize::from(acknowledgement.rank()), rank);
+            assert_eq!(acknowledgement.plan_sha256(), plan.plan_sha256());
+            assert_eq!(acknowledgement.load_attempt_generation(), 17);
+            assert_eq!(
+                acknowledgement.owner_allocation_generation(),
+                owner_generations[rank]
+            );
+            assert_eq!(cleanup_counts[rank].load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(
+            *states.lock().unwrap(),
+            [MockWeightState::Aborted; RANK_SET_SIZE]
+        );
+        drop(pool);
+    }
+
+    #[test]
+    fn weight_shutdown_cleanup_failure_is_explicit_and_terminal() {
+        for cleanup_rank in 0..u8::try_from(RANK_SET_SIZE).unwrap() {
+            let (pool, states, cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+                phase: None,
+                cleanup_rank: Some(cleanup_rank),
+                delayed_prepare: None,
+            });
+            let plan = Arc::new(weight_load_plan());
+            let owner_generations = [41, 42, 43, 44];
+            pool.load_weights(
+                Arc::clone(&plan),
+                17,
+                owner_generations,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+
+            let failure = pool
+                .shutdown_weights(plan, 17, owner_generations, Duration::from_secs(1))
+                .unwrap_err();
+            assert_eq!(
+                failure.cause,
+                WeightLoadFailureCause::Rank {
+                    rank: cleanup_rank,
+                    phase: RankWeightPhase::Abort,
+                    error: LoadPlanError::Writer,
+                }
+            );
+            for rank in 0..RANK_SET_SIZE {
+                assert_eq!(
+                    failure.cleanup_acknowledgements[rank].is_some(),
+                    rank != usize::from(cleanup_rank)
+                );
+                assert_eq!(
+                    cleanup_counts[rank].load(Ordering::SeqCst),
+                    usize::from(rank != usize::from(cleanup_rank))
+                );
+            }
+            assert_eq!(
+                states.lock().unwrap()[usize::from(cleanup_rank)],
+                MockWeightState::Resident
+            );
+            drop(pool);
+        }
     }
 
     #[test]

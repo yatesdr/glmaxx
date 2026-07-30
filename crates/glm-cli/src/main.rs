@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
+#[cfg(feature = "cuda-ffi")]
+use std::time::{Duration, Instant};
 
 use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
@@ -23,6 +25,11 @@ use glm_engine::{
     ProfileBudgetArtifact, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
     StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, Tp4WorkerPool,
     plan_system_memory,
+};
+#[cfg(feature = "cuda-ffi")]
+use glm_engine::{
+    LoadProfile, LoadVerificationMode, NativeCheckpointStartupConfig, READER_CHUNK_BYTES,
+    load_native_checkpoint,
 };
 use glm_format::{
     CUTLASS_COMMIT, Codec, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION, Exl3Metadata, Exl3Projection,
@@ -295,6 +302,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-rank-bind-smoke") => gpu_rank_bind_smoke()?,
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-checkpoint-load-smoke") => {
+            if arguments.len() > 6 {
+                return Err(
+                    "gpu-checkpoint-load-smoke accepts rank-set-dir, profile-budget-v0.json, \
+                     evidence-dir, and optional phase-timeout-seconds"
+                        .into(),
+                );
+            }
+            let rank_set = arguments
+                .get(2)
+                .ok_or("gpu-checkpoint-load-smoke requires the native rank-set directory")?;
+            let profile_budget = arguments
+                .get(3)
+                .ok_or("gpu-checkpoint-load-smoke requires profile-budget-v0.json")?;
+            let evidence = arguments
+                .get(4)
+                .ok_or("gpu-checkpoint-load-smoke requires an external empty evidence directory")?;
+            let phase_timeout_seconds = arguments
+                .get(5)
+                .map(|value| value.parse::<u64>())
+                .transpose()?
+                .unwrap_or(900);
+            gpu_checkpoint_load_smoke(
+                Path::new(rank_set),
+                Path::new(profile_budget),
+                Path::new(evidence),
+                phase_timeout_seconds,
+            )?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-matrix") => {
             let path = arguments
                 .get(2)
@@ -338,7 +375,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -501,10 +538,10 @@ struct NativeRankSetProof {
     verdict: &'static str,
 }
 
-fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std::error::Error>> {
+fn native_rank_paths(directory: &Path) -> Result<[PathBuf; 4], Box<dyn std::error::Error>> {
     let metadata = directory.symlink_metadata()?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err("native-rank-proof requires a real rank-set directory".into());
+        return Err("native rank set requires a real directory".into());
     }
     let expected_names: BTreeSet<String> = (0..4).map(|rank| format!("rank-{rank}.g5n")).collect();
     let mut actual_names = BTreeSet::new();
@@ -523,8 +560,13 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
         .into());
     }
 
-    let paths: [PathBuf; 4] =
-        std::array::from_fn(|rank| directory.join(format!("rank-{rank}.g5n")));
+    Ok(std::array::from_fn(|rank| {
+        directory.join(format!("rank-{rank}.g5n"))
+    }))
+}
+
+fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std::error::Error>> {
+    let paths = native_rank_paths(directory)?;
     let readers: Vec<NativeRankReader> = paths
         .iter()
         .map(NativeRankReader::open)
@@ -622,6 +664,247 @@ fn native_rank_proof(directory: &Path) -> Result<NativeRankSetProof, Box<dyn std
         ranks,
         verdict: "NATIVE_RANK_SET_PASS",
     })
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct NativeCheckpointLoadRankReport {
+    rank: u8,
+    device_identity_sha256: String,
+    file_uuid: String,
+    manifest_sha256: String,
+    descriptor_sha256: String,
+    payload_sha256: String,
+    tensor_contract_sha256: String,
+    tensor_count: u32,
+    file_payload_bytes: u64,
+    device_weight_arena_bytes: u64,
+    device_metadata_arena_bytes: u64,
+    arena_layout_sha256: String,
+    required_hbm_bytes: u64,
+    owner_allocation_generation: u64,
+    verification_evidence_sha256: String,
+    verified_file_payload_bytes: u64,
+    uploaded_plane_bytes: u64,
+    finalized_adopted_rank_set_sha256: String,
+    cleanup_load_attempt_generation: u64,
+    cleanup_acknowledged: bool,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct NativeCheckpointLoadSmokeReport {
+    schema: &'static str,
+    verdict: &'static str,
+    source_commit: String,
+    executable_sha256: String,
+    rank_set_directory: String,
+    profile_budget_path: String,
+    profile_budget_sha256: String,
+    memory_plan_artifact: &'static str,
+    memory_plan_sha256: String,
+    operation_manifest_sha256: String,
+    codec_capability_sha256: String,
+    profile: &'static str,
+    verification_mode: &'static str,
+    plan_sha256: String,
+    conversion_uuid: String,
+    tensor_count_per_rank: u32,
+    staging_slot_bytes: u32,
+    staging_slots_per_rank: u16,
+    load_attempt_generation: u64,
+    adopted_rank_set_sha256: String,
+    rank_set_receipt_sha256: String,
+    phase_timeout_seconds: u64,
+    startup_and_load_elapsed_nanoseconds: u128,
+    shutdown_elapsed_nanoseconds: u128,
+    total_elapsed_nanoseconds: u128,
+    full_payload_sha256_verified: bool,
+    full_arena_readback_verified: bool,
+    model_kernel_launched: bool,
+    ranks: Vec<NativeCheckpointLoadRankReport>,
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_checkpoint_load_smoke(
+    rank_set_directory: &Path,
+    profile_budget_path: &Path,
+    evidence_directory: &Path,
+    phase_timeout_seconds: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !(1..=3_600).contains(&phase_timeout_seconds) {
+        return Err("phase timeout must be in 1..=3600 seconds".into());
+    }
+    validate_empty_external_gpu_directory(evidence_directory, "gpu-checkpoint-load-smoke")?;
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if rank_set_directory.canonicalize()?.starts_with(&repository) {
+        return Err("native checkpoint weights must be outside the Git repository".into());
+    }
+    let source_commit = option_env!("GLMAXX_SOURCE_COMMIT")
+        .ok_or("binary lacks GLMAXX_SOURCE_COMMIT build provenance")?;
+    validate_conversion_commit(source_commit)?;
+
+    let rank_files = native_rank_paths(rank_set_directory)?;
+    let readers: Vec<NativeRankReader> = rank_files
+        .iter()
+        .map(NativeRankReader::open)
+        .collect::<Result<_, _>>()?;
+    let readers: [NativeRankReader; 4] = readers
+        .try_into()
+        .map_err(|_| "native rank-set reader count was not four")?;
+    NativeRankReader::validate_rank_set([&readers[0], &readers[1], &readers[2], &readers[3]])?;
+
+    let profile_budget_bytes = read_bounded_regular(profile_budget_path, 4 * 1024 * 1024)?;
+    let profile_budget_sha256 = sha256(&profile_budget_bytes);
+    let profile_budget: ProfileBudgetArtifact = serde_json::from_slice(&profile_budget_bytes)?;
+    let system_memory_plan = profile_budget.system_memory_plan()?;
+    let memory_plan_bytes = system_memory_plan.canonical_artifact_bytes()?;
+    let memory_plan_sha256 = system_memory_plan.artifact_sha256()?;
+
+    let operation_manifest_sha256 = sha256(&operation_manifest_json()?);
+    for reader in &readers {
+        let manifest = reader
+            .validated_manifest()
+            .ok_or("native rank file lacks the production manifest")?;
+        if manifest.profile != RankWeightProfile::CapacityExl3
+            || manifest.profile_budget_sha256 != profile_budget_sha256
+            || manifest.operation_manifest_sha256 != operation_manifest_sha256
+        {
+            return Err(format!(
+                "rank {} does not bind the supplied completed budget and compiled operation manifest",
+                reader.rank
+            )
+            .into());
+        }
+    }
+
+    let codec_capability_sha256 = glm_cuda::native_checkpoint_codec_capability_sha256()?;
+    let executable = env::current_exe()?;
+    let executable_bytes = read_bounded_regular(&executable, GIB)?;
+    let executable_sha256 = sha256(&executable_bytes);
+    fs::write(
+        evidence_directory.join("memory-plan.json"),
+        &memory_plan_bytes,
+    )?;
+
+    let phase_timeout = Duration::from_secs(phase_timeout_seconds);
+    let load_attempt_generation = 1;
+    let owner_allocation_generations = [1, 2, 3, 4];
+    let required_hbm_bytes: [u64; 4] = system_memory_plan
+        .ranks
+        .iter()
+        .map(|rank| rank.required_bytes)
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|_| "validated memory plan did not contain four ranks")?;
+    let total_started = Instant::now();
+    let load_started = Instant::now();
+    let loaded = load_native_checkpoint(
+        rank_files,
+        NativeCheckpointStartupConfig {
+            maximum_outstanding: 1,
+            verification_mode: LoadVerificationMode::FullSha256,
+            profile: LoadProfile::CapacityExl3,
+            memory_plan: system_memory_plan,
+            codec_capability_sha256,
+            operation_manifest_sha256,
+            profile_budget_sha256,
+            staging_slot_bytes: READER_CHUNK_BYTES,
+            staging_slots_per_rank: 2,
+            software_provenance_sha256: executable_sha256,
+            load_attempt_generation,
+            owner_allocation_generations,
+            phase_timeout,
+        },
+    )?;
+    let startup_and_load_elapsed_nanoseconds = load_started.elapsed().as_nanos();
+
+    let plan_sha256 = loaded.plan().plan_sha256();
+    let plan_header = loaded.plan().header;
+    let plan_ranks = loaded.plan().ranks;
+    let load_outcome = loaded.load_outcome().clone();
+    let device_identity_sha256 = loaded.device_identity_sha256();
+    let shutdown_started = Instant::now();
+    let shutdown = loaded.shutdown(phase_timeout)?;
+    let shutdown_elapsed_nanoseconds = shutdown_started.elapsed().as_nanos();
+
+    let ranks = (0..4)
+        .map(|rank| {
+            let entry = plan_ranks[rank];
+            let prepared = load_outcome.prepared_receipts[rank];
+            let finalized = load_outcome.finalize_acknowledgements[rank];
+            let cleanup = shutdown.cleanup_acknowledgements[rank];
+            NativeCheckpointLoadRankReport {
+                rank: u8::try_from(rank).expect("four ranks fit u8"),
+                device_identity_sha256: hex(&device_identity_sha256[rank]),
+                file_uuid: hex(&entry.file_uuid),
+                manifest_sha256: hex(&entry.manifest_sha256),
+                descriptor_sha256: hex(&entry.descriptor_sha256),
+                payload_sha256: hex(&entry.payload_sha256),
+                tensor_contract_sha256: hex(&entry.tensor_contract_sha256),
+                tensor_count: entry.tensor_count,
+                file_payload_bytes: entry.file_payload_bytes,
+                device_weight_arena_bytes: entry.device_weight_arena_bytes,
+                device_metadata_arena_bytes: entry.device_metadata_arena_bytes,
+                arena_layout_sha256: hex(&entry.arena_layout_sha256),
+                required_hbm_bytes: required_hbm_bytes[rank],
+                owner_allocation_generation: finalized.owner_allocation_generation(),
+                verification_evidence_sha256: hex(&prepared.verification_evidence_sha256),
+                verified_file_payload_bytes: prepared.verified_file_payload_bytes,
+                uploaded_plane_bytes: prepared.uploaded_plane_metadata_bytes,
+                finalized_adopted_rank_set_sha256: hex(&finalized.adopted_rank_set_sha256()),
+                cleanup_load_attempt_generation: cleanup.load_attempt_generation(),
+                cleanup_acknowledged: cleanup.rank() == entry.rank
+                    && cleanup.plan_sha256() == plan_sha256
+                    && cleanup.owner_allocation_generation()
+                        == finalized.owner_allocation_generation(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if ranks.iter().any(|rank| !rank.cleanup_acknowledged) {
+        return Err("rank-exact cleanup acknowledgement validation failed".into());
+    }
+
+    let report = NativeCheckpointLoadSmokeReport {
+        schema: "glmaxx.sm120-tp4-native-checkpoint-load-smoke.v1",
+        verdict: "SM120_TP4_CHECKPOINT_LOAD_PASS",
+        source_commit: source_commit.to_owned(),
+        executable_sha256: hex(&executable_sha256),
+        rank_set_directory: rank_set_directory.canonicalize()?.display().to_string(),
+        profile_budget_path: profile_budget_path.canonicalize()?.display().to_string(),
+        profile_budget_sha256: hex(&profile_budget_sha256),
+        memory_plan_artifact: "memory-plan.json",
+        memory_plan_sha256: hex(&memory_plan_sha256),
+        operation_manifest_sha256: hex(&operation_manifest_sha256),
+        codec_capability_sha256: hex(&codec_capability_sha256),
+        profile: "capacity-exl3",
+        verification_mode: "full-sha256",
+        plan_sha256: hex(&plan_sha256),
+        conversion_uuid: hex(&plan_header.conversion_uuid),
+        tensor_count_per_rank: plan_header.tensor_count,
+        staging_slot_bytes: plan_header.staging_slot_bytes,
+        staging_slots_per_rank: plan_header.staging_slots_per_rank,
+        load_attempt_generation,
+        adopted_rank_set_sha256: hex(&load_outcome.adopted_receipt.adopted_rank_set_sha256()),
+        rank_set_receipt_sha256: hex(&load_outcome.adopted_receipt.rank_set_receipt_sha256()),
+        phase_timeout_seconds,
+        startup_and_load_elapsed_nanoseconds,
+        shutdown_elapsed_nanoseconds,
+        total_elapsed_nanoseconds: total_started.elapsed().as_nanos(),
+        full_payload_sha256_verified: true,
+        full_arena_readback_verified: true,
+        model_kernel_launched: false,
+        ranks,
+    };
+    let mut report_bytes = serde_json::to_vec_pretty(&report)?;
+    report_bytes.push(b'\n');
+    fs::write(evidence_directory.join("summary.json"), report_bytes)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn convert_pinned_exl3(
