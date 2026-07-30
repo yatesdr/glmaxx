@@ -79,6 +79,12 @@ Accepted tentative target/draft pages are now committed in place. Rejected
 or removed IDs enter an owner-rank quarantine bound to one successor
 generation and return to the allocator only after all four exact rank
 receipts.
+The fixed-capacity successor design is pinned in
+`docs/fixed-page-transaction-v1.md`. It derives an exact 174-page edit bound
+for C64/3,072-row prefill, a 128-page bound for MTP6 verification, separates
+large admission/removal from the compute journal, and makes the standalone
+four-rank delta command the cache-only ABI. It is a design candidate, not an
+implementation or performance result.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
