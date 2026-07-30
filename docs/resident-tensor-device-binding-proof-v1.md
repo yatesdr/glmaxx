@@ -3,7 +3,7 @@
 Date: 2026-07-30
 
 Implementation candidate:
-`e197500180614e90b1a2a67672516ee5ad6ecdf0`
+`843f4ae4cef2a59b7b110efc208e4290d8d99255`
 
 Status: `HOST_PROOF_COMPLETE_REVIEW_AND_SM120_EXECUTION_PENDING`
 
@@ -53,6 +53,14 @@ The arena records the plan digest and owner generation from the permit. Its
 layout slice is immutable and shared with the plan whose canonical hash
 already covers every 64-byte `TensorArenaEntry`.
 
+Immediately after global adoption and before the rank publishes finalize
+success, its persistent owner thread resolves all 59,585 tensor IDs and
+cross-checks every binding against both the native descriptor and validated
+manifest semantic. This covers tensor ID, role, codec, flags, required
+alignment, and metadata/primary/auxiliary byte counts. A mismatch releases
+the arena and fails the common finalize transaction; a cleanup failure is
+terminal and cannot become a finalize acknowledgement.
+
 ## Checked span construction
 
 `tensor_binding(tensor_id)` indexes the immutable slice and requires the
@@ -74,7 +82,9 @@ usable storage. The returned binding also retains the authenticated role ID,
 codec ID, descriptor flags, and alignment.
 
 Only the globally adopted type can perform this resolution. Quarantined and
-acknowledged types expose neither raw arena bases nor tensor bindings.
+acknowledged types expose neither raw arena bases nor tensor bindings. The
+device-span types and resolver are crate-private; no downstream crate can
+retain or manufacture one through the public engine API.
 
 ## CPU fault proof
 
@@ -93,6 +103,9 @@ The deterministic fake CUDA backend proves:
 - the post-construction plan API exposes no external mutable header, rank, or
   tensor-layout field.
 
+The `cuda-ffi` build also compiles the owner-thread all-tensor validation path
+with warnings denied.
+
 At the candidate above:
 
 ```text
@@ -103,6 +116,8 @@ passes 92 tests with zero failures, and:
 
 ```text
 cargo clippy --offline -p glm-engine --all-targets -- -D warnings
+GLMAXX_KERNEL_LIB_DIR=/tmp cargo clippy --offline -p glm-engine \
+  --features cuda-ffi --all-targets -- -D warnings
 cargo fmt --all -- --check
 git diff --check
 ```
