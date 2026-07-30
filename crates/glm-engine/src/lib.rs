@@ -4,6 +4,7 @@
 //! plan, graph-admission, and memory-accounting contracts that the coordinator
 //! must prove before any of the four device workers may enter a step.
 
+mod checkpoint_load;
 mod graph;
 mod input;
 mod memory;
@@ -13,6 +14,14 @@ mod step;
 mod weight;
 mod worker;
 
+pub use checkpoint_load::{
+    AdoptedRankSetReceipt, AdoptionAcknowledgement, AdoptionCommand, LOAD_PLAN_HEADER_BYTES,
+    LoadPlanError, LoadProfile, LoadVerificationMode, PREPARED_RANK_RECEIPT_BYTES,
+    PlannedRankTensorSink, PreparedRankReceipt, PreparedRankSet, QuarantinedArenaWriter,
+    RANK_LOAD_ENTRY_BYTES, RANK_SET_SIZE, READER_CHUNK_BYTES, RankArenaLifecycle, RankArenaState,
+    RankArenaUploadSummary, RankLoadEntry, RankSetLoadPlan, RankSetLoadPlanHeader,
+    TENSOR_ARENA_ENTRY_BYTES, TensorArenaEntry, WeightArenaExecutionPermit, arena_layout_sha256,
+};
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use input::{
     STEP_INPUT_SCHEMA, SequenceStepInput, StepInput, StepInputError, StepSampling, StepSamplingKind,
