@@ -387,8 +387,23 @@ impl RankExecutor for NativeCheckpointRankExecutor {
         };
         match local.adopt(adopted) {
             Ok(arena) => {
-                self.weights = NativeWeightState::Resident(arena);
-                Ok(())
+                if let Err(validation_error) =
+                    validate_resident_tensor_bindings(&arena, &self.reader)
+                {
+                    match arena.shutdown() {
+                        Ok(()) => {
+                            self.weights = NativeWeightState::Vacant;
+                            Err(validation_error)
+                        }
+                        Err(cleanup_error) => {
+                            self.weights = NativeWeightState::CleanupFailed;
+                            Err(map_kernel_error(cleanup_error))
+                        }
+                    }
+                } else {
+                    self.weights = NativeWeightState::Resident(arena);
+                    Ok(())
+                }
             }
             Err(error) => {
                 // A failed consuming adoption releases the quarantined arena.
@@ -555,6 +570,50 @@ pub fn load_native_checkpoint(
         load_outcome,
         device_identity_sha256,
     })
+}
+
+fn validate_resident_tensor_bindings(
+    arena: &CudaWeightArena<NativeRankLoadBackend>,
+    reader: &NativeRankReader,
+) -> Result<(), LoadPlanError> {
+    let manifest = reader.validated_manifest().ok_or(LoadPlanError::Manifest)?;
+    if arena.rank() != u8::try_from(reader.rank).map_err(|_| LoadPlanError::Rank)?
+        || arena.tensor_count() != reader.tensor_count()
+        || manifest.tensor_semantics.len() != reader.tensor_count()
+    {
+        return Err(LoadPlanError::Tensor);
+    }
+    for (index, (descriptor, semantic)) in reader
+        .descriptors
+        .iter()
+        .zip(&manifest.tensor_semantics)
+        .enumerate()
+    {
+        let tensor_id = u32::try_from(index).map_err(|_| LoadPlanError::Overflow)?;
+        let binding = arena.tensor_binding(tensor_id)?;
+        let primary = binding.primary();
+        let metadata = binding.metadata();
+        let auxiliary = binding.auxiliary();
+        if descriptor.tensor_id != tensor_id
+            || semantic.tensor_id != tensor_id
+            || binding.tensor_id() != tensor_id
+            || descriptor.role_id != semantic.role_id
+            || binding.role_id() != descriptor.role_id
+            || descriptor.codec_id != semantic.codec_id
+            || binding.codec_id() != descriptor.codec_id
+            || binding.descriptor_flags() != u32::from(descriptor.flags)
+            || binding.required_device_alignment() != descriptor.payload_alignment
+            || primary.pointer() == 0
+            || primary.bytes() != descriptor.payload_bytes
+            || metadata.map(|span| span.bytes()).unwrap_or(0) != descriptor.codec_metadata_bytes
+            || auxiliary.map(|span| span.bytes()).unwrap_or(0) != descriptor.aux_bytes
+            || metadata.is_some_and(|span| span.pointer() == 0)
+            || auxiliary.is_some_and(|span| span.pointer() == 0)
+        {
+            return Err(LoadPlanError::Tensor);
+        }
+    }
+    Ok(())
 }
 
 fn validate_checkpoint_arena_budget(

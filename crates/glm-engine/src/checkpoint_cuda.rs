@@ -832,26 +832,29 @@ pub struct CudaWeightArena<B: RankLoadBackend> {
     resources: CudaArenaResources<B>,
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DeviceArenaSpan {
+pub(crate) struct DeviceArenaSpan {
     pointer: u64,
     bytes: u64,
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 impl DeviceArenaSpan {
     #[must_use]
-    pub const fn pointer(self) -> u64 {
+    pub(crate) const fn pointer(self) -> u64 {
         self.pointer
     }
 
     #[must_use]
-    pub const fn bytes(self) -> u64 {
+    pub(crate) const fn bytes(self) -> u64 {
         self.bytes
     }
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DeviceTensorBinding {
+pub(crate) struct DeviceTensorBinding {
     tensor_id: u32,
     role_id: u16,
     codec_id: u16,
@@ -862,44 +865,45 @@ pub struct DeviceTensorBinding {
     auxiliary: Option<DeviceArenaSpan>,
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 impl DeviceTensorBinding {
     #[must_use]
-    pub const fn tensor_id(self) -> u32 {
+    pub(crate) const fn tensor_id(self) -> u32 {
         self.tensor_id
     }
 
     #[must_use]
-    pub const fn role_id(self) -> u16 {
+    pub(crate) const fn role_id(self) -> u16 {
         self.role_id
     }
 
     #[must_use]
-    pub const fn codec_id(self) -> u16 {
+    pub(crate) const fn codec_id(self) -> u16 {
         self.codec_id
     }
 
     #[must_use]
-    pub const fn descriptor_flags(self) -> u32 {
+    pub(crate) const fn descriptor_flags(self) -> u32 {
         self.descriptor_flags
     }
 
     #[must_use]
-    pub const fn required_device_alignment(self) -> u32 {
+    pub(crate) const fn required_device_alignment(self) -> u32 {
         self.required_device_alignment
     }
 
     #[must_use]
-    pub const fn metadata(self) -> Option<DeviceArenaSpan> {
+    pub(crate) const fn metadata(self) -> Option<DeviceArenaSpan> {
         self.metadata
     }
 
     #[must_use]
-    pub const fn primary(self) -> DeviceArenaSpan {
+    pub(crate) const fn primary(self) -> DeviceArenaSpan {
         self.primary
     }
 
     #[must_use]
-    pub const fn auxiliary(self) -> Option<DeviceArenaSpan> {
+    pub(crate) const fn auxiliary(self) -> Option<DeviceArenaSpan> {
         self.auxiliary
     }
 }
@@ -911,6 +915,7 @@ impl<B: RankLoadBackend> CudaWeightArena<B> {
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "cuda-ffi"))]
     fn weight_pointer(&self) -> u64 {
         self.resources
             .weight_pointer
@@ -918,6 +923,7 @@ impl<B: RankLoadBackend> CudaWeightArena<B> {
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "cuda-ffi"))]
     fn metadata_pointer(&self) -> u64 {
         self.resources
             .metadata_pointer
@@ -954,7 +960,11 @@ impl<B: RankLoadBackend> CudaWeightArena<B> {
     /// The layout is copied from the validated rank-set plan before global
     /// adoption. No name lookup, caller-provided offset, or rank-local codec
     /// choice participates in this operation.
-    pub fn tensor_binding(&self, tensor_id: u32) -> Result<DeviceTensorBinding, LoadPlanError> {
+    #[cfg(any(test, feature = "cuda-ffi"))]
+    pub(crate) fn tensor_binding(
+        &self,
+        tensor_id: u32,
+    ) -> Result<DeviceTensorBinding, LoadPlanError> {
         let entry = self
             .tensor_layout
             .get(usize::try_from(tensor_id).map_err(|_| LoadPlanError::Overflow)?)
@@ -1066,6 +1076,7 @@ fn validate_relative_span(
     Ok(())
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 fn resolve_required_span(
     base: u64,
     capacity: u64,
@@ -1081,6 +1092,7 @@ fn resolve_required_span(
     Ok(DeviceArenaSpan { pointer, bytes })
 }
 
+#[cfg(any(test, feature = "cuda-ffi"))]
 fn resolve_optional_span(
     base: u64,
     capacity: u64,
@@ -1686,6 +1698,7 @@ mod tests {
         assert_eq!(tensor.codec_id(), 0x0004);
         assert_eq!(tensor.descriptor_flags(), 7);
         assert_eq!(tensor.required_device_alignment(), 256);
+        assert_eq!(tensor.primary().bytes(), 768);
         assert_eq!(
             tensor.metadata(),
             Some(DeviceArenaSpan {
