@@ -2,6 +2,9 @@
 
 Date: 2026-07-30
 
+Critical-path ordering for implementation unblock:
+`docs/fable-critical-path-review-order-20260730.md`
+
 Latest candidate included in the enumeration:
 `59f70da4dbeca8a5d542f3e5947002d3ee975bdb`
 
