@@ -65,7 +65,9 @@ The latest local run at durable journal transaction sequence implementation
 
 - `scripts/local-checks.sh`: 268 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 62 then-present candidate-based review-handoff hash proofs;
+  and all 62 then-present candidate-based review-handoff hash proofs; the new
+  durable journal transaction-sequence handoff separately passes
+  `review-proof`;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -432,6 +434,7 @@ verdicts:
 | backend runtime readiness and synchronous pre-ready cleanup | `5ff3d48` | `docs/fable-backend-runtime-readiness-v1-handoff.md` |
 | distributed greedy rejection of a globally all-masked row | `7867ed2` | `docs/fable-distributed-greedy-all-masked-v1-handoff.md` |
 | durable data rejected without complete journal history | `f724379` | `docs/fable-durable-journal-data-presence-v1-handoff.md` |
+| durable journal transaction sequence continuity | `397c76c` | `docs/fable-durable-journal-transaction-sequence-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
