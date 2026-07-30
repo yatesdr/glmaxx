@@ -30,8 +30,8 @@ pub use container::{
 pub use crc32c::crc32c;
 pub use exl3::{
     EXL3_CODEBOOK_MCG, EXL3_MCG_MULTIPLIER, EXL3_MODEL_REVISION, EXL3_SOURCE_REVISION,
-    EXL3_SOURCE_VERSION, Exl3Error, Exl3Metadata, Exl3Projection, Exl3Trellis, f16_bits_to_f32,
-    f32_to_f16_bits,
+    EXL3_SOURCE_VERSION, Exl3Error, Exl3Metadata, Exl3Projection, Exl3Trellis, Exl3WarpShapeProof,
+    Exl3WarpStagingProof, f16_bits_to_f32, f32_to_f16_bits, prove_exl3_warp_staging_v2,
 };
 pub use float::{decode_e2m1, decode_e4m3, encode_e2m1, encode_e4m3};
 pub use native_reader::{

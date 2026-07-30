@@ -95,6 +95,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some("cpu-proof") => cpu_proof()?,
+        Some("exl3-warp-proof") => {
+            let report = glm_format::prove_exl3_warp_staging_v2()?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("matrix-proof") => {
             let report = matrix_proof()?;
             let json = serde_json::to_vec_pretty(&report)?;
@@ -375,7 +386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }

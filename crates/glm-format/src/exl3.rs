@@ -2,6 +2,10 @@ use std::fmt;
 
 use crate::crc32c;
 
+mod warp_proof;
+
+pub use warp_proof::{Exl3WarpShapeProof, Exl3WarpStagingProof, prove_exl3_warp_staging_v2};
+
 pub const EXL3_MCG_MULTIPLIER: u32 = 0xCBAC_1FED;
 pub const EXL3_CODEBOOK_MCG: u16 = 1;
 pub const EXL3_SOURCE_VERSION: &str = "exllamav3-v0.0.43";
@@ -642,6 +646,8 @@ pub enum Exl3Error {
     NonFiniteRotation,
     Overflow,
     InputLength,
+    WarpStageMapping,
+    WarpStageMismatch,
 }
 
 impl fmt::Display for Exl3Error {
