@@ -116,9 +116,12 @@ The new-write I/O correction is pinned in
 semantically validated before its single staging-file write, and final
 cross-plane validation precedes pending descriptor insertion. Completed
 descriptors are still hash-checked and semantically reread on resume. The
-complete local gate passes 293 Rust tests; no conversion-speed claim is made
-without a matched benchmark. Independent review is requested by
-`docs/fable-streaming-write-single-pass-v1-handoff.md`.
+complete local gate passes 376 Rust tests; no conversion-speed claim is made
+without a matched benchmark. Fable found the implementation sound but
+withheld the first token for one false proof figure. Candidate `f39f234`
+corrects the routed-expert EXL3 auxiliary plane to exactly 13,316 bytes and
+requests r2 review through
+`docs/fable-streaming-write-single-pass-v1-r2-handoff.md`.
 The startup-order prerequisite is pinned in
 `docs/normative-startup-order-proof-v1.md`. The retained Rust coordinator now
 uses the exact engine-v0 sequence, places memory planning before weight load,
@@ -587,6 +590,7 @@ verdicts:
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |
+| streaming tensor writer single-pass r2 proof | `f39f234` | `docs/fable-streaming-write-single-pass-v1-r2-handoff.md` |
 | serving observability | `9607aa0`, with backend lifecycle delta at `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | online target/draft prefix publication | `d0a09d7` | `docs/fable-online-prefix-publication-v1-handoff.md` |
 | distributed sampling and MTP RNG | `7c71818` | `docs/fable-distributed-sampling-abi-v1-handoff.md` |
