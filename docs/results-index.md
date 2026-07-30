@@ -3,16 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`20c773c94179b2ab0913ed69eaf82a301d6b27db`
+`b22781c3bc548a4cf807cc05fab4b51f7c53d3d1`
 
-The complete local gate most recently ran against retained HTTP startup
-implementation `2d99fe1e5863dc2f34a0dbcd5b8d7cc8ecf8adbc` and its
-physical-saturation evidence correction
-`5066e4cc783e074482ef068022fec6264ed5fa82`; their provenance
-record was then committed at
-`20c773c94179b2ab0913ed69eaf82a301d6b27db`. The target
-CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
-later CPU candidates add review integrity, cache-lifecycle evidence,
+The complete local gate most recently ran against backend runtime-readiness
+implementation `b22781c3bc548a4cf807cc05fab4b51f7c53d3d1`. The
+target CUDA/kernel and strict production-manifest baseline remains
+`4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
 reconstruction, exact restore-result identity, all-or-nothing HBM
 admission, captured-shape prefill progress, and all-or-nothing scheduler
@@ -43,6 +39,10 @@ instead of publishing a disconnected pool.
 The retained HTTP server now synchronously joins connection workers after a
 worker or accept-thread spawn failure, surfaces cleanup panics, and proves
 its saturation rollback against barrier-held physical TP4 work.
+The coordinator API backend now waits for a receipt from inside its runtime
+thread before publishing production health and synchronously joins and
+destroys the complete coordinator/TP4 ownership tree after a pre-ready
+failure.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -50,9 +50,10 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at retained HTTP startup status `9207548` passed:
+The latest local run at backend runtime-readiness implementation `b22781c`
+passed:
 
-- `scripts/local-checks.sh`: 264 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 265 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and all 59 candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact

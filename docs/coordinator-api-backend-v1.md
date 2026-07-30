@@ -56,6 +56,13 @@ binding: model `glm-5.2`, pinned model revision, TP=4, and SM=120. A healthy
 state bit with the wrong topology is insufficient. The CPU worker and private
 fake constructor used by unit tests are not production health evidence.
 
+Backend construction now also waits for a bounded readiness receipt sent from
+inside the runtime thread after it owns the coordinator, command receiver,
+request maps, and lifecycle controls. A panic before that receipt closes the
+startup channel; construction joins the failed runtime synchronously and
+returns `RuntimeStartup` instead of publishing a production-healthy backend.
+This retained receipt has no startup deadline.
+
 ## Backpressure and cancellation
 
 - command capacity is fixed at construction and capped at 65,536;
@@ -97,6 +104,8 @@ The in-crate tests cover:
 
 - a prompt-to-length completion through prefix admission, scheduler, four CPU
   ranks, position validation, decoding, and exact usage;
+- an injected runtime panic before readiness, proving construction fails and
+  all four rank executors are destroyed before the error is returned;
 - decoder-reported stop termination without leaking stop text or continuing
   generation (cross-token matching remains covered in `glm-tokenizer`);
 - tenant mismatch rejection and delivery of explicit cancellation to the
@@ -124,5 +133,6 @@ The workspace proof remains `scripts/local-checks.sh`.
 - No padding-logit mask or distributed sampling kernel is connected.
 - The retained HTTP/1.1 worker transport is functional, not the final
   nonblocking throughput route.
+- Runtime readiness has no startup deadline or post-start liveness watchdog.
 - No CUDA kernel, checkpoint tensor, quality gate, or serving benchmark is
   exercised by these tests.
