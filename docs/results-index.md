@@ -123,6 +123,8 @@ The startup-order prerequisite is pinned in
 uses the exact engine-v0 sequence, places memory planning before weight load,
 and fails terminally when the obsolete ordering is attempted. This is a CPU
 state-machine result, not a real CUDA startup or checkpoint-load result.
+Independent review is requested by
+`docs/fable-normative-startup-order-v1-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
