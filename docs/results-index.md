@@ -3,11 +3,11 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`d3ca693e4c0e5de16e03518e19b7dadc8d8323c3`
+`a4bbfb0cd10b9e3edaa79abdeea9edc65b1d21c8`
 
-The complete local gate most recently ran against durable journal/data
-presence implementation
-`d3ca693e4c0e5de16e03518e19b7dadc8d8323c3`. The
+The complete local gate most recently ran against durable journal transaction
+sequence implementation
+`a4bbfb0cd10b9e3edaa79abdeea9edc65b1d21c8`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -50,6 +50,9 @@ while retaining legal rank-local masked partitions.
 The retained durable store now also rejects a nonempty data file when the
 journal contains no complete record, preventing total journal loss from
 silently reopening as an empty cache.
+It additionally rejects missing complete transaction groups whenever the
+remaining records expose a skipped, decreasing, or non-`Begin` transaction
+boundary.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -57,13 +60,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at durable journal/data presence implementation
-`d3ca693` passed:
+The latest local run at durable journal transaction sequence implementation
+`a4bbfb0` passed:
 
-- `scripts/local-checks.sh`: 267 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 268 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 61 then-present candidate-based review-handoff hash proofs; the new
-  durable journal/data presence handoff separately passes `review-proof`;
+  and all 62 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
