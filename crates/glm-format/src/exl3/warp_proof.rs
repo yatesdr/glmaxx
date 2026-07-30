@@ -112,6 +112,8 @@ fn prove_shape(
     let mut staged_weight_hash = Sha256::new();
     let mut scalar_projection_hash = Sha256::new();
     let mut staged_projection_hash = Sha256::new();
+    let mut scalar_projection = vec![vec![0_u16; logical_n]; PROOF_ROWS];
+    let mut staged_projection = vec![vec![0_u16; logical_n]; PROOF_ROWS];
     let mut compared_weights = 0_u64;
     let mut scheduled_words = 0_u64;
 
@@ -164,11 +166,16 @@ fn prove_shape(
                 {
                     return Err(Exl3Error::WarpStageMismatch);
                 }
-                scalar_projection_hash
-                    .update(f32_to_f16_bits(scalar_accumulators[row][local_n]).to_le_bytes());
-                staged_projection_hash
-                    .update(f32_to_f16_bits(staged_accumulators[row][local_n]).to_le_bytes());
+                let n = n_tile * TILE + local_n;
+                scalar_projection[row][n] = f32_to_f16_bits(scalar_accumulators[row][local_n]);
+                staged_projection[row][n] = f32_to_f16_bits(staged_accumulators[row][local_n]);
             }
+        }
+    }
+    for row in 0..PROOF_ROWS {
+        for n in 0..logical_n {
+            scalar_projection_hash.update(scalar_projection[row][n].to_le_bytes());
+            staged_projection_hash.update(staged_projection[row][n].to_le_bytes());
         }
     }
 
@@ -402,5 +409,65 @@ mod tests {
             && shape.scheduled_trellis_bytes == 1_179_648
             && shape.scalar_weight_sha256 == shape.staged_weight_sha256
             && shape.scalar_projection_f16_sha256 == shape.staged_projection_f16_sha256));
+    }
+
+    #[test]
+    fn transposed_tile_address_mutation_is_detected_off_diagonal() {
+        let logical_k = 6_144;
+        let logical_n = 512;
+        let k_tiles = logical_k / TILE;
+        let n_tiles = logical_n / TILE;
+        let source_halves = k_tiles * n_tiles * WORDS_PER_TILE * 2;
+        let trellis = deterministic_trellis(source_halves, 0x3a4e_2f15_7c91_b608);
+        let source_u32: Vec<u32> = trellis
+            .chunks_exact(2)
+            .map(|halves| u32::from(halves[0]) | (u32::from(halves[1]) << 16))
+            .collect();
+        let (slots, _) = build_forward_slot_table().unwrap();
+        let first_k_tile = 8;
+        let n_tile = 1;
+        let correct = load_stage(&source_u32, n_tiles, first_k_tile, n_tile).unwrap();
+        let mut transposed = [[0_u32; WORDS_PER_TILE]; STAGE_TILES];
+        for thread in 0..LOAD_THREADS {
+            let stage_tile = thread / WORDS_PER_TILE;
+            let word = thread % WORDS_PER_TILE;
+            let wrong_tile = n_tile * k_tiles + first_k_tile + stage_tile;
+            transposed[stage_tile][word] = source_u32[wrong_tile * WORDS_PER_TILE + word];
+        }
+        assert_ne!(correct, transposed);
+        assert!((0..STAGE_TILES).any(|stage_tile| {
+            (0..TILE).any(|local_k| {
+                (0..TILE).any(|local_n| {
+                    decode_staged_at(&correct[stage_tile], slots[local_k][local_n])
+                        != decode_staged_at(&transposed[stage_tile], slots[local_k][local_n])
+                })
+            })
+        }));
+    }
+
+    #[test]
+    fn slot_and_barrier_mutations_are_observable() {
+        let (slots, original_digest) = build_forward_slot_table().unwrap();
+        let mut mutated_slots = slots;
+        mutated_slots[0].swap(0, 1);
+        assert_ne!(mutated_slots, slots);
+        assert_ne!(
+            inverse_trellis_slot(0, 0),
+            (
+                usize::from(mutated_slots[0][0] / 8),
+                usize::from(mutated_slots[0][0] % 8)
+            )
+        );
+        assert_eq!(original_digest.len(), 64);
+
+        let (active, barriers) = prove_row_schedule().unwrap();
+        for rows in 1..=PROOF_ROWS {
+            assert_eq!(usize::from(active[rows - 1]), rows * TILE);
+            assert_ne!(
+                barriers[rows - 1],
+                active[rows - 1] * 2,
+                "an active-only barrier mutation must be observable"
+            );
+        }
     }
 }

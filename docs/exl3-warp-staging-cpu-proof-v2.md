@@ -85,7 +85,7 @@ barriers in every row case.
 The canonical fixture SHA-256 is:
 
 ```text
-d0b1aaa375247d5ecfa7f889780e87ac47f9df3bef0e3ff603ff18075e290602
+cdc650dd2c70dcbb8c3cb2e5e5659b42f429dc84a62e32bacb0c629ad66f1f45
 ```
 
 The release and debug binaries emitted identical fixture bytes on the Phase A
@@ -101,8 +101,8 @@ Key results:
 | barrier arrivals | 512 per CTA simulation for every row count |
 | gate/up weight hashes | scalar and staged both `b94b4940e85d67dee8954c01eda53b7d522dc55a962f3fa074170496a53b8854` |
 | down weight hashes | scalar and staged both `d9eda644ed48546a03a3219e040da335f27c4604242edb2178765efbd2e22944` |
-| gate/up FP16 projection hashes | scalar and staged both `e5a418f505909da940b201863011b781acfe086f775294b91ad8b5cc6fd5b000` |
-| down FP16 projection hashes | scalar and staged both `59a51359929d6cacaa84008ee221a1866f97fb9c15105875fbeb2dffa1ed1170` |
+| gate/up row-major FP16 projection hashes | scalar and staged both `d326e923985cb587ed73e069c59d146675bebad93e468ced735d379998e75196` |
+| down row-major FP16 projection hashes | scalar and staged both `941ba04c2f2a769b46cbfe6ddb4c40d982dc28dcb41ac5bf6f53438f474583be` |
 
 The canonical verdict is:
 
