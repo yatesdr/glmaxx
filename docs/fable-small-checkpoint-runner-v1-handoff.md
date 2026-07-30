@@ -2,7 +2,8 @@
 
 Date: 2026-07-30
 
-Status: adversarial M4 design review requested
+Status: superseded by `docs/small-checkpoint-runner-v1-r2.md`; do not review
+this handoff and do not issue the v1 token
 
 GPU authorization conveyed by this handoff: none
 

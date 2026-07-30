@@ -248,7 +248,12 @@ subset, exact rank-local tensor/byte inventory, captured M3 input boundary,
 load/adoption/execution sequence, and fault/repetition evidence. It is a
 design candidate only; no subset builder, rank files, device runner, logits,
 or GPU evidence exists. Independent review is requested by
-`docs/fable-small-checkpoint-runner-v1-handoff.md`.
+`docs/fable-small-checkpoint-runner-v1-handoff.md`. That base design and
+handoff are superseded by `docs/small-checkpoint-runner-v1-r2.md`, which
+corrects source/native-output identity, laboratory plan and arena binding,
+persistent-owner ordering before adoption, per-repetition generation
+isolation, and the process-fatal no-forged-cleanup boundary. R2 remains an
+unreviewed design and contains no implementation or hardware evidence.
 The checkpoint-load CPU core is pinned in
 `docs/checkpoint-load-cpu-core-proof-v1.md`. Candidate `6561492` implements
 the exact plan, tensor-layout, prepared-receipt, prepared-set, adoption, and

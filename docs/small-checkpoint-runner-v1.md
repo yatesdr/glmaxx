@@ -2,7 +2,8 @@
 
 Date: 2026-07-30
 
-Status: design candidate; adversarial review and implementation absent
+Status: superseded by `docs/small-checkpoint-runner-v1-r2.md`; do not
+implement this base document without the corrective amendment
 
 GPU claim: none
 
