@@ -95,8 +95,13 @@ impl Nvfp4Metadata {
             || get_u16(bytes, 28) != VALUE_LAYOUT_SM120_ROW_MAJOR
             || get_u16(bytes, 30) != SCALE_LAYOUT_SM120_K_MAJOR
             || bytes[32] != 1
+            || bytes[33] != 1
+            || bytes[34] != 1
+            || bytes[35] != 1
+            || bytes[52..56] != [0; 4]
             || bytes[56..88] != LAYOUT_SOURCE_SHA256
             || bytes[88..120] != QUANT_POLICY_SHA256
+            || bytes[124..128] != [0; 4]
         {
             return Err(Nvfp4Error::UnsupportedMetadata);
         }
@@ -130,8 +135,16 @@ impl Nvfp4Metadata {
             || !self.global_scale.is_finite()
             || self.global_scale <= 0.0
             || !self.global_amax.is_finite()
-            || self.global_amax < 0.0
+            || self.global_amax.is_sign_negative()
         {
+            return Err(Nvfp4Error::InvalidShapeOrScale);
+        }
+        let expected_global_scale = if self.global_amax == 0.0 {
+            1.0
+        } else {
+            self.global_amax / (448.0 * 6.0)
+        };
+        if self.global_scale.to_bits() != expected_global_scale.to_bits() {
             return Err(Nvfp4Error::InvalidShapeOrScale);
         }
         let elements = u64::from(self.padded_n)
@@ -260,17 +273,7 @@ impl PackedNvfp4 {
     }
 
     pub fn validate(&self) -> Result<(), Nvfp4Error> {
-        self.metadata.validate()?;
-        if self.values.len()
-            != usize::try_from(self.metadata.value_plane_bytes).map_err(|_| Nvfp4Error::Overflow)?
-            || self.scales.len()
-                != usize::try_from(self.metadata.scale_plane_bytes)
-                    .map_err(|_| Nvfp4Error::Overflow)?
-        {
-            return Err(Nvfp4Error::ByteAccounting);
-        }
-        validate_scale_plane(&self.scales)?;
-        Ok(())
+        validate_nvfp4_planes(&self.metadata, &self.values, &self.scales)
     }
 
     pub fn dequantize(&self) -> Result<Vec<f32>, Nvfp4Error> {
@@ -309,6 +312,64 @@ pub(crate) fn validate_scale_plane(scales: &[u8]) -> Result<(), Nvfp4Error> {
         .any(|&code| code & 0x80 != 0 || !decode_e4m3(code).is_finite())
     {
         return Err(Nvfp4Error::ScaleEncoding);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_nvfp4_planes(
+    metadata: &Nvfp4Metadata,
+    values: &[u8],
+    scales: &[u8],
+) -> Result<(), Nvfp4Error> {
+    metadata.validate()?;
+    if values.len()
+        != usize::try_from(metadata.value_plane_bytes).map_err(|_| Nvfp4Error::Overflow)?
+        || scales.len()
+            != usize::try_from(metadata.scale_plane_bytes).map_err(|_| Nvfp4Error::Overflow)?
+    {
+        return Err(Nvfp4Error::ByteAccounting);
+    }
+    validate_scale_plane(scales)?;
+    let logical_n = usize::try_from(metadata.logical_n).map_err(|_| Nvfp4Error::Overflow)?;
+    let logical_k = usize::try_from(metadata.logical_k).map_err(|_| Nvfp4Error::Overflow)?;
+    let padded_n = usize::try_from(metadata.padded_n).map_err(|_| Nvfp4Error::Overflow)?;
+    let padded_k = usize::try_from(metadata.padded_k).map_err(|_| Nvfp4Error::Overflow)?;
+    for row in 0..padded_n {
+        for group in 0..padded_k / 16 {
+            let scale = scales[scale_offset(row, group, padded_n, padded_k)?];
+            let mut any_code = false;
+            for lane in 0..16 {
+                let column = group
+                    .checked_mul(16)
+                    .and_then(|column| column.checked_add(lane))
+                    .ok_or(Nvfp4Error::Overflow)?;
+                let linear = row
+                    .checked_mul(padded_k)
+                    .and_then(|linear| linear.checked_add(column))
+                    .ok_or(Nvfp4Error::Overflow)?;
+                let byte = values[linear / 2];
+                let code = if linear & 1 == 0 {
+                    byte & 0x0f
+                } else {
+                    byte >> 4
+                };
+                if (row >= logical_n || column >= logical_k) && code != 0 {
+                    return Err(Nvfp4Error::NonCanonicalPadding);
+                }
+                any_code |= code != 0;
+            }
+            if scale == 0 && any_code {
+                return Err(Nvfp4Error::ZeroScaleValue);
+            }
+            let scale_has_logical_domain = group * 16 < logical_k
+                && match metadata.codec {
+                    Codec::OneDimensional => row < logical_n,
+                    Codec::TwoDimensional => (row / 16) * 16 < logical_n,
+                };
+            if !scale_has_logical_domain && scale != 0 {
+                return Err(Nvfp4Error::NonCanonicalPadding);
+            }
+        }
     }
     Ok(())
 }
@@ -449,6 +510,8 @@ pub enum Nvfp4Error {
     MetadataCrc,
     UnsupportedMetadata,
     ScaleEncoding,
+    ZeroScaleValue,
+    NonCanonicalPadding,
 }
 
 impl fmt::Display for Nvfp4Error {
@@ -538,6 +601,64 @@ mod tests {
             Nvfp4Metadata::decode(&metadata).unwrap_err(),
             Nvfp4Error::MetadataCrc
         );
+    }
+
+    #[test]
+    fn resigned_flags_reserved_bytes_and_scale_relation_are_rejected() {
+        let packed =
+            PackedNvfp4::pack(&vec![1.0; 128 * 64], 128, 64, Codec::OneDimensional).unwrap();
+        let canonical = packed.metadata.encode();
+        for offset in [33, 34, 35, 52, 53, 54, 55, 124, 125, 126, 127] {
+            let mut metadata = canonical;
+            metadata[offset] ^= 0x02;
+            put_u32(&mut metadata, 120, 0);
+            let crc = crc32c(&metadata);
+            put_u32(&mut metadata, 120, crc);
+            assert_eq!(
+                Nvfp4Metadata::decode(&metadata),
+                Err(Nvfp4Error::UnsupportedMetadata),
+                "offset {offset}"
+            );
+        }
+
+        let mut inconsistent = packed.metadata.clone();
+        inconsistent.global_scale = f32::from_bits(inconsistent.global_scale.to_bits() + 1);
+        assert_eq!(
+            Nvfp4Metadata::decode(&inconsistent.encode()),
+            Err(Nvfp4Error::InvalidShapeOrScale)
+        );
+        inconsistent = packed.metadata;
+        inconsistent.global_amax = -0.0;
+        inconsistent.global_scale = 1.0;
+        assert_eq!(
+            Nvfp4Metadata::decode(&inconsistent.encode()),
+            Err(Nvfp4Error::InvalidShapeOrScale)
+        );
+    }
+
+    #[test]
+    fn zero_scale_codes_and_padded_planes_must_be_canonical() {
+        let mut packed =
+            PackedNvfp4::pack(&vec![0.0; 129 * 65], 129, 65, Codec::OneDimensional).unwrap();
+        packed.values[0] = 1;
+        assert_eq!(packed.validate(), Err(Nvfp4Error::ZeroScaleValue));
+
+        packed.values[0] = 0;
+        let padded_k = usize::try_from(packed.metadata.padded_k).unwrap();
+        let padded_value = (129 * padded_k + 65) / 2;
+        packed.values[padded_value] = 0x10;
+        assert_eq!(packed.validate(), Err(Nvfp4Error::NonCanonicalPadding));
+
+        packed.values[padded_value] = 0;
+        let padded_scale = scale_offset(
+            129,
+            65_usize.div_ceil(16),
+            usize::try_from(packed.metadata.padded_n).unwrap(),
+            padded_k,
+        )
+        .unwrap();
+        packed.scales[padded_scale] = encode_e4m3(1.0).unwrap();
+        assert_eq!(packed.validate(), Err(Nvfp4Error::NonCanonicalPadding));
     }
 
     #[test]

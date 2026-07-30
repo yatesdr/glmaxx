@@ -3,7 +3,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Exl3Metadata, Exl3Trellis, Nvfp4Metadata, PackedNvfp4, crc32c, nvfp4::validate_scale_plane,
+    Exl3Metadata, Exl3Trellis, Nvfp4Metadata, PackedNvfp4, crc32c, nvfp4::validate_nvfp4_planes,
 };
 
 pub const HEADER_BYTES: usize = 4096;
@@ -752,7 +752,6 @@ fn validate_tensor_regions(
             )?;
         }
         CODEC_NVFP4_1D | CODEC_NVFP4_2D => {
-            validate_scale_plane(&bytes[aux.clone()]).map_err(RankFileError::Nvfp4)?;
             let decoded = Nvfp4Metadata::decode(&bytes[metadata]).map_err(RankFileError::Nvfp4)?;
             if descriptor.logical_dtype != DTYPE_BF16
                 || descriptor.stored_dtype != DTYPE_PACKED_E2M1X2
@@ -770,6 +769,8 @@ fn validate_tensor_regions(
             {
                 return Err(RankFileError::Descriptor);
             }
+            validate_nvfp4_planes(&decoded, &bytes[value], &bytes[aux])
+                .map_err(RankFileError::Nvfp4)?;
         }
         CODEC_EXL3_SOURCE => {
             let decoded = Exl3Metadata::decode(&bytes[metadata]).map_err(RankFileError::Exl3)?;
@@ -1379,6 +1380,25 @@ mod tests {
         put_u32(bytes, 416, crc32c(&bytes[..HEADER_BYTES]));
     }
 
+    fn resign_first_tensor_metadata(bytes: &mut [u8]) {
+        let descriptor_start = usize::try_from(get_u64(bytes, 56)).unwrap();
+        let metadata_start =
+            usize::try_from(get_u64(bytes, descriptor_start.checked_add(104).unwrap())).unwrap();
+        let metadata_bytes =
+            usize::try_from(get_u64(bytes, descriptor_start.checked_add(112).unwrap())).unwrap();
+        let metadata_end = metadata_start.checked_add(metadata_bytes).unwrap();
+        let metadata_hash = sha256(&bytes[metadata_start..metadata_end]);
+        bytes[descriptor_start + 192..descriptor_start + 224].copy_from_slice(&metadata_hash);
+        let metadata_region_start = usize::try_from(get_u64(bytes, 88)).unwrap();
+        let metadata_region_bytes = usize::try_from(get_u64(bytes, 96)).unwrap();
+        let metadata_region_end = metadata_region_start
+            .checked_add(metadata_region_bytes)
+            .unwrap();
+        let region_hash = sha256(&bytes[metadata_region_start..metadata_region_end]);
+        bytes[452..484].copy_from_slice(&region_hash);
+        resign_header(bytes);
+    }
+
     #[test]
     fn four_rank_identity_is_deterministic() {
         let builders = [builder(0), builder(1), builder(2), builder(3)];
@@ -1555,6 +1575,27 @@ mod tests {
             RankFile::read(bytes),
             Err(RankFileError::StrongHash)
         ));
+    }
+
+    #[test]
+    fn resigned_nvfp4_metadata_reserved_and_mode_lies_are_rejected() {
+        let builders = [builder(0), builder(1), builder(2), builder(3)];
+        let conversion = RankFileBuilder::derive_conversion_uuid(&builders).unwrap();
+        for relative_offset in [33_usize, 52, 124] {
+            let mut bytes = builders[0].build(conversion).unwrap();
+            let descriptor_start = usize::try_from(get_u64(&bytes, 56)).unwrap();
+            let metadata_start = usize::try_from(get_u64(&bytes, descriptor_start + 104)).unwrap();
+            bytes[metadata_start + relative_offset] ^= 0x02;
+            put_u32(&mut bytes, metadata_start + 120, 0);
+            let metadata_crc =
+                crc32c(&bytes[metadata_start..metadata_start + Nvfp4Metadata::BYTES]);
+            put_u32(&mut bytes, metadata_start + 120, metadata_crc);
+            resign_first_tensor_metadata(&mut bytes);
+            assert!(matches!(
+                RankFile::read(bytes),
+                Err(RankFileError::Nvfp4(crate::Nvfp4Error::UnsupportedMetadata))
+            ));
+        }
     }
 
     #[test]
