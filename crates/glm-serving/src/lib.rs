@@ -1797,7 +1797,7 @@ mod tests {
             Box::new(BoundInputRankExecutor {
                 calls: Arc::clone(&calls),
                 expected_seed,
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let mut serving = coordinator_with_workers(Tp4WorkerPool::spawn(2, executors).unwrap());
         let spec = RequestSpec {
@@ -1823,7 +1823,7 @@ mod tests {
         let executors = std::array::from_fn(|_| {
             Box::new(CountingRankExecutor {
                 calls: Arc::clone(&calls),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
         let mut serving = coordinator_with_page_config(
@@ -1876,7 +1876,7 @@ mod tests {
         let executors = std::array::from_fn(|_| {
             Box::new(CountingRankExecutor {
                 calls: Arc::clone(&calls),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
         let mut serving = coordinator_with_page_config(
@@ -2142,13 +2142,13 @@ mod tests {
 
     fn fixed_mtp_workers() -> Tp4WorkerPool {
         let executors =
-            std::array::from_fn(|_| Box::new(FixedMtpRankExecutor) as Box<dyn RankExecutor>);
+            std::array::from_fn(|_| Box::new(FixedMtpRankExecutor) as Box<dyn RankExecutor + Send>);
         Tp4WorkerPool::spawn(2, executors).unwrap()
     }
 
     fn accepted_draft_eos_workers() -> Tp4WorkerPool {
         let executors = std::array::from_fn(|_| {
-            Box::new(AcceptedDraftEosRankExecutor) as Box<dyn RankExecutor>
+            Box::new(AcceptedDraftEosRankExecutor) as Box<dyn RankExecutor + Send>
         });
         Tp4WorkerPool::spawn(2, executors).unwrap()
     }

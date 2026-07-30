@@ -15,13 +15,17 @@ mod step;
 mod weight;
 mod worker;
 
-pub use checkpoint_cuda::{CudaArenaVerificationEvidence, CudaQuarantinedArena, CudaWeightArena};
+pub use checkpoint_cuda::{
+    AcknowledgedCudaRank, CudaArenaVerificationEvidence, CudaQuarantinedArena, CudaWeightArena,
+    PreparedCudaRank, RankCheckpointLoadError,
+};
 pub use checkpoint_load::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, AdoptionCommand, LOAD_PLAN_HEADER_BYTES,
     LoadPlanError, LoadProfile, LoadVerificationMode, PREPARED_RANK_RECEIPT_BYTES,
     PlannedRankTensorSink, PreparedRankReceipt, PreparedRankSet, QuarantinedArenaWriter,
-    RANK_LOAD_ENTRY_BYTES, RANK_SET_SIZE, READER_CHUNK_BYTES, RankArenaLifecycle, RankArenaState,
-    RankArenaUploadSummary, RankLoadEntry, RankSetAbortCommand, RankSetLoadAction,
+    RANK_LOAD_ENTRY_BYTES, RANK_LOAD_VERIFICATION_EVIDENCE_BYTES, RANK_SET_SIZE,
+    READER_CHUNK_BYTES, RankArenaLifecycle, RankArenaState, RankArenaUploadSummary, RankLoadEntry,
+    RankLoadTimingEvidence, RankLoadVerificationEvidence, RankSetAbortCommand, RankSetLoadAction,
     RankSetLoadCoordinator, RankSetLoadCoordinatorState, RankSetLoadEnvironment, RankSetLoadPlan,
     RankSetLoadPlanHeader, TENSOR_ARENA_ENTRY_BYTES, TensorArenaEntry, WeightArenaExecutionPermit,
     arena_layout_sha256, build_rank_set_load_plan,
@@ -55,6 +59,6 @@ pub use weight::{
     ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
 };
 pub use worker::{
-    MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankStepAck, StepHandle,
-    StepOutcome, Tp4WorkerPool, WorkerError,
+    MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankExecutorFactory,
+    RankStepAck, StepHandle, StepOutcome, Tp4WorkerPool, WorkerError,
 };

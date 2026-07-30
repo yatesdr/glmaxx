@@ -26,7 +26,7 @@ const TP_RANKS: u8 = 4;
 /// streams, graph instances, device allocations, and collective handles.
 /// The worker verifies the immutable plan and collective schedule before this
 /// method is entered.
-pub trait RankExecutor: Send + 'static {
+pub trait RankExecutor: 'static {
     fn execute(
         &mut self,
         rank: u8,
@@ -43,6 +43,26 @@ pub trait RankExecutor: Send + 'static {
         schedule: &CollectiveSchedule,
         input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError>;
+}
+
+/// Constructs a thread-affine executor after the persistent rank thread has
+/// started.
+///
+/// The factory crosses the thread boundary and is therefore `Send`; the
+/// returned executor is deliberately not required to be `Send`. CUDA
+/// contexts, checkpoint arenas, streams, and graph state can consequently be
+/// created on and remain owned by exactly one rank thread.
+pub trait RankExecutorFactory: Send + 'static {
+    fn create(self: Box<Self>, rank: u8) -> Result<Box<dyn RankExecutor>, WorkerError>;
+}
+
+impl<F> RankExecutorFactory for F
+where
+    F: FnOnce(u8) -> Result<Box<dyn RankExecutor>, WorkerError> + Send + 'static,
+{
+    fn create(self: Box<Self>, rank: u8) -> Result<Box<dyn RankExecutor>, WorkerError> {
+        (*self)(rank)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +231,20 @@ enum RankCommandEnvelope {
     Execute(RankCommand),
 }
 
+enum RankExecutorSource {
+    Transferred(Box<dyn RankExecutor + Send>),
+    Factory(Box<dyn RankExecutorFactory>),
+}
+
+impl RankExecutorSource {
+    fn initialize(self, rank: u8) -> Result<Box<dyn RankExecutor>, WorkerError> {
+        match self {
+            Self::Transferred(executor) => Ok(executor),
+            Self::Factory(factory) => factory.create(rank),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageDeltaAck {
     pub rank: u8,
@@ -231,21 +265,39 @@ impl Tp4WorkerPool {
         maximum_outstanding: usize,
         fault: Option<MockWorkerFault>,
     ) -> Result<Self, WorkerError> {
-        let executors =
-            std::array::from_fn(|_| Box::new(CpuRankExecutor { fault }) as Box<dyn RankExecutor>);
+        let executors = std::array::from_fn(|_| {
+            Box::new(CpuRankExecutor { fault }) as Box<dyn RankExecutor + Send>
+        });
         Self::spawn(maximum_outstanding, executors)
     }
 
     pub fn spawn(
         maximum_outstanding: usize,
-        executors: [Box<dyn RankExecutor>; 4],
+        executors: [Box<dyn RankExecutor + Send>; 4],
     ) -> Result<Self, WorkerError> {
         Self::spawn_inner(maximum_outstanding, executors, None)
     }
 
+    pub fn spawn_factories(
+        maximum_outstanding: usize,
+        factories: [Box<dyn RankExecutorFactory>; 4],
+    ) -> Result<Self, WorkerError> {
+        let sources = factories.map(RankExecutorSource::Factory);
+        Self::spawn_sources(maximum_outstanding, sources, None)
+    }
+
     fn spawn_inner(
         maximum_outstanding: usize,
-        executors: [Box<dyn RankExecutor>; 4],
+        executors: [Box<dyn RankExecutor + Send>; 4],
+        rank_spawn_fault: Option<u8>,
+    ) -> Result<Self, WorkerError> {
+        let sources = executors.map(RankExecutorSource::Transferred);
+        Self::spawn_sources(maximum_outstanding, sources, rank_spawn_fault)
+    }
+
+    fn spawn_sources(
+        maximum_outstanding: usize,
+        sources: [RankExecutorSource; 4],
         rank_spawn_fault: Option<u8>,
     ) -> Result<Self, WorkerError> {
         if maximum_outstanding == 0 {
@@ -256,7 +308,7 @@ impl Tp4WorkerPool {
         let dispatcher = thread::Builder::new()
             .name("glmaxx-step-dispatch".into())
             .spawn(move || {
-                dispatch_loop(receiver, executors, startup_sender, rank_spawn_fault);
+                dispatch_loop(receiver, sources, startup_sender, rank_spawn_fault);
             })
             .map_err(WorkerError::Thread)?;
         match startup_receiver.recv() {
@@ -395,15 +447,16 @@ impl Drop for Tp4WorkerPool {
 
 fn dispatch_loop(
     receiver: Receiver<PoolCommand>,
-    executors: [Box<dyn RankExecutor>; 4],
+    sources: [RankExecutorSource; 4],
     startup: SyncSender<Result<(), WorkerError>>,
     rank_spawn_fault: Option<u8>,
 ) {
     let mut rank_senders: Vec<SyncSender<RankCommandEnvelope>> =
         Vec::with_capacity(usize::from(TP_RANKS));
     let mut rank_workers: Vec<JoinHandle<()>> = Vec::with_capacity(usize::from(TP_RANKS));
-    let (ready_sender, ready_receiver) = mpsc::sync_channel(usize::from(TP_RANKS));
-    for (rank, executor) in (0..TP_RANKS).zip(executors) {
+    let (ready_sender, ready_receiver) =
+        mpsc::sync_channel::<Result<u8, WorkerError>>(usize::from(TP_RANKS));
+    for (rank, source) in (0..TP_RANKS).zip(sources) {
         let (sender, rank_receiver) = mpsc::sync_channel::<RankCommandEnvelope>(1);
         let builder = thread::Builder::new().name(format!("glmaxx-rank-{rank}"));
         let ready = ready_sender.clone();
@@ -412,9 +465,14 @@ fn dispatch_loop(
                 "injected rank {rank} thread spawn failure"
             )))
         } else {
-            builder.spawn(move || {
-                if ready.send(rank).is_ok() {
-                    rank_loop(rank, rank_receiver, executor);
+            builder.spawn(move || match source.initialize(rank) {
+                Ok(executor) => {
+                    if ready.send(Ok(rank)).is_ok() {
+                        rank_loop(rank, rank_receiver, executor);
+                    }
+                }
+                Err(error) => {
+                    let _ = ready.send(Err(error));
                 }
             })
         };
@@ -437,15 +495,28 @@ fn dispatch_loop(
     drop(ready_sender);
     let mut ready_mask = 0_u8;
     for _ in 0..TP_RANKS {
-        let Ok(rank) = ready_receiver.recv() else {
-            let cleanup_panicked = shutdown_rank_workers(rank_senders, rank_workers);
-            let error = if cleanup_panicked {
-                WorkerError::WorkerPanic
-            } else {
-                WorkerError::RankStartup
-            };
-            let _ = startup.send(Err(error));
-            return;
+        let rank = match ready_receiver.recv() {
+            Ok(Ok(rank)) => rank,
+            Ok(Err(error)) => {
+                let cleanup_panicked = shutdown_rank_workers(rank_senders, rank_workers);
+                let error = if cleanup_panicked {
+                    WorkerError::WorkerPanic
+                } else {
+                    error
+                };
+                let _ = startup.send(Err(error));
+                return;
+            }
+            Err(_) => {
+                let cleanup_panicked = shutdown_rank_workers(rank_senders, rank_workers);
+                let error = if cleanup_panicked {
+                    WorkerError::WorkerPanic
+                } else {
+                    WorkerError::RankStartup
+                };
+                let _ = startup.send(Err(error));
+                return;
+            }
         };
         let Some(bit) = 1_u8.checked_shl(u32::from(rank)) else {
             let cleanup_panicked = shutdown_rank_workers(rank_senders, rank_workers);
@@ -931,6 +1002,7 @@ impl From<OutputError> for RankExecutionError {
 #[cfg(test)]
 mod tests {
     use std::{
+        rc::Rc,
         sync::{
             Arc, Barrier,
             atomic::{AtomicUsize, Ordering},
@@ -1025,6 +1097,13 @@ mod tests {
 
     struct DropCountingRankExecutor {
         drops: Arc<AtomicUsize>,
+    }
+
+    struct ThreadLocalRankExecutor {
+        rank: u8,
+        owner: ThreadId,
+        calls: u64,
+        _not_send: Rc<()>,
     }
 
     impl RankExecutor for InvalidOutputExecutor {
@@ -1131,6 +1210,35 @@ mod tests {
             _input: &StepInput,
         ) -> Result<StepOutput, RankExecutionError> {
             self.execute(rank, plan, schedule)
+        }
+    }
+
+    impl RankExecutor for ThreadLocalRankExecutor {
+        fn execute(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if rank != self.rank || thread::current().id() != self.owner {
+                return Err(RankExecutionError::Invariant);
+            }
+            self.calls += 1;
+            cpu_output(plan, schedule)
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if rank != self.rank || thread::current().id() != self.owner {
+                return Err(RankExecutionError::Invariant);
+            }
+            self.calls += 1;
+            cpu_bound_output(plan, schedule, input)
         }
     }
 
@@ -1260,7 +1368,7 @@ mod tests {
                 entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
                 calls: 0,
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
         let (plan, schedule) = step(1);
@@ -1307,7 +1415,7 @@ mod tests {
         let executors = std::array::from_fn(|_| {
             Box::new(DropCountingRankExecutor {
                 drops: Arc::clone(&drops),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         assert!(matches!(
             Tp4WorkerPool::spawn_inner(1, executors, Some(2)),
@@ -1356,7 +1464,7 @@ mod tests {
                 calls: 0,
                 thread: None,
                 fail_code: None,
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let pool = Tp4WorkerPool::spawn(2, executors).unwrap();
         for step_id in 1..=2 {
@@ -1367,6 +1475,29 @@ mod tests {
     }
 
     #[test]
+    fn factories_create_non_send_executors_on_their_persistent_rank_threads() {
+        let coordinator_thread = thread::current().id();
+        let factories = std::array::from_fn(|expected_rank| {
+            Box::new(move |rank| {
+                let owner = thread::current().id();
+                if owner == coordinator_thread || usize::from(rank) != expected_rank {
+                    return Err(WorkerError::RankStartup);
+                }
+                Ok(Box::new(ThreadLocalRankExecutor {
+                    rank,
+                    owner,
+                    calls: 0,
+                    _not_send: Rc::new(()),
+                }) as Box<dyn RankExecutor>)
+            }) as Box<dyn RankExecutorFactory>
+        });
+        let pool = Tp4WorkerPool::spawn_factories(1, factories).unwrap();
+        let (plan, schedule) = step(1);
+        let outcome = pool.try_submit(plan, schedule).unwrap().receive().unwrap();
+        assert_eq!(outcome.step_id, 1);
+    }
+
+    #[test]
     fn one_rank_backend_failure_aborts_the_whole_step() {
         let executors = std::array::from_fn(|rank| {
             Box::new(StatefulRankExecutor {
@@ -1374,7 +1505,7 @@ mod tests {
                 calls: 0,
                 thread: None,
                 fail_code: (rank == 3).then_some(17),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
         let (plan, schedule) = step(1);
@@ -1389,8 +1520,9 @@ mod tests {
 
     #[test]
     fn malformed_rank_output_never_reaches_consensus() {
-        let executors =
-            std::array::from_fn(|_| Box::new(InvalidOutputExecutor) as Box<dyn RankExecutor>);
+        let executors = std::array::from_fn(|_| {
+            Box::new(InvalidOutputExecutor) as Box<dyn RankExecutor + Send>
+        });
         let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
         let (plan, schedule) = step(1);
         assert!(matches!(

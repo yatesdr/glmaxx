@@ -1660,7 +1660,7 @@ mod tests {
         let executors = std::array::from_fn(|_| {
             Box::new(DropCountingExecutor {
                 drops: Arc::clone(&drops),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
         let result = CoordinatorApiBackend::spawn_with_tokenizer_inner(
@@ -2078,7 +2078,7 @@ mod tests {
                 entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
                 blocked: false,
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
         let backend = backend_with(
@@ -2284,7 +2284,7 @@ mod tests {
         let executors = std::array::from_fn(|_| {
             Box::new(DelayedFailExecutor {
                 entered: Arc::clone(&entered),
-            }) as Box<dyn RankExecutor>
+            }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
         let backend = backend_with(

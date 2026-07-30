@@ -1,17 +1,71 @@
-use std::{collections::BTreeSet, fmt, marker::PhantomData, rc::Rc};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    marker::PhantomData,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use glm_cuda::{KernelError, RankLoadBackend};
+use glm_format::{NativeRankReader, NativeRankReaderError};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    LoadPlanError, QuarantinedArenaWriter, RANK_SET_SIZE, READER_CHUNK_BYTES,
-    WeightArenaExecutionPermit,
+    AdoptedRankSetReceipt, AdoptionAcknowledgement, LoadPlanError, PlannedRankTensorSink,
+    PreparedRankReceipt, PreparedRankSet, QuarantinedArenaWriter, RANK_SET_SIZE,
+    READER_CHUNK_BYTES, RankArenaLifecycle, RankLoadTimingEvidence, RankLoadVerificationEvidence,
+    RankSetLoadPlan, WeightArenaExecutionPermit,
 };
 
 const DEVICE_ALIGNMENT: u64 = 256;
 const PINNED_ALIGNMENT: u64 = 64;
 const READBACK_EVIDENCE_DOMAIN: &[u8] = b"glmaxx.cuda-arena-readback.v1\0";
 const READBACK_MISMATCH: u32 = 0x4c4f_4144;
+
+#[derive(Debug)]
+pub enum RankCheckpointLoadError {
+    Plan(LoadPlanError),
+    Reader(NativeRankReaderError),
+    Kernel(KernelError),
+}
+
+impl fmt::Display for RankCheckpointLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plan(error) => write!(formatter, "{error}"),
+            Self::Reader(error) => write!(formatter, "{error}"),
+            Self::Kernel(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RankCheckpointLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Plan(error) => Some(error),
+            Self::Reader(error) => Some(error),
+            Self::Kernel(error) => Some(error),
+        }
+    }
+}
+
+impl From<LoadPlanError> for RankCheckpointLoadError {
+    fn from(value: LoadPlanError) -> Self {
+        Self::Plan(value)
+    }
+}
+
+impl From<NativeRankReaderError> for RankCheckpointLoadError {
+    fn from(value: NativeRankReaderError) -> Self {
+        Self::Reader(value)
+    }
+}
+
+impl From<KernelError> for RankCheckpointLoadError {
+    fn from(value: KernelError) -> Self {
+        Self::Kernel(value)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaArenaVerificationEvidence {
@@ -29,6 +83,30 @@ pub struct CudaArenaVerificationEvidence {
 }
 
 impl CudaArenaVerificationEvidence {
+    #[cfg(test)]
+    pub(crate) const fn test_only(
+        rank: u8,
+        plan_sha256: [u8; 32],
+        owner_allocation_generation: u64,
+        weight_bytes: u64,
+        metadata_bytes: u64,
+        arena_sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            rank,
+            plan_sha256,
+            owner_allocation_generation,
+            weight_bytes,
+            metadata_bytes,
+            readback_chunk_bytes: READER_CHUNK_BYTES,
+            readback_chunks: 2,
+            expected_weight_sha256: arena_sha256,
+            observed_weight_sha256: arena_sha256,
+            expected_metadata_sha256: arena_sha256,
+            observed_metadata_sha256: arena_sha256,
+        }
+    }
+
     #[must_use]
     pub const fn rank(self) -> u8 {
         self.rank
@@ -214,6 +292,10 @@ pub struct CudaQuarantinedArena<B: RankLoadBackend> {
     metadata_hasher: Sha256,
     expected_weight_sha256: Option<[u8; 32]>,
     expected_metadata_sha256: Option<[u8; 32]>,
+    host_to_pinned_copy_nanoseconds: u64,
+    h2d_submission_nanoseconds: u64,
+    h2d_drain_nanoseconds: u64,
+    full_arena_readback_nanoseconds: u64,
     resources: Option<CudaArenaResources<B>>,
 }
 
@@ -297,6 +379,10 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
             metadata_hasher: Sha256::new(),
             expected_weight_sha256: None,
             expected_metadata_sha256: None,
+            host_to_pinned_copy_nanoseconds: 0,
+            h2d_submission_nanoseconds: 0,
+            h2d_drain_nanoseconds: 0,
+            full_arena_readback_nanoseconds: 0,
             resources: Some(resources),
         })
     }
@@ -344,6 +430,7 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
         let resources = self.resources.as_mut().ok_or(KernelError::Async(-1))?;
         let weight_pointer = resources.weight_pointer.ok_or(KernelError::Null)?;
         let metadata_pointer = resources.metadata_pointer.ok_or(KernelError::Null)?;
+        let readback_started = Instant::now();
         let readback = (|| {
             let (observed_weight_sha256, weight_chunks) = readback_sha256(
                 resources,
@@ -389,8 +476,25 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
             expected_metadata_sha256,
             observed_metadata_sha256,
         };
+        self.full_arena_readback_nanoseconds = elapsed_nanoseconds(readback_started.elapsed())?;
         self.content_verified = true;
         Ok(evidence)
+    }
+
+    pub fn timing_evidence(
+        &self,
+        storage_read_nanoseconds: u64,
+    ) -> Result<RankLoadTimingEvidence, KernelError> {
+        if !self.content_verified || self.poisoned.is_some() {
+            return Err(self.poisoned.unwrap_or(KernelError::Async(-1)));
+        }
+        Ok(RankLoadTimingEvidence {
+            storage_read_nanoseconds,
+            host_to_pinned_copy_nanoseconds: self.host_to_pinned_copy_nanoseconds,
+            h2d_submission_nanoseconds: self.h2d_submission_nanoseconds,
+            h2d_drain_nanoseconds: self.h2d_drain_nanoseconds,
+            full_arena_readback_nanoseconds: self.full_arena_readback_nanoseconds,
+        })
     }
 
     fn write_plane(
@@ -446,9 +550,11 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
             }
             resources.slots[slot_index].in_flight = false;
         }
+        let host_copy_started = Instant::now();
         if let Err(error) = resources.backend.copy_to_pinned(host_pointer, bytes) {
             return self.poison(error);
         }
+        let host_copy_nanoseconds = elapsed_nanoseconds(host_copy_started.elapsed())?;
         let base = if metadata {
             resources.metadata_pointer
         } else {
@@ -458,6 +564,7 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
         let Some(destination) = base.checked_add(offset) else {
             return self.poison(KernelError::Overflow);
         };
+        let h2d_submission_started = Instant::now();
         if let Err(error) =
             resources
                 .backend
@@ -469,6 +576,15 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
         if let Err(error) = resources.backend.record_event(event, stream) {
             return self.poison(error);
         }
+        let h2d_submission_nanoseconds = elapsed_nanoseconds(h2d_submission_started.elapsed())?;
+        self.host_to_pinned_copy_nanoseconds = self
+            .host_to_pinned_copy_nanoseconds
+            .checked_add(host_copy_nanoseconds)
+            .ok_or(KernelError::Overflow)?;
+        self.h2d_submission_nanoseconds = self
+            .h2d_submission_nanoseconds
+            .checked_add(h2d_submission_nanoseconds)
+            .ok_or(KernelError::Overflow)?;
         let hasher = if metadata {
             &mut self.metadata_hasher
         } else {
@@ -514,6 +630,7 @@ impl<B: RankLoadBackend> QuarantinedArenaWriter for CudaQuarantinedArena<B> {
         if self.sealed || self.poisoned.is_some() {
             return Err(self.poisoned.unwrap_or(KernelError::Async(-1)));
         }
+        let drain_started = Instant::now();
         let resources = self.resources.as_mut().ok_or(KernelError::Async(-1))?;
         for slot in &mut resources.slots {
             if slot.in_flight {
@@ -540,7 +657,146 @@ impl<B: RankLoadBackend> QuarantinedArenaWriter for CudaQuarantinedArena<B> {
         self.metadata_cursor = self.metadata_bytes;
         self.expected_weight_sha256 = Some(self.weight_hasher.clone().finalize().into());
         self.expected_metadata_sha256 = Some(self.metadata_hasher.clone().finalize().into());
+        self.h2d_drain_nanoseconds = elapsed_nanoseconds(drain_started.elapsed())?;
         self.sealed = true;
+        Ok(())
+    }
+}
+
+/// One rank's sealed and device-verified arena before process-wide adoption.
+///
+/// This value is thread-affine because it owns `CudaQuarantinedArena`. It
+/// carries only a copyable receipt across the coordinator boundary.
+pub struct PreparedCudaRank<B: RankLoadBackend> {
+    arena: CudaQuarantinedArena<B>,
+    lifecycle: RankArenaLifecycle,
+    receipt: PreparedRankReceipt,
+}
+
+impl<B: RankLoadBackend> PreparedCudaRank<B> {
+    pub fn load(
+        plan: &RankSetLoadPlan,
+        rank: u8,
+        reader: &NativeRankReader,
+        backend: B,
+        owner_allocation_generation: u64,
+        software_provenance_sha256: [u8; 32],
+    ) -> Result<Self, RankCheckpointLoadError> {
+        validate_reader_binding(plan, rank, reader, software_provenance_sha256)?;
+        let expected = *plan.rank(rank).ok_or(LoadPlanError::Rank)?;
+        let mut lifecycle = RankArenaLifecycle::allocated(plan, rank, owner_allocation_generation)?;
+        lifecycle.begin_staging()?;
+        let arena = CudaQuarantinedArena::allocate(
+            backend,
+            rank,
+            plan.plan_sha256(),
+            owner_allocation_generation,
+            expected.device_weight_arena_bytes,
+            expected.device_metadata_arena_bytes,
+            plan.header.staging_slot_bytes,
+            plan.header.staging_slots_per_rank,
+        )?;
+        let mut sink = PlannedRankTensorSink::new(plan, rank, arena)?;
+        let payload = reader.verify_and_stream(&mut sink)?;
+        let (mut arena, upload) = sink.drain_and_seal()?;
+        let arena_evidence = arena.verify_device_contents()?;
+        let timings = arena.timing_evidence(payload.storage_read_nanoseconds)?;
+        let verification_evidence = RankLoadVerificationEvidence::new(
+            plan,
+            rank,
+            owner_allocation_generation,
+            payload,
+            upload,
+            timings,
+            arena_evidence,
+            software_provenance_sha256,
+        )?;
+        let receipt = PreparedRankReceipt::new(
+            plan,
+            rank,
+            owner_allocation_generation,
+            verification_evidence,
+        )?;
+        lifecycle.prepare(plan, receipt)?;
+        Ok(Self {
+            arena,
+            lifecycle,
+            receipt,
+        })
+    }
+
+    #[must_use]
+    pub const fn receipt(&self) -> PreparedRankReceipt {
+        self.receipt
+    }
+
+    pub fn acknowledge_adoption(
+        self,
+        prepared: &PreparedRankSet,
+    ) -> Result<(AcknowledgedCudaRank<B>, AdoptionAcknowledgement), RankCheckpointLoadError> {
+        let Self {
+            arena,
+            mut lifecycle,
+            receipt,
+        } = self;
+        let acknowledgement = lifecycle.acknowledge_adoption(prepared)?;
+        Ok((
+            AcknowledgedCudaRank {
+                arena,
+                lifecycle,
+                receipt,
+            },
+            acknowledgement,
+        ))
+    }
+
+    pub fn abort_and_release(self) -> Result<(), RankCheckpointLoadError> {
+        let Self {
+            arena,
+            mut lifecycle,
+            ..
+        } = self;
+        let _ = lifecycle.abort();
+        arena.abort_and_release()?;
+        Ok(())
+    }
+}
+
+/// Rank-local arena retained after acknowledging the common adoption command.
+///
+/// It remains quarantined and exposes no device pointer until the coordinator
+/// returns the final four-rank adopted receipt.
+pub struct AcknowledgedCudaRank<B: RankLoadBackend> {
+    arena: CudaQuarantinedArena<B>,
+    lifecycle: RankArenaLifecycle,
+    receipt: PreparedRankReceipt,
+}
+
+impl<B: RankLoadBackend> AcknowledgedCudaRank<B> {
+    #[must_use]
+    pub const fn receipt(&self) -> PreparedRankReceipt {
+        self.receipt
+    }
+
+    pub fn adopt(
+        self,
+        adopted: AdoptedRankSetReceipt,
+    ) -> Result<CudaWeightArena<B>, RankCheckpointLoadError> {
+        let Self {
+            arena, lifecycle, ..
+        } = self;
+        let permit = lifecycle.execution_permit(adopted)?;
+        arena.adopt(permit).map_err(Into::into)
+    }
+
+    pub fn abort_and_release(self) -> Result<(), RankCheckpointLoadError> {
+        let Self {
+            arena,
+            mut lifecycle,
+            ..
+        } = self;
+        let _ = lifecycle.abort();
+        arena.abort_and_release()?;
         Ok(())
     }
 }
@@ -596,6 +852,43 @@ fn require_handle(handle: u64, alignment: u64) -> Result<(), KernelError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_reader_binding(
+    plan: &RankSetLoadPlan,
+    rank: u8,
+    reader: &NativeRankReader,
+    software_provenance_sha256: [u8; 32],
+) -> Result<(), LoadPlanError> {
+    let expected = plan.rank(rank).ok_or(LoadPlanError::Rank)?;
+    let manifest = reader.validated_manifest().ok_or(LoadPlanError::Manifest)?;
+    if software_provenance_sha256 == [0; 32]
+        || reader.rank != u32::from(rank)
+        || reader.conversion_uuid != plan.header.conversion_uuid
+        || reader.file_uuid != expected.file_uuid
+        || reader.manifest_sha256 != expected.manifest_sha256
+        || reader.descriptor_sha256 != expected.descriptor_sha256
+        || reader.payload_sha256 != expected.payload_sha256
+        || reader.file_payload_bytes() != expected.file_payload_bytes
+        || reader.tensor_count()
+            != usize::try_from(expected.tensor_count).map_err(|_| LoadPlanError::Overflow)?
+        || reader.weight_policy_sha256 != plan.header.weight_policy_sha256
+        || reader.kernel_abi_sha256 != plan.header.kernel_abi_sha256
+        || reader.model_config_sha256 != plan.header.model_config_sha256
+        || reader.tokenizer_bundle_sha256 != plan.header.tokenizer_bundle_sha256
+        || reader.chat_template_sha256 != plan.header.chat_template_sha256
+        || manifest.rank != rank
+        || manifest.operation_manifest_sha256 != plan.header.operation_manifest_sha256
+        || manifest.profile_budget_sha256 != plan.header.profile_budget_sha256
+        || manifest.tensor_contract_sha256 != expected.tensor_contract_sha256
+    {
+        return Err(LoadPlanError::Identity);
+    }
+    Ok(())
+}
+
+fn elapsed_nanoseconds(duration: Duration) -> Result<u64, KernelError> {
+    u64::try_from(duration.as_nanos()).map_err(|_| KernelError::Overflow)
 }
 
 fn require_unique(handles: impl Iterator<Item = u64>) -> Result<(), KernelError> {
@@ -993,6 +1286,68 @@ mod tests {
         (arena, state)
     }
 
+    fn load_plan() -> RankSetLoadPlan {
+        let tensor = crate::TensorArenaEntry {
+            tensor_id: 0,
+            role_id: 1,
+            codec_id: 1,
+            descriptor_flags: 0,
+            metadata_destination_offset: 0,
+            metadata_bytes: 256,
+            primary_destination_offset: 0,
+            primary_bytes: 1024,
+            auxiliary_destination_offset: 0,
+            auxiliary_bytes: 0,
+            required_device_alignment: 256,
+        };
+        let tensors = std::array::from_fn(|_| vec![tensor]);
+        let ranks = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            crate::RankLoadEntry {
+                rank,
+                device_identity_sha256: [rank + 1; 32],
+                file_uuid: [rank + 1; 16],
+                manifest_sha256: [11; 32],
+                descriptor_sha256: [12; 32],
+                payload_sha256: [13; 32],
+                tensor_count: 1,
+                file_payload_bytes: 1024,
+                device_weight_arena_bytes: 1024,
+                device_metadata_arena_bytes: 256,
+                arena_layout_sha256: crate::arena_layout_sha256(
+                    rank,
+                    1024,
+                    256,
+                    &tensors[rank as usize],
+                ),
+                tensor_contract_sha256: [14 + rank; 32],
+            }
+        });
+        RankSetLoadPlan::new(
+            crate::RankSetLoadPlanHeader {
+                verification_mode: crate::LoadVerificationMode::FullSha256,
+                profile: crate::LoadProfile::Nvfp4Laboratory,
+                tensor_count: 1,
+                conversion_uuid: [1; 16],
+                weight_policy_sha256: [2; 32],
+                kernel_abi_sha256: [3; 32],
+                memory_plan_sha256: [4; 32],
+                codec_capability_sha256: [5; 32],
+                model_config_sha256: [6; 32],
+                tokenizer_bundle_sha256: [7; 32],
+                chat_template_sha256: [8; 32],
+                operation_manifest_sha256: [9; 32],
+                tensor_catalog_sha256: [10; 32],
+                profile_budget_sha256: [11; 32],
+                staging_slot_bytes: READER_CHUNK_BYTES,
+                staging_slots_per_rank: 2,
+            },
+            ranks,
+            tensors,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn fixed_ring_waits_before_reuse_and_only_adopted_type_exposes_pointers() {
         let (mut arena, state) = arena();
@@ -1021,6 +1376,8 @@ mod tests {
             evidence.observed_metadata_sha256
         );
         assert_eq!(evidence.readback_chunks, 2);
+        let timings = arena.timing_evidence(33).unwrap();
+        assert_eq!(timings.storage_read_nanoseconds, 33);
         assert_eq!(
             evidence.evidence_sha256(),
             [
@@ -1160,5 +1517,73 @@ mod tests {
         );
         let permit = WeightArenaExecutionPermit::test_only(2, [9; 32], 17);
         assert!(matches!(arena.adopt(permit), Err(LoadPlanError::Adoption)));
+    }
+
+    #[test]
+    fn prepared_and_acknowledged_types_retain_quarantine_until_global_receipt() {
+        let plan = load_plan();
+        let (backend, state) = FakeBackend::new();
+        let mut arena = CudaQuarantinedArena::allocate(
+            backend,
+            2,
+            plan.plan_sha256(),
+            17,
+            1024,
+            256,
+            READER_CHUNK_BYTES,
+            2,
+        )
+        .unwrap();
+        arena.write_weight(0, &[1; 16]).unwrap();
+        arena.write_metadata(0, &[2; 8]).unwrap();
+        arena.drain_and_seal().unwrap();
+        arena.verify_device_contents().unwrap();
+
+        let receipts = std::array::from_fn(|rank| {
+            PreparedRankReceipt::test_only(
+                &plan,
+                u8::try_from(rank).unwrap(),
+                15 + u64::try_from(rank).unwrap(),
+                [31 + u8::try_from(rank).unwrap(); 32],
+            )
+            .unwrap()
+        });
+        let mut lifecycle = RankArenaLifecycle::allocated(&plan, 2, 17).unwrap();
+        lifecycle.begin_staging().unwrap();
+        lifecycle.prepare(&plan, receipts[2]).unwrap();
+        let local = PreparedCudaRank {
+            arena,
+            lifecycle,
+            receipt: receipts[2],
+        };
+        assert_eq!(local.receipt(), receipts[2]);
+
+        let prepared = PreparedRankSet::new(&plan, receipts).unwrap();
+        let command = prepared.adoption_command();
+        let (acknowledged, local_ack) = local.acknowledge_adoption(&prepared).unwrap();
+        assert_eq!(acknowledged.receipt(), receipts[2]);
+        let acknowledgements = std::array::from_fn(|rank| {
+            if rank == 2 {
+                local_ack
+            } else {
+                AdoptionAcknowledgement::new(command, receipts[rank]).unwrap()
+            }
+        });
+        let adopted_receipt = prepared.complete_adoption(acknowledgements).unwrap();
+        let adopted = acknowledged.adopt(adopted_receipt).unwrap();
+        assert_eq!(adopted.rank(), 2);
+        assert_eq!(adopted.weight_pointer(), 0x10_0000);
+        adopted.shutdown().unwrap();
+
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .operations
+                .iter()
+                .filter(|operation| matches!(operation, Operation::DeviceFree(_)))
+                .count(),
+            2
+        );
     }
 }

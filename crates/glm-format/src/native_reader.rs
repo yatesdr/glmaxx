@@ -5,6 +5,7 @@ use std::{
     os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use serde::Serialize;
@@ -382,7 +383,7 @@ impl NativeRankReader {
         let mut buffer = vec![0_u8; STREAM_BUFFER_BYTES];
         let mut whole = Sha256::new();
         let mut cursor = self.payload_region.start;
-        let mut stream_chunks = 0_u64;
+        let mut stream_accounting = StreamAccounting::default();
         let mut maximum_reader_scratch_bytes = buffer.len();
 
         for (index, descriptor) in self.descriptors.iter().enumerate() {
@@ -404,7 +405,7 @@ impl NativeRankReader {
                 cursor,
                 descriptor.payload_offset,
                 &mut whole,
-                &mut stream_chunks,
+                &mut stream_accounting,
             )?;
 
             let collect_exl3 = descriptor.codec_id == CODEC_EXL3_SOURCE;
@@ -422,7 +423,7 @@ impl NativeRankReader {
                 descriptor.payload_offset,
                 descriptor.payload_bytes,
                 &mut whole,
-                &mut stream_chunks,
+                &mut stream_accounting,
                 |chunk, offset| {
                     validate_plain_padding_stream_chunk(descriptor, chunk, offset)?;
                     if let Some(validator) = &mut nvfp4_validator {
@@ -449,7 +450,7 @@ impl NativeRankReader {
                 primary_end,
                 descriptor.aux_offset,
                 &mut whole,
-                &mut stream_chunks,
+                &mut stream_accounting,
             )?;
 
             let mut exl3_aux = if collect_exl3 {
@@ -487,7 +488,7 @@ impl NativeRankReader {
                 descriptor.aux_offset,
                 descriptor.aux_bytes,
                 &mut whole,
-                &mut stream_chunks,
+                &mut stream_accounting,
                 |chunk, offset| {
                     if let Some(validator) = &mut nvfp4_validator {
                         validator.scale_chunk(chunk, offset)?;
@@ -529,8 +530,9 @@ impl NativeRankReader {
             tensor_count: self.descriptors.len(),
             payload_bytes: self.payload_region.len(),
             payload_sha256,
-            stream_chunks,
+            stream_chunks: stream_accounting.chunks,
             maximum_reader_scratch_bytes,
+            storage_read_nanoseconds: stream_accounting.storage_read_nanoseconds,
         })
     }
 
@@ -655,6 +657,7 @@ pub struct RankPayloadProof {
     pub payload_sha256: [u8; 32],
     pub stream_chunks: u64,
     pub maximum_reader_scratch_bytes: usize,
+    pub storage_read_nanoseconds: u64,
 }
 
 #[derive(Debug)]
@@ -963,13 +966,19 @@ fn validate_plain_padding_stream_chunk(
     .map_err(Into::into)
 }
 
+#[derive(Default)]
+struct StreamAccounting {
+    chunks: u64,
+    storage_read_nanoseconds: u64,
+}
+
 fn stream_plane(
     file: &File,
     buffer: &mut [u8],
     start: u64,
     bytes: u64,
     whole: &mut Sha256,
-    stream_chunks: &mut u64,
+    accounting: &mut StreamAccounting,
     mut visitor: impl FnMut(&[u8], u64) -> Result<(), NativeRankReaderError>,
 ) -> Result<[u8; 32], NativeRankReaderError> {
     let mut plane = Sha256::new();
@@ -977,14 +986,22 @@ fn stream_plane(
     while consumed < bytes {
         let chunk = usize::try_from((bytes - consumed).min(buffer.len() as u64))
             .map_err(|_| RankFileError::Overflow)?;
+        let read_started = Instant::now();
         read_exact_at(file, &mut buffer[..chunk], start + consumed)?;
+        let read_elapsed = u64::try_from(read_started.elapsed().as_nanos())
+            .map_err(|_| RankFileError::Overflow)?;
+        accounting.storage_read_nanoseconds = accounting
+            .storage_read_nanoseconds
+            .checked_add(read_elapsed)
+            .ok_or(RankFileError::Overflow)?;
         plane.update(&buffer[..chunk]);
         whole.update(&buffer[..chunk]);
         visitor(&buffer[..chunk], consumed)?;
         consumed = consumed
             .checked_add(u64::try_from(chunk).map_err(|_| RankFileError::Overflow)?)
             .ok_or(RankFileError::Overflow)?;
-        *stream_chunks = stream_chunks
+        accounting.chunks = accounting
+            .chunks
             .checked_add(1)
             .ok_or(RankFileError::Overflow)?;
     }
@@ -997,7 +1014,7 @@ fn stream_padding(
     start: u64,
     end: u64,
     whole: &mut Sha256,
-    stream_chunks: &mut u64,
+    accounting: &mut StreamAccounting,
 ) -> Result<(), NativeRankReaderError> {
     if start > end {
         return Err(RankFileError::NonCanonicalLayout.into());
@@ -1008,7 +1025,7 @@ fn stream_padding(
         start,
         end - start,
         whole,
-        stream_chunks,
+        accounting,
         |chunk, _| {
             if chunk.iter().any(|&byte| byte != 0) {
                 return Err(RankFileError::NonCanonicalLayout.into());

@@ -1,16 +1,19 @@
 use std::fmt;
 
 use glm_format::{
-    NATIVE_PAYLOAD_ALIGNMENT, NativeRankReader, RankTensorSink, RankWeightProfile,
-    TensorDescriptor, ValidatedRankManifest, pinned_exl3_rank_plan,
+    NATIVE_PAYLOAD_ALIGNMENT, NativeRankReader, RankPayloadProof, RankTensorSink,
+    RankWeightProfile, TensorDescriptor, ValidatedRankManifest, pinned_exl3_rank_plan,
     rank_invariant_tensor_catalog_sha256,
 };
 use sha2::{Digest, Sha256};
+
+use crate::checkpoint_cuda::CudaArenaVerificationEvidence;
 
 pub const LOAD_PLAN_HEADER_BYTES: usize = 416;
 pub const RANK_LOAD_ENTRY_BYTES: usize = 248;
 pub const TENSOR_ARENA_ENTRY_BYTES: usize = 64;
 pub const PREPARED_RANK_RECEIPT_BYTES: usize = 256;
+pub const RANK_LOAD_VERIFICATION_EVIDENCE_BYTES: usize = 256;
 pub const RANK_SET_SIZE: usize = 4;
 pub const READER_CHUNK_BYTES: u32 = 8 * 1024 * 1024;
 
@@ -19,6 +22,8 @@ const ARENA_LAYOUT_DOMAIN: &[u8] = b"glmaxx.rank-arena-layout.v1\0";
 const PREPARED_RANK_DOMAIN: &[u8] = b"glmaxx.prepared-rank-receipt.v1\0";
 const PREPARED_RANK_SET_DOMAIN: &[u8] = b"glmaxx.prepared-rank-set.v1\0";
 const ADOPTED_RANK_SET_DOMAIN: &[u8] = b"glmaxx.adopted-rank-set.v1\0";
+const RANK_LOAD_VERIFICATION_EVIDENCE_DOMAIN: &[u8] =
+    b"glmaxx.rank-load-verification-evidence.v1\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -114,13 +119,6 @@ impl TensorArenaEntry {
         put_u32(&mut output, 60, self.required_device_alignment);
         output
     }
-
-    fn uploaded_bytes(self) -> Result<u64, LoadPlanError> {
-        self.metadata_bytes
-            .checked_add(self.primary_bytes)
-            .and_then(|bytes| bytes.checked_add(self.auxiliary_bytes))
-            .ok_or(LoadPlanError::Overflow)
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -196,15 +194,43 @@ impl RankSetLoadPlan {
     }
 
     pub fn uploaded_bytes(&self, rank: u8) -> Result<u64, LoadPlanError> {
-        self.tensors
+        Ok(self.expected_upload_summary(rank)?.uploaded_bytes)
+    }
+
+    pub fn expected_upload_summary(
+        &self,
+        rank: u8,
+    ) -> Result<RankArenaUploadSummary, LoadPlanError> {
+        let tensors = self
+            .tensors
             .get(usize::from(rank))
-            .ok_or(LoadPlanError::Rank)?
-            .iter()
-            .try_fold(0_u64, |total, tensor| {
-                total
-                    .checked_add(tensor.uploaded_bytes()?)
-                    .ok_or(LoadPlanError::Overflow)
-            })
+            .ok_or(LoadPlanError::Rank)?;
+        let mut metadata_bytes = 0_u64;
+        let mut primary_bytes = 0_u64;
+        let mut auxiliary_bytes = 0_u64;
+        for tensor in tensors {
+            metadata_bytes = metadata_bytes
+                .checked_add(tensor.metadata_bytes)
+                .ok_or(LoadPlanError::Overflow)?;
+            primary_bytes = primary_bytes
+                .checked_add(tensor.primary_bytes)
+                .ok_or(LoadPlanError::Overflow)?;
+            auxiliary_bytes = auxiliary_bytes
+                .checked_add(tensor.auxiliary_bytes)
+                .ok_or(LoadPlanError::Overflow)?;
+        }
+        let uploaded_bytes = metadata_bytes
+            .checked_add(primary_bytes)
+            .and_then(|bytes| bytes.checked_add(auxiliary_bytes))
+            .ok_or(LoadPlanError::Overflow)?;
+        Ok(RankArenaUploadSummary {
+            rank,
+            tensor_count: u32::try_from(tensors.len()).map_err(|_| LoadPlanError::Overflow)?,
+            metadata_bytes,
+            primary_bytes,
+            auxiliary_bytes,
+            uploaded_bytes,
+        })
     }
 }
 
@@ -519,6 +545,172 @@ pub fn arena_layout_sha256(
     hasher.finalize().into()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RankLoadTimingEvidence {
+    pub storage_read_nanoseconds: u64,
+    pub host_to_pinned_copy_nanoseconds: u64,
+    pub h2d_submission_nanoseconds: u64,
+    pub h2d_drain_nanoseconds: u64,
+    pub full_arena_readback_nanoseconds: u64,
+}
+
+/// Canonical evidence for one rank's authenticated file-to-HBM load.
+///
+/// Construction validates every byte count and identity against the immutable
+/// rank-set plan, a completed native-reader proof, the planned upload summary,
+/// and an unforgeable successful arena read-back value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RankLoadVerificationEvidence {
+    rank: u8,
+    verification_mode: LoadVerificationMode,
+    plan_sha256: [u8; 32],
+    device_identity_sha256: [u8; 32],
+    owner_allocation_generation: u64,
+    verified_file_payload_bytes: u64,
+    tensor_count: u32,
+    uploaded_metadata_bytes: u64,
+    uploaded_primary_bytes: u64,
+    uploaded_auxiliary_bytes: u64,
+    uploaded_bytes: u64,
+    maximum_reader_scratch_bytes: u64,
+    pinned_ring_bytes: u64,
+    timings: RankLoadTimingEvidence,
+    cuda_arena_verification_sha256: [u8; 32],
+    software_provenance_sha256: [u8; 32],
+}
+
+impl RankLoadVerificationEvidence {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plan: &RankSetLoadPlan,
+        rank: u8,
+        owner_allocation_generation: u64,
+        payload: RankPayloadProof,
+        upload: RankArenaUploadSummary,
+        timings: RankLoadTimingEvidence,
+        arena: CudaArenaVerificationEvidence,
+        software_provenance_sha256: [u8; 32],
+    ) -> Result<Self, LoadPlanError> {
+        let expected = plan.rank(rank).ok_or(LoadPlanError::Rank)?;
+        let tensor_count =
+            u32::try_from(payload.tensor_count).map_err(|_| LoadPlanError::Overflow)?;
+        let maximum_reader_scratch_bytes = u64::try_from(payload.maximum_reader_scratch_bytes)
+            .map_err(|_| LoadPlanError::Overflow)?;
+        let pinned_ring_bytes = u64::from(plan.header.staging_slot_bytes)
+            .checked_mul(u64::from(plan.header.staging_slots_per_rank))
+            .ok_or(LoadPlanError::Overflow)?;
+        let uploaded_bytes = upload
+            .metadata_bytes
+            .checked_add(upload.primary_bytes)
+            .and_then(|bytes| bytes.checked_add(upload.auxiliary_bytes))
+            .ok_or(LoadPlanError::Overflow)?;
+        if owner_allocation_generation == 0
+            || is_zero(&software_provenance_sha256)
+            || payload.rank != u32::from(rank)
+            || tensor_count != expected.tensor_count
+            || payload.payload_bytes != expected.file_payload_bytes
+            || payload.payload_sha256 != expected.payload_sha256
+            || payload.stream_chunks == 0
+            || maximum_reader_scratch_bytes == 0
+            || timings.storage_read_nanoseconds != payload.storage_read_nanoseconds
+            || upload.rank != rank
+            || upload.tensor_count != expected.tensor_count
+            || upload.uploaded_bytes != uploaded_bytes
+            || upload != plan.expected_upload_summary(rank)?
+            || arena.rank() != rank
+            || arena.plan_sha256() != plan.plan_sha256
+            || arena.owner_allocation_generation() != owner_allocation_generation
+            || arena.weight_bytes() != expected.device_weight_arena_bytes
+            || arena.metadata_bytes() != expected.device_metadata_arena_bytes
+            || arena.readback_chunk_bytes() != READER_CHUNK_BYTES
+            || arena.readback_chunks() == 0
+            || arena.expected_weight_sha256() != arena.observed_weight_sha256()
+            || arena.expected_metadata_sha256() != arena.observed_metadata_sha256()
+        {
+            return Err(LoadPlanError::Evidence);
+        }
+        Ok(Self {
+            rank,
+            verification_mode: plan.header.verification_mode,
+            plan_sha256: plan.plan_sha256,
+            device_identity_sha256: expected.device_identity_sha256,
+            owner_allocation_generation,
+            verified_file_payload_bytes: payload.payload_bytes,
+            tensor_count,
+            uploaded_metadata_bytes: upload.metadata_bytes,
+            uploaded_primary_bytes: upload.primary_bytes,
+            uploaded_auxiliary_bytes: upload.auxiliary_bytes,
+            uploaded_bytes,
+            maximum_reader_scratch_bytes,
+            pinned_ring_bytes,
+            timings,
+            cuda_arena_verification_sha256: arena.evidence_sha256(),
+            software_provenance_sha256,
+        })
+    }
+
+    #[must_use]
+    pub fn encode(self) -> [u8; RANK_LOAD_VERIFICATION_EVIDENCE_BYTES] {
+        let mut output = [0_u8; RANK_LOAD_VERIFICATION_EVIDENCE_BYTES];
+        output[0..8].copy_from_slice(b"G5LVE1\0\0");
+        put_u16(&mut output, 8, 1);
+        put_u16(
+            &mut output,
+            10,
+            u16::try_from(RANK_LOAD_VERIFICATION_EVIDENCE_BYTES).expect("constant fits"),
+        );
+        output[12] = self.rank;
+        output[13] = self.verification_mode as u8;
+        output[16..48].copy_from_slice(&self.plan_sha256);
+        output[48..80].copy_from_slice(&self.device_identity_sha256);
+        put_u64(&mut output, 80, self.owner_allocation_generation);
+        put_u64(&mut output, 88, self.verified_file_payload_bytes);
+        put_u32(&mut output, 96, self.tensor_count);
+        put_u64(&mut output, 104, self.uploaded_metadata_bytes);
+        put_u64(&mut output, 112, self.uploaded_primary_bytes);
+        put_u64(&mut output, 120, self.uploaded_auxiliary_bytes);
+        put_u64(&mut output, 128, self.uploaded_bytes);
+        put_u64(&mut output, 136, self.maximum_reader_scratch_bytes);
+        put_u64(&mut output, 144, self.pinned_ring_bytes);
+        put_u64(&mut output, 152, self.timings.storage_read_nanoseconds);
+        put_u64(
+            &mut output,
+            160,
+            self.timings.host_to_pinned_copy_nanoseconds,
+        );
+        put_u64(&mut output, 168, self.timings.h2d_submission_nanoseconds);
+        put_u64(&mut output, 176, self.timings.h2d_drain_nanoseconds);
+        put_u64(
+            &mut output,
+            184,
+            self.timings.full_arena_readback_nanoseconds,
+        );
+        output[192..224].copy_from_slice(&self.cuda_arena_verification_sha256);
+        output[224..256].copy_from_slice(&self.software_provenance_sha256);
+        output
+    }
+
+    #[must_use]
+    pub fn evidence_sha256(self) -> [u8; 32] {
+        hash_domain(RANK_LOAD_VERIFICATION_EVIDENCE_DOMAIN, &self.encode())
+    }
+
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        self.rank
+    }
+
+    #[must_use]
+    pub const fn plan_sha256(self) -> [u8; 32] {
+        self.plan_sha256
+    }
+
+    #[must_use]
+    pub const fn owner_allocation_generation(self) -> u64 {
+        self.owner_allocation_generation
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreparedRankReceipt {
     pub rank: u8,
@@ -538,6 +730,26 @@ pub struct PreparedRankReceipt {
 
 impl PreparedRankReceipt {
     pub fn new(
+        plan: &RankSetLoadPlan,
+        rank: u8,
+        owner_allocation_generation: u64,
+        verification_evidence: RankLoadVerificationEvidence,
+    ) -> Result<Self, LoadPlanError> {
+        if verification_evidence.rank() != rank
+            || verification_evidence.plan_sha256() != plan.plan_sha256
+            || verification_evidence.owner_allocation_generation() != owner_allocation_generation
+        {
+            return Err(LoadPlanError::Evidence);
+        }
+        Self::from_evidence_sha256(
+            plan,
+            rank,
+            owner_allocation_generation,
+            verification_evidence.evidence_sha256(),
+        )
+    }
+
+    fn from_evidence_sha256(
         plan: &RankSetLoadPlan,
         rank: u8,
         owner_allocation_generation: u64,
@@ -562,6 +774,21 @@ impl PreparedRankReceipt {
             owner_allocation_generation,
             verification_evidence_sha256,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(
+        plan: &RankSetLoadPlan,
+        rank: u8,
+        owner_allocation_generation: u64,
+        verification_evidence_sha256: [u8; 32],
+    ) -> Result<Self, LoadPlanError> {
+        Self::from_evidence_sha256(
+            plan,
+            rank,
+            owner_allocation_generation,
+            verification_evidence_sha256,
+        )
     }
 
     #[must_use]
@@ -596,7 +823,7 @@ impl PreparedRankReceipt {
     }
 
     fn validate(self, plan: &RankSetLoadPlan) -> Result<(), LoadPlanError> {
-        let expected = Self::new(
+        let expected = Self::from_evidence_sha256(
             plan,
             self.rank,
             self.owner_allocation_generation,
@@ -1385,6 +1612,7 @@ pub enum LoadPlanError {
     Writer,
     Overflow,
     Encoding,
+    Evidence,
     Reader,
     Manifest,
     Profile,
@@ -1944,7 +2172,7 @@ mod tests {
         [PreparedRankReceipt; RANK_SET_SIZE],
     ) {
         let receipts = std::array::from_fn(|rank| {
-            PreparedRankReceipt::new(
+            PreparedRankReceipt::test_only(
                 plan,
                 u8::try_from(rank).unwrap(),
                 generation_base + u64::try_from(rank).unwrap(),
@@ -1964,6 +2192,53 @@ mod tests {
             lifecycle
         });
         (lifecycles, receipts)
+    }
+
+    fn load_verification_evidence(
+        plan: &RankSetLoadPlan,
+        rank: u8,
+        owner_allocation_generation: u64,
+    ) -> RankLoadVerificationEvidence {
+        let expected = *plan.rank(rank).unwrap();
+        RankLoadVerificationEvidence::new(
+            plan,
+            rank,
+            owner_allocation_generation,
+            RankPayloadProof {
+                rank: u32::from(rank),
+                tensor_count: usize::try_from(expected.tensor_count).unwrap(),
+                payload_bytes: expected.file_payload_bytes,
+                payload_sha256: expected.payload_sha256,
+                stream_chunks: 7,
+                maximum_reader_scratch_bytes: READER_CHUNK_BYTES as usize,
+                storage_read_nanoseconds: 11,
+            },
+            RankArenaUploadSummary {
+                rank,
+                tensor_count: expected.tensor_count,
+                metadata_bytes: 256,
+                primary_bytes: 640,
+                auxiliary_bytes: 384,
+                uploaded_bytes: 1280,
+            },
+            RankLoadTimingEvidence {
+                storage_read_nanoseconds: 11,
+                host_to_pinned_copy_nanoseconds: 12,
+                h2d_submission_nanoseconds: 13,
+                h2d_drain_nanoseconds: 14,
+                full_arena_readback_nanoseconds: 15,
+            },
+            CudaArenaVerificationEvidence::test_only(
+                rank,
+                plan.plan_sha256(),
+                owner_allocation_generation,
+                expected.device_weight_arena_bytes,
+                expected.device_metadata_arena_bytes,
+                digest(199),
+            ),
+            digest(200),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2183,7 +2458,7 @@ mod tests {
     fn prepared_receipts_bind_every_rank_and_exact_byte_counts() {
         let plan = plan();
         let receipts = std::array::from_fn(|rank| {
-            PreparedRankReceipt::new(
+            PreparedRankReceipt::test_only(
                 &plan,
                 u8::try_from(rank).unwrap(),
                 u64::try_from(rank + 1).unwrap(),
@@ -2211,10 +2486,81 @@ mod tests {
     }
 
     #[test]
+    fn rank_load_verification_evidence_is_exact_typed_and_fail_closed() {
+        let plan = plan();
+        let evidence = load_verification_evidence(&plan, 2, 41);
+        let encoded = evidence.encode();
+        assert_eq!(encoded.len(), RANK_LOAD_VERIFICATION_EVIDENCE_BYTES);
+        assert_eq!(&encoded[0..8], b"G5LVE1\0\0");
+        assert_eq!(&encoded[8..10], 1_u16.to_le_bytes());
+        assert_eq!(&encoded[10..12], 256_u16.to_le_bytes());
+        assert_eq!(encoded[12], 2);
+        assert_eq!(encoded[13], LoadVerificationMode::FullSha256 as u8);
+        assert!(encoded[14..16].iter().all(|&byte| byte == 0));
+        assert_eq!(&encoded[16..48], &plan.plan_sha256());
+        assert_eq!(&encoded[80..88], 41_u64.to_le_bytes());
+        assert_eq!(
+            &encoded[144..152],
+            (2_u64 * u64::from(READER_CHUNK_BYTES)).to_le_bytes()
+        );
+        assert_eq!(
+            evidence.evidence_sha256(),
+            [
+                0x41, 0x83, 0x93, 0x40, 0xfe, 0x94, 0xfc, 0x6d, 0xd7, 0xd5, 0xd9, 0x08, 0x44, 0x97,
+                0xc2, 0x5f, 0xe6, 0x74, 0x8d, 0x83, 0x75, 0xda, 0x14, 0x9c, 0x3c, 0x50, 0xbc, 0x55,
+                0x3a, 0x82, 0xa4, 0x6a,
+            ]
+        );
+        let receipt = PreparedRankReceipt::new(&plan, 2, 41, evidence).unwrap();
+        assert_eq!(
+            receipt.verification_evidence_sha256,
+            evidence.evidence_sha256()
+        );
+
+        let expected = *plan.rank(2).unwrap();
+        let mismatched_payload = RankPayloadProof {
+            rank: 2,
+            tensor_count: usize::try_from(expected.tensor_count).unwrap(),
+            payload_bytes: expected.file_payload_bytes - 1,
+            payload_sha256: expected.payload_sha256,
+            stream_chunks: 1,
+            maximum_reader_scratch_bytes: 1,
+            storage_read_nanoseconds: 0,
+        };
+        assert_eq!(
+            RankLoadVerificationEvidence::new(
+                &plan,
+                2,
+                41,
+                mismatched_payload,
+                RankArenaUploadSummary {
+                    rank: 2,
+                    tensor_count: expected.tensor_count,
+                    metadata_bytes: 256,
+                    primary_bytes: 640,
+                    auxiliary_bytes: 384,
+                    uploaded_bytes: 1280,
+                },
+                RankLoadTimingEvidence::default(),
+                CudaArenaVerificationEvidence::test_only(
+                    2,
+                    plan.plan_sha256(),
+                    41,
+                    expected.device_weight_arena_bytes,
+                    expected.device_metadata_arena_bytes,
+                    digest(199),
+                ),
+                digest(200),
+            ),
+            Err(LoadPlanError::Evidence)
+        );
+    }
+
+    #[test]
     fn adoption_requires_four_identical_commands_and_generations() {
         let plan = plan();
         let receipts = std::array::from_fn(|rank| {
-            PreparedRankReceipt::new(
+            PreparedRankReceipt::test_only(
                 &plan,
                 u8::try_from(rank).unwrap(),
                 u64::try_from(rank + 11).unwrap(),
@@ -2422,7 +2768,7 @@ mod tests {
     fn lifecycle_needs_global_adoption_before_it_can_issue_execution_permits() {
         let plan = plan();
         let receipts = std::array::from_fn(|rank| {
-            PreparedRankReceipt::new(
+            PreparedRankReceipt::test_only(
                 &plan,
                 u8::try_from(rank).unwrap(),
                 u64::try_from(rank + 21).unwrap(),
@@ -2478,7 +2824,7 @@ mod tests {
     #[test]
     fn lifecycle_rejects_skips_and_abort_is_exactly_once() {
         let plan = plan();
-        let receipt = PreparedRankReceipt::new(&plan, 0, 1, digest(120)).unwrap();
+        let receipt = PreparedRankReceipt::test_only(&plan, 0, 1, digest(120)).unwrap();
         let mut lifecycle = RankArenaLifecycle::allocated(&plan, 0, 1).unwrap();
         assert_eq!(
             lifecycle.prepare(&plan, receipt),
