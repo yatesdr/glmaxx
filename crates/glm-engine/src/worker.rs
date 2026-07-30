@@ -93,40 +93,35 @@ pub struct StepOutcome {
 
 pub struct StepHandle {
     receiver: Receiver<Result<StepOutcome, WorkerError>>,
-    outstanding: Arc<AtomicUsize>,
-    released: bool,
 }
 
 impl StepHandle {
-    pub fn receive(mut self) -> Result<StepOutcome, WorkerError> {
-        let result = self.receiver.recv().map_err(|_| WorkerError::Closed)?;
-        self.release();
-        result
+    pub fn receive(self) -> Result<StepOutcome, WorkerError> {
+        self.receiver.recv().map_err(|_| WorkerError::Closed)?
     }
 
-    pub fn receive_timeout(mut self, timeout: Duration) -> Result<StepOutcome, WorkerError> {
-        let result = self
-            .receiver
+    pub fn receive_timeout(self, timeout: Duration) -> Result<StepOutcome, WorkerError> {
+        self.receiver
             .recv_timeout(timeout)
             .map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => WorkerError::Timeout,
                 mpsc::RecvTimeoutError::Disconnected => WorkerError::Closed,
-            })?;
-        self.release();
-        result
-    }
-
-    fn release(&mut self) {
-        if !self.released {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
-            self.released = true;
-        }
+            })?
     }
 }
 
-impl Drop for StepHandle {
+struct OutstandingPermit {
+    outstanding: Arc<AtomicUsize>,
+}
+
+impl Drop for OutstandingPermit {
     fn drop(&mut self) {
-        self.release();
+        let released =
+            self.outstanding
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_sub(1)
+                });
+        debug_assert!(released.is_ok(), "step outstanding counter underflow");
     }
 }
 
@@ -134,6 +129,7 @@ struct DispatchCommand {
     plan: StepPlan,
     schedule: CollectiveSchedule,
     response: SyncSender<Result<StepOutcome, WorkerError>>,
+    permit: OutstandingPermit,
 }
 
 #[derive(Clone)]
@@ -192,23 +188,20 @@ impl Tp4WorkerPool {
             plan,
             schedule,
             response,
+            permit: OutstandingPermit {
+                outstanding: Arc::clone(&self.outstanding),
+            },
         };
         let Some(sender) = &self.sender else {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
             return Err(WorkerError::Closed);
         };
         if let Err(error) = sender.try_send(command) {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
             return Err(match error {
                 TrySendError::Full(_) => WorkerError::Saturated,
                 TrySendError::Disconnected(_) => WorkerError::Closed,
             });
         }
-        Ok(StepHandle {
-            receiver,
-            outstanding: Arc::clone(&self.outstanding),
-            released: false,
-        })
+        Ok(StepHandle { receiver })
     }
 
     #[must_use]
@@ -250,14 +243,24 @@ fn dispatch_loop(receiver: Receiver<DispatchCommand>, executors: [Box<dyn RankEx
 
     let mut last_step_id = 0_u64;
     while let Ok(command) = receiver.recv() {
-        let result = if command.plan.step_id <= last_step_id {
+        let DispatchCommand {
+            plan,
+            schedule,
+            response,
+            permit,
+        } = command;
+        let result = if plan.step_id <= last_step_id {
             Err(WorkerError::StepOrder)
         } else {
-            last_step_id = command.plan.step_id;
-            dispatch_one(&rank_senders, &command.plan, &command.schedule)
+            last_step_id = plan.step_id;
+            dispatch_one(&rank_senders, &plan, &schedule)
         };
+        // Quota belongs to the queued/running TP4 operation, not its response
+        // handle. Release only after every rank and consensus check finish,
+        // including when the caller abandoned the response.
+        drop(permit);
         let failed = result.is_err();
-        let _ = command.response.send(result);
+        let _ = response.send(result);
         if failed {
             // A rank/backend/consensus failure is process-fatal for this
             // executor generation. Continuing could let ranks enter different
@@ -433,7 +436,11 @@ impl From<OutputError> for RankExecutionError {
 
 #[cfg(test)]
 mod tests {
-    use std::thread::ThreadId;
+    use std::{
+        sync::{Arc, Barrier},
+        thread::ThreadId,
+        time::Instant,
+    };
 
     use crate::{
         AttentionTransport, CollectiveKind, CollectiveOp, StepMode, StepPlanRequest, TP_RANK_MASK,
@@ -483,6 +490,12 @@ mod tests {
 
     struct InvalidOutputExecutor;
 
+    struct FirstStepBlockingRankExecutor {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        calls: u64,
+    }
+
     impl RankExecutor for InvalidOutputExecutor {
         fn execute(
             &mut self,
@@ -491,6 +504,22 @@ mod tests {
             _schedule: &CollectiveSchedule,
         ) -> Result<StepOutput, RankExecutionError> {
             Ok(StepOutput::empty())
+        }
+    }
+
+    impl RankExecutor for FirstStepBlockingRankExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.calls += 1;
+            if self.calls == 1 {
+                self.entered.wait();
+                self.release.wait();
+            }
+            cpu_output(plan, schedule)
         }
     }
 
@@ -527,6 +556,52 @@ mod tests {
         assert_eq!(outcome.step_id, 1);
         assert_eq!(outcome.rank_acks.map(|ack| ack.rank), [0, 1, 2, 3]);
         assert_eq!(pool.outstanding(), 0);
+    }
+
+    #[test]
+    fn step_quota_is_owned_by_operation_after_handle_abandonment() {
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Barrier::new(5));
+        let executors = std::array::from_fn(|_| {
+            Box::new(FirstStepBlockingRankExecutor {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+                calls: 0,
+            }) as Box<dyn RankExecutor>
+        });
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        let (plan, schedule) = step(1);
+        let handle = pool.try_submit(plan, schedule).unwrap();
+        entered.wait();
+
+        drop(handle);
+        let outstanding_after_abandonment = pool.outstanding();
+        let (replacement_plan, replacement_schedule) = step(2);
+        let replacement = pool.try_submit(replacement_plan, replacement_schedule);
+        let replacement_was_saturated = matches!(&replacement, Err(WorkerError::Saturated));
+
+        // Always release the blocked rank calls before asserting, so the
+        // regression also terminates cleanly against the former ownership.
+        release.wait();
+        if let Ok(handle) = replacement {
+            let _ = handle.receive();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pool.outstanding() != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "abandoned TP4 operation did not drain"
+            );
+            thread::yield_now();
+        }
+
+        assert_eq!(outstanding_after_abandonment, 1);
+        assert!(replacement_was_saturated);
+        let (next_plan, next_schedule) = step(2);
+        pool.try_submit(next_plan, next_schedule)
+            .unwrap()
+            .receive()
+            .unwrap();
     }
 
     #[test]
