@@ -108,7 +108,8 @@ The protected-precision converter padding correction is pinned in
 `docs/plain-padding-streaming-proof-v1.md`. The in-memory decoder,
 file-backed native reader, and streaming writer now share one offset-aware
 chunk validator; conversion no longer allocates a complete tensor plane only
-to inspect padding.
+to inspect padding. Independent review is requested by
+`docs/fable-plain-padding-streaming-v1-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
