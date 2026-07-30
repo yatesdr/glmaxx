@@ -172,6 +172,18 @@ llama.cpp/ExLlama, and retained controls. It is an unreviewed design only:
 no control revision was selected, no connector/comparator was implemented,
 no endpoint or cn4 was accessed, and no model, capacity, quality, or
 performance result is implied.
+The corrective fused-NVFP4 design is pinned in
+`docs/nvfp4-fused-routed-moe-v1-r2.md`. A source/ABI re-derivation found seven
+pre-implementation gaps in v1: value/SFA padding ambiguity, incomplete route
+validation, an unowned validation phase, FC2 rounding drift, ambiguous paired
+layout IDs, an unbounded prefill workspace, and development scratch aliases.
+R2 fixes the contract with exact dense top-8 semantics, four status-gated
+route stages, compact value rows plus independently padded SFA, dual
+`0x1202` metadata identity, unweighted slot projections followed by
+slot-ordered FMA, a 3,072-row ceiling, exact maximum byte terms, and dedicated
+production ABI planes. This is an unreviewed design correction only; no
+format, CPU proof, kernel, cn4, quality, capacity, or performance evidence is
+implied.
 The NVFP4 canonical decoder correction is pinned in
 `docs/nvfp4-metadata-canonicality-proof-v1.md`. It rejects resigned
 rounding/dtype/global-scale-mode and reserved-field lies, inconsistent
