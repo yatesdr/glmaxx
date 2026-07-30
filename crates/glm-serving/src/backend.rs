@@ -67,6 +67,7 @@ impl Default for CoordinatorBackendConfig {
 pub enum CoordinatorBackendError {
     Config,
     EngineNotHealthy,
+    RuntimeStartup,
     Thread(std::io::Error),
 }
 
@@ -94,6 +95,11 @@ enum BackendCommand {
         request_id: u64,
         tenant: u32,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeStartupFault {
+    BeforeReady,
 }
 
 trait OutputDecoder: Send {
@@ -152,6 +158,15 @@ struct ActiveRequest {
     events: SyncSender<ApiCompletionEvent>,
 }
 
+struct RuntimeControl<'a> {
+    fatal: &'a AtomicBool,
+    shutdown: &'a AtomicBool,
+    owners: &'a Mutex<BTreeMap<u64, u32>>,
+    counters: &'a ServingMetrics,
+    startup: SyncSender<()>,
+    startup_fault: Option<RuntimeStartupFault>,
+}
+
 /// Bounded production adapter between the HTTP API and the single-owner
 /// continuous-batching coordinator.
 ///
@@ -197,11 +212,22 @@ impl CoordinatorApiBackend {
         tokenizer: Arc<dyn RuntimeTokenizer>,
         backend_name: &'static str,
     ) -> Result<Self, CoordinatorBackendError> {
+        Self::spawn_with_tokenizer_inner(config, coordinator, tokenizer, backend_name, None)
+    }
+
+    fn spawn_with_tokenizer_inner(
+        config: CoordinatorBackendConfig,
+        coordinator: ServingCoordinator,
+        tokenizer: Arc<dyn RuntimeTokenizer>,
+        backend_name: &'static str,
+        startup_fault: Option<RuntimeStartupFault>,
+    ) -> Result<Self, CoordinatorBackendError> {
         config.validate()?;
         if backend_name.is_empty() {
             return Err(CoordinatorBackendError::Config);
         }
         let (command_sender, command_receiver) = mpsc::sync_channel(config.command_capacity);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let fatal = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let owners = Arc::new(Mutex::new(BTreeMap::new()));
@@ -218,10 +244,14 @@ impl CoordinatorApiBackend {
                         coordinator,
                         command_receiver,
                         config,
-                        &runtime_fatal,
-                        &runtime_shutdown,
-                        &runtime_owners,
-                        &runtime_counters,
+                        RuntimeControl {
+                            fatal: &runtime_fatal,
+                            shutdown: &runtime_shutdown,
+                            owners: &runtime_owners,
+                            counters: &runtime_counters,
+                            startup: startup_sender,
+                            startup_fault,
+                        },
                     )
                 }));
                 if result.is_err() || !runtime_shutdown.load(Ordering::Acquire) {
@@ -232,6 +262,10 @@ impl CoordinatorApiBackend {
                 }
             })
             .map_err(CoordinatorBackendError::Thread)?;
+        if startup_receiver.recv().is_err() {
+            let _ = runtime_thread.join();
+            return Err(CoordinatorBackendError::RuntimeStartup);
+        }
         Ok(Self {
             health: ApiHealth::production_healthy(backend_name),
             fatal,
@@ -432,13 +466,24 @@ fn runtime_loop(
     mut coordinator: ServingCoordinator,
     commands: Receiver<BackendCommand>,
     config: CoordinatorBackendConfig,
-    fatal: &AtomicBool,
-    shutdown: &AtomicBool,
-    owners: &Mutex<BTreeMap<u64, u32>>,
-    counters: &ServingMetrics,
+    control: RuntimeControl<'_>,
 ) {
+    let RuntimeControl {
+        fatal,
+        shutdown,
+        owners,
+        counters,
+        startup,
+        startup_fault,
+    } = control;
     let mut active = BTreeMap::<u64, ActiveRequest>::new();
     let mut pending_admissions = BTreeSet::<u64>::new();
+    if startup_fault == Some(RuntimeStartupFault::BeforeReady) {
+        panic!("injected serving runtime startup failure");
+    }
+    if startup.send(()).is_err() {
+        return;
+    }
     while !shutdown.load(Ordering::Acquire) {
         let mut progressed = false;
         for _ in 0..config.maximum_commands_per_tick {
@@ -1138,6 +1183,7 @@ fn remove_owner(owners: &Mutex<BTreeMap<u64, u32>>, request_id: u64) {
 mod tests {
     use std::{
         fs,
+        sync::atomic::AtomicUsize,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1410,6 +1456,57 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             Err(RankExecutionError::Backend(-1))
         }
+    }
+
+    struct DropCountingExecutor {
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl RankExecutor for DropCountingExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            _plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            Err(RankExecutionError::Backend(-1))
+        }
+    }
+
+    impl Drop for DropCountingExecutor {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn backend_waits_for_runtime_readiness_and_cleans_failed_startup() {
+        let root = temporary_store();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let executors = std::array::from_fn(|_| {
+            Box::new(DropCountingExecutor {
+                drops: Arc::clone(&drops),
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
+        let result = CoordinatorApiBackend::spawn_with_tokenizer_inner(
+            CoordinatorBackendConfig {
+                command_capacity: 16,
+                completion_event_capacity: 16,
+                maximum_commands_per_tick: 16,
+                idle_poll_interval: Duration::from_millis(1),
+            },
+            coordinator_with_workers(&root, workers),
+            Arc::new(FakeTokenizer),
+            "cpu-test",
+            Some(RuntimeStartupFault::BeforeReady),
+        );
+        assert!(matches!(
+            result,
+            Err(CoordinatorBackendError::RuntimeStartup)
+        ));
+        assert_eq!(drops.load(Ordering::Acquire), 4);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
