@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`4a1e3766d15440f63873b3c50203080121be0d7e`
+`67db1a33de774762f724ca8157fccb1a0d689e4d`
 
-`review-proof-all` verified 119 current handoffs and skipped the two historical
+`review-proof-all` verified 120 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 101 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 102 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -139,6 +139,7 @@ result path; follow the output instructions in that handoff.
 | 117 | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` | `0e084967f6750253c584ca3b0221dbc6de382a30` | `docs/reviews/fable-nvfp4-laboratory-manifest-v1.md` | `nvfp4-laboratory-manifest-v1-design-accepted` |
 | 118 | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` | `16922e4c699b8145eb8d43455e5626b13679ea60` | `docs/reviews/fable-small-checkpoint-runner-v1-r2.md` | `small-checkpoint-runner-v1-r2-design-accepted` |
 | 119 | `docs/fable-tp4-layer6-replay-v1-handoff.md` | `4a1e3766d15440f63873b3c50203080121be0d7e` | `docs/reviews/fable-tp4-layer6-replay-v1.md` | `tp4-layer6-replay-v1-design-accepted` |
+| 120 | `docs/fable-hybrid-serving-manifest-v1-handoff.md` | `67db1a33de774762f724ca8157fccb1a0d689e4d` | `docs/reviews/fable-hybrid-serving-manifest-v1.md` | `hybrid-serving-manifest-v1-design-accepted` |
 
 ## Verification command
 
@@ -149,5 +150,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 119 current handoffs and two
+The expected queue count for this document is 120 current handoffs and two
 explicitly skipped historical umbrella handoffs.
