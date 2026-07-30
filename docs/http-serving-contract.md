@@ -48,7 +48,8 @@ fallback.
 - duplicate headers and request transfer encoding rejected;
 - structured OpenAI-style error bodies;
 - tenant-bound backend cancellation on explicit cancel, stream disconnect, or
-  deadline;
+  deadline, recorded independently of bounded submission-queue capacity and
+  dispatched at the next collective-safe runtime poll;
 - one HTTP request per connection in the retained correctness transport.
 
 The one-request-per-connection worker transport is a functional baseline, not
@@ -63,7 +64,8 @@ loader, padding-ID mask boundary, and incremental stop-safe detokenizer. The
 CPU candidate `CoordinatorApiBackend` now connects those components to
 `ServingCoordinator`, emits exact greedy usage and finish reasons, isolates
 slow receivers, propagates tenant-bound cancellation at collective-safe step
-boundaries, and exposes bounded request/step metrics. Host histograms cover
+boundaries through an owner-bound coalescing registry, and exposes bounded
+request/step metrics. Host histograms cover
 tokenization, queueing, prefix resolution, TTFT, ITL, graph selection,
 scheduler padding, MTP acceptance, and collective bytes. Device and cache-tier
 telemetry remain explicitly unqualified; see

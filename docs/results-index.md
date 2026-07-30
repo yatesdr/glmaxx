@@ -3,11 +3,11 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`a4bbfb0cd10b9e3edaa79abdeea9edc65b1d21c8`
+`f56e0bc03dfd12fd2d5f8f03da1a57d5b66e5dcf`
 
-The complete local gate most recently ran against durable journal transaction
-sequence implementation
-`a4bbfb0cd10b9e3edaa79abdeea9edc65b1d21c8`. The
+The complete local gate most recently ran against queue-independent backend
+cancellation implementation
+`f56e0bc03dfd12fd2d5f8f03da1a57d5b66e5dcf`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -53,6 +53,10 @@ silently reopening as an empty cache.
 It additionally rejects missing complete transaction groups whenever the
 remaining records expose a skipped, decreasing, or non-`Begin` transaction
 boundary.
+The coordinator API backend now records authenticated cancellation in an
+owner-bound coalescing registry rather than the bounded submission channel.
+A queued request retains its marker until it becomes active, and the runtime
+dispatches cancellation before admission polling or another scheduler step.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -60,14 +64,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at durable journal transaction sequence implementation
-`a4bbfb0` passed:
+The latest local run at queue-independent backend cancellation implementation
+`f56e0bc` passed:
 
-- `scripts/local-checks.sh`: 268 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 269 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 62 then-present candidate-based review-handoff hash proofs; the new
-  durable journal transaction-sequence handoff separately passes
-  `review-proof`;
+  and all 63 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files

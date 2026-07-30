@@ -71,12 +71,19 @@ This retained receipt has no startup deadline.
   execution;
 - an event receiver that fills or disconnects is isolated by cancelling only
   that request rather than blocking the global runtime;
-- cancellation verifies the authenticated tenant before it is enqueued;
+- cancellation verifies the authenticated tenant and records one coalescing
+  marker in an owner-bound registry instead of competing with the bounded
+  submission channel;
+- a marker for a request whose submit command is still queued remains
+  retained until that request becomes active, then is dispatched before
+  pending-admission polling or the next scheduler step;
+- cancellation work per scheduler turn is bounded by the command-turn quota,
+  while registry cardinality cannot exceed already-accepted owners;
 - prefix-restore and scheduled cancellations pass through
   `ServingCoordinator::cancel`;
-- submission and cancellation hold the bounded request-registry gate through
-  their nonblocking command enqueue and recheck fatal/shutdown state under
-  that gate;
+- submission holds the bounded request-registry gate through its nonblocking
+  command enqueue; cancellation holds the same gate through its
+  fatal/shutdown recheck and owner-bound marker insertion;
 - a fatal step marks the backend unhealthy before terminal draining, attempts
   one terminal error for every active receiver, drains every already-accepted
   queued submission with a terminal error, and only then clears ownership;
@@ -110,6 +117,10 @@ The in-crate tests cover:
   generation (cross-token matching remains covered in `glm-tokenizer`);
 - tenant mismatch rejection and delivery of explicit cancellation to the
   waiting completion receiver;
+- queue-independent cancellation while a peer is held in a physical TP4 step
+  and a queued request saturates the one-slot submission channel, including
+  duplicate-call coalescing, pre-execution cancellation, peer completion,
+  and marker pruning;
 - fail-closed rejection of probabilistic sampling; and
 - exact lifecycle totals for four concurrent requests across two tenants;
 - isolation of a full completion channel while a concurrent peer reaches its
@@ -134,5 +145,8 @@ The workspace proof remains `scripts/local-checks.sh`.
 - The retained HTTP/1.1 worker transport is functional, not the final
   nonblocking throughput route.
 - Runtime readiness has no startup deadline or post-start liveness watchdog.
+- Cancellation does not interrupt a collective already in flight or wake the
+  runtime through an eventfd; dispatch waits for the next collective-safe
+  runtime poll.
 - No CUDA kernel, checkpoint tensor, quality gate, or serving benchmark is
   exercised by these tests.
