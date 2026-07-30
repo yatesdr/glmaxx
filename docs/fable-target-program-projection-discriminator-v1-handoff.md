@@ -2,7 +2,11 @@
 
 Date: 2026-07-30
 
-Status: adversarial design review requested
+Status: superseded by the fused routed-MoE r3 corrective integration design;
+do not review and do not issue the v1 token
+
+Superseding design:
+`docs/nvfp4-fused-routed-moe-v1-r3.md`
 
 GPU authorization conveyed by this handoff: none
 

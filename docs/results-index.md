@@ -184,6 +184,17 @@ slot-ordered FMA, a 3,072-row ceiling, exact maximum byte terms, and dedicated
 production ABI planes. This is an unreviewed design correction only; no
 format, CPU proof, kernel, cn4, quality, capacity, or performance evidence is
 implied.
+The subsequent integration audit is pinned in
+`docs/nvfp4-fused-routed-moe-v1-r3.md`. It found that r2's row permutation
+does not preserve canonical 2D block-16x16 scale replica groups, that the
+current weight policy neither distinguishes NVFP4 variants nor enforces
+gate/up physical realization, that the target record omits layout IDs, and
+that the only production rank manifest rejects all NVFP4 descriptors. R3
+limits fused FC1 to 1D `0x1202`, defines exact combined physical charges and
+a layout-bound target record, and keeps laboratory/hybrid manifest support
+fail-closed behind separate gates. It supersedes the r2 and original
+projection-discriminator reviews. No implementation or hardware evidence is
+implied.
 The NVFP4 canonical decoder correction is pinned in
 `docs/nvfp4-metadata-canonicality-proof-v1.md`. It rejects resigned
 rounding/dtype/global-scale-mode and reserved-field lies, inconsistent

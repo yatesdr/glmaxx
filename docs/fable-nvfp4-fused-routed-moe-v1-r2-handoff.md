@@ -2,7 +2,11 @@
 
 Date: 2026-07-30
 
-Status: adversarial corrective-design review requested
+Status: superseded by the r3 corrective integration design; do not review
+and do not issue the r2 token
+
+Superseding design:
+`docs/nvfp4-fused-routed-moe-v1-r3.md`
 
 Review candidate commit:
 `2afb205f7cfe5c90cdeac1262996b9fb9df0f726`
