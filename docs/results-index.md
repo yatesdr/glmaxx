@@ -125,6 +125,12 @@ and fails terminally when the obsolete ordering is attempted. This is a CPU
 state-machine result, not a real CUDA startup or checkpoint-load result.
 Independent review is requested by
 `docs/fable-normative-startup-order-v1-handoff.md`.
+The deterministic M4 target is specified in
+`docs/small-checkpoint-runner-v1.md`. It fixes the layer-6 NVFP4 laboratory
+subset, exact rank-local tensor/byte inventory, captured M3 input boundary,
+load/adoption/execution sequence, and fault/repetition evidence. It is a
+design candidate only; no subset builder, rank files, device runner, logits,
+or GPU evidence exists.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
