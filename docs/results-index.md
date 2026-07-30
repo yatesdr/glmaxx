@@ -98,6 +98,11 @@ amax/global-scale pairs, nonzero codes behind zero scales, and nonzero
 value/scale padding while preserving partial-tile 2D scale repetition. It is
 a CPU format result only. Independent review is requested by
 `docs/fable-nvfp4-metadata-canonicality-v1-handoff.md`.
+The production file-backed extension is pinned in
+`docs/nvfp4-streaming-canonicality-proof-v2.md`. A bounded shared validator
+now covers the in-memory decoder, streaming converter, and tentative direct
+upload reader; it additionally enforces exact 2D scale replication. The v2
+review handoff is pending.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
