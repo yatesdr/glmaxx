@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`0e084967f6750253c584ca3b0221dbc6de382a30`
+`16922e4c699b8145eb8d43455e5626b13679ea60`
 
-`review-proof-all` verified 117 current handoffs and skipped the two historical
+`review-proof-all` verified 118 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 99 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 100 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -97,7 +97,7 @@ result path; follow the output instructions in that handoff.
 | 75 | `docs/fable-torn-journal-resume-v1-handoff.md` | `8fb3adf9535683b0de9b54fe2743cb5651b9bdc2` | `fable-torn-journal-resume-v1.md` | `torn-journal-resume-v1-accepted` |
 | 76 | `docs/fable-tp4-rank-startup-handshake-v1-handoff.md` | `1eb8e1c2f6c98a2d20b8e4f168b8e88aadeb97ac` | `fable-tp4-rank-startup-handshake-v1.md` | `tp4-rank-startup-handshake-v1-accepted` |
 | 77 | `docs/fable-tp4-step-operation-quota-v1-handoff.md` | `da46a30a5df430e35d4a9d23aa6a449923494660` | `fable-tp4-step-operation-quota-v1.md` | `tp4-step-operation-quota-v1-accepted` |
-| 78 | `docs/fable-small-checkpoint-runner-v1-handoff.md` | `2b3318176d34eded55cc97e49998423ad4e902ce` | `docs/reviews/fable-small-checkpoint-runner-v1.md` | `small-checkpoint-runner-v1-design-accepted` |
+| 78 | `docs/fable-small-checkpoint-runner-v1-handoff.md` | `2b3318176d34eded55cc97e49998423ad4e902ce` | `docs/reviews/fable-small-checkpoint-runner-v1.md` | superseded; do not issue token |
 | 79 | `docs/fable-checkpoint-load-cpu-core-v1-handoff.md` | `d29ce96a0d6037e045c359fd1116187ca0722c42` | `docs/reviews/fable-checkpoint-load-cpu-core-v1.md` | `checkpoint-load-cpu-core-v1-accepted` |
 | 80 | `docs/fable-native-rank-load-plan-v1-handoff.md` | `7681210af6c93d7a2cb644a80d8aa001e8e8cc02` | `docs/reviews/fable-native-rank-load-plan-v1.md` | `native-rank-load-plan-v1-accepted` |
 | 81 | `docs/fable-rank-set-load-coordinator-v1-handoff.md` | `51e8dc185d328f6fb9cda84ec5e75de14e756776` | `docs/reviews/fable-rank-set-load-coordinator-v1.md` | `rank-set-load-coordinator-v1-accepted` |
@@ -137,6 +137,7 @@ result path; follow the output instructions in that handoff.
 | 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | superseded; do not issue token |
 | 116 | `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md` | `bcc8ebf0b951516acb63ebf2baea1825018bbed8` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r3.md` | `nvfp4-fused-routed-moe-v1-r3-design-accepted` |
 | 117 | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` | `0e084967f6750253c584ca3b0221dbc6de382a30` | `docs/reviews/fable-nvfp4-laboratory-manifest-v1.md` | `nvfp4-laboratory-manifest-v1-design-accepted` |
+| 118 | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` | `16922e4c699b8145eb8d43455e5626b13679ea60` | `docs/reviews/fable-small-checkpoint-runner-v1-r2.md` | `small-checkpoint-runner-v1-r2-design-accepted` |
 
 ## Verification command
 
@@ -147,5 +148,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 117 current handoffs and two
+The expected queue count for this document is 118 current handoffs and two
 explicitly skipped historical umbrella handoffs.

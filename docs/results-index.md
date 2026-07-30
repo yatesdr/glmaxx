@@ -51,7 +51,7 @@ basenames across the full review inbox, retains every per-artifact rejection,
 reports absent and unmatched files, exits unsuccessfully when any matched
 artifact is invalid, and never copies or promotes reviewer-owned bytes. On
 the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
-rejected, and 80 configured results absent. This transient inbox inventory is
+rejected, and 81 configured results absent. This transient inbox inventory is
 diagnostic only and does not change the eight machine-accepted results.
 The next cn4 window is prepared by
 `docs/cn4-environment-capture-v1.md`, which specifies a Rust-owned,
@@ -726,6 +726,7 @@ verdicts:
 | corrected fused NVFP4 routed-MoE design r2, superseded | `2afb205` | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` |
 | fused NVFP4 1D/layout/policy/manifest integration design r3 | `bcc8ebf` | `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md` |
 | NVFP4 M4 laboratory manifest and four-rank load-plan design | `0e08496` | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` |
+| corrected deterministic M4 small-checkpoint runner design r2 | `16922e4` | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |
