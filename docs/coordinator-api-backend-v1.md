@@ -94,6 +94,16 @@ health check while the runtime was becoming fatal, enqueue after the terminal
 drain, and receive only a disconnected channel. The gate never covers a
 blocking send: command insertion remains `try_send`.
 
+The structured-terminal guarantee applies to recoverable backend and rank
+failures while the owner registry remains valid. Poisoning that registry
+requires a Rust panic while its mutex is held and is classified as a
+process-fatal invariant breach. The runtime marks fatal and process
+supervision must replace it, but it does not inspect, drain, or claim exact
+terminal delivery from potentially inconsistent registry bytes. Queued
+receivers may therefore observe channel disconnect in this process-fatal
+case. The API must not remain healthy or admit replacement work after that
+transition.
+
 Request and step telemetry is defined in
 [serving observability v1](serving-observability-v1.md). Recording uses fixed
 histograms and graph counters and performs no allocation in the runtime hot
@@ -125,10 +135,11 @@ The in-crate tests cover:
 - exact lifecycle totals for four concurrent requests across two tenants;
 - isolation of a full completion channel while a concurrent peer reaches its
   normal terminal response;
-- an injected rank-execution failure with one active and three queued
-  submissions with connected, non-backpressured receivers, proving four
-  structured terminal errors, fatal health, zero successful-step
-  observations, and no leaked owners; and
+- an injected rank-execution failure with all four rank executors held at a
+  deterministic barrier while one active and three queued submissions are
+  established, then released to fail, proving four structured terminal
+  errors, fatal health, zero successful-step observations, and no leaked
+  owners; and
 - HTTP refusal when a backend reports healthy state with a non-TP4 topology.
 
 The three backend concurrency/fault schedules pass ten consecutive targeted

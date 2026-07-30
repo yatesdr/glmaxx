@@ -1556,19 +1556,47 @@ mod tests {
         }
     }
 
-    struct DelayedFailExecutor {
-        entered: Arc<AtomicBool>,
+    struct GatedFailExecutor {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
     }
 
-    impl RankExecutor for DelayedFailExecutor {
+    struct BarrierReleaseGuard {
+        release: Arc<Barrier>,
+        released: bool,
+    }
+
+    impl BarrierReleaseGuard {
+        fn new(release: Arc<Barrier>) -> Self {
+            Self {
+                release,
+                released: false,
+            }
+        }
+
+        fn release(mut self) {
+            self.release.wait();
+            self.released = true;
+        }
+    }
+
+    impl Drop for BarrierReleaseGuard {
+        fn drop(&mut self) {
+            if !self.released {
+                self.release.wait();
+            }
+        }
+    }
+
+    impl RankExecutor for GatedFailExecutor {
         fn execute(
             &mut self,
             _rank: u8,
             _plan: &StepPlan,
             _schedule: &CollectiveSchedule,
         ) -> Result<StepOutput, RankExecutionError> {
-            self.entered.store(true, Ordering::Release);
-            std::thread::sleep(Duration::from_millis(100));
+            self.entered.wait();
+            self.release.wait();
             Err(RankExecutionError::Backend(-1))
         }
 
@@ -2280,10 +2308,12 @@ mod tests {
     #[test]
     fn fatal_step_fails_active_and_queued_requests_with_structured_events() {
         let root = temporary_store();
-        let entered = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Barrier::new(5));
         let executors = std::array::from_fn(|_| {
-            Box::new(DelayedFailExecutor {
+            Box::new(GatedFailExecutor {
                 entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
             }) as Box<dyn RankExecutor + Send>
         });
         let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
@@ -2297,20 +2327,15 @@ mod tests {
             },
         );
         let first = backend.submit_chat(1, validated(8, None)).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !entered.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "first request did not enter rank execution"
-            );
-            std::thread::yield_now();
-        }
+        entered.wait();
+        let release_guard = BarrierReleaseGuard::new(Arc::clone(&release));
         let handles = [
             first,
             backend.submit_chat(2, validated(8, None)).unwrap(),
             backend.submit_chat(1, validated(8, None)).unwrap(),
             backend.submit_chat(2, validated(8, None)).unwrap(),
         ];
+        release_guard.release();
 
         for (index, handle) in handles.iter().enumerate() {
             let terminal = terminal_event(handle);
