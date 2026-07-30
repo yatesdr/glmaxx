@@ -440,20 +440,24 @@ fn encode_journal_event(event: &JournalEvent) -> Result<[u8; JOURNAL_RECORD_BYTE
 
 fn decode_journal(bytes: &[u8]) -> Result<(Vec<JournalEvent>, u64), StoreError> {
     let mut events = Vec::with_capacity(bytes.len() / JOURNAL_RECORD_BYTES);
-    let mut maximum_transaction = 0_u64;
+    let mut current_transaction = 0_u64;
     for record in bytes.chunks_exact(JOURNAL_RECORD_BYTES) {
         let event = decode_journal_event(record)?;
         let transaction = event_transaction(&event);
-        maximum_transaction = maximum_transaction.max(transaction);
+        if transaction != current_transaction {
+            let expected = current_transaction
+                .checked_add(1)
+                .ok_or(StoreError::Overflow)?;
+            if transaction != expected || !matches!(event, JournalEvent::Begin { .. }) {
+                return Err(StoreError::JournalSequence);
+            }
+            current_transaction = transaction;
+        }
         events.push(event);
     }
-    let next_transaction = if maximum_transaction == 0 {
-        1
-    } else {
-        maximum_transaction
-            .checked_add(1)
-            .ok_or(StoreError::Overflow)?
-    };
+    let next_transaction = current_transaction
+        .checked_add(1)
+        .ok_or(StoreError::Overflow)?;
     Ok((events, next_transaction))
 }
 
@@ -1016,6 +1020,76 @@ mod tests {
             Err(StoreError::UnjournaledData)
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_complete_transaction_group_fails_closed() {
+        let prefix_root = temporary_store("missing-journal-prefix");
+        let mut store = FileTierStore::open(&prefix_root).unwrap();
+        store.publish(request(0x41, 1, false)).unwrap();
+        store.publish(request(0x42, 1, false)).unwrap();
+        drop(store);
+
+        let journal_path = prefix_root.join("journal.log");
+        let journal_bytes = fs::read(&journal_path).unwrap();
+        let records_per_target_page = 4;
+        assert_eq!(
+            journal_bytes.len(),
+            2 * records_per_target_page * JOURNAL_RECORD_BYTES
+        );
+        let mut journal = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&journal_path)
+            .unwrap();
+        journal
+            .write_all(&journal_bytes[records_per_target_page * JOURNAL_RECORD_BYTES..])
+            .unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            FileTierStore::open(&prefix_root),
+            Err(StoreError::JournalSequence)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&prefix_root),
+            Err(StoreError::JournalSequence)
+        ));
+        fs::remove_dir_all(prefix_root).unwrap();
+
+        let interior_root = temporary_store("missing-journal-interior");
+        let mut store = FileTierStore::open(&interior_root).unwrap();
+        store.publish(request(0x51, 1, false)).unwrap();
+        store.publish(request(0x52, 1, false)).unwrap();
+        store.publish(request(0x53, 1, false)).unwrap();
+        drop(store);
+
+        let journal_path = interior_root.join("journal.log");
+        let journal_bytes = fs::read(&journal_path).unwrap();
+        let group_bytes = records_per_target_page * JOURNAL_RECORD_BYTES;
+        assert_eq!(journal_bytes.len(), 3 * group_bytes);
+        let mut journal = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&journal_path)
+            .unwrap();
+        journal.write_all(&journal_bytes[..group_bytes]).unwrap();
+        journal
+            .write_all(&journal_bytes[2 * group_bytes..])
+            .unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+
+        assert!(matches!(
+            FileTierStore::open(&interior_root),
+            Err(StoreError::JournalSequence)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&interior_root),
+            Err(StoreError::JournalSequence)
+        ));
+        fs::remove_dir_all(interior_root).unwrap();
     }
 
     #[test]
