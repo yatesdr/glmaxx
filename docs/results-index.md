@@ -73,7 +73,8 @@ The latest local run at active-prefix record binding implementation
 
 - `scripts/local-checks.sh`: 270 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 64 then-present candidate-based review-handoff hash proofs;
+  and all 64 then-present candidate-based review-handoff hash proofs; the new
+  active-prefix record-binding handoff separately passes `review-proof`;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -442,6 +443,7 @@ verdicts:
 | durable data rejected without complete journal history | `f724379` | `docs/fable-durable-journal-data-presence-v1-handoff.md` |
 | durable journal transaction sequence continuity | `397c76c` | `docs/fable-durable-journal-transaction-sequence-v1-handoff.md` |
 | queue-independent backend cancellation delivery | `2ace56c` | `docs/fable-backend-lossless-cancellation-v1-handoff.md` |
+| active-prefix record and capability binding | `92568f6` | `docs/fable-active-prefix-record-binding-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
