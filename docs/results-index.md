@@ -87,11 +87,16 @@ or removed IDs enter an owner-rank quarantine bound to one successor
 generation and return to the allocator only after all four exact rank
 receipts.
 The fixed-capacity successor design is pinned in
-`docs/fixed-page-transaction-v1.md`. It derives an exact 174-page edit bound
-for C64/3,072-row prefill, a 128-page bound for MTP6 verification, separates
-large admission/removal from the compute journal, and makes the standalone
-four-rank delta command the cache-only ABI. It is a design candidate, not an
-implementation or performance result.
+`docs/fixed-page-transaction-v1.md`. Fable independently rederived its exact
+174/128/64/64 capacities, then correctly withheld acceptance because the
+retained rank mirror still cloned/scanned complete mappings and first-install
+rank staging had no bounded owner. Corrective amendment
+`docs/fixed-page-transaction-v1-r2.md` requires suffix-only mirror apply with
+accessor-level touched-work accounting, startup-owned fixed indexes and
+incremental logical-state commitments, admission-charged final page-index
+blocks, and a bounded eight-slot/174-entry first-install stream. The amendment
+is a design candidate, not an implementation, CUDA/device-integrity, or
+performance result.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
