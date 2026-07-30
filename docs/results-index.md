@@ -79,6 +79,9 @@ The latest local run at active-page serving transaction implementation
 - `scripts/local-checks.sh`: 273 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and all 65 then-present candidate-based review-handoff hash proofs;
+- the subsequently added active-page transaction handoff separately passes
+  `review-proof`; repository-wide verification now covers 66 handoffs and
+  0/47 configured result artifacts;
 - serving regressions cover mandatory active-table admission, pre-worker
   capacity rejection, exact MTP0/MTP6-capable 1M-boundary accounting and
   cleanup, dynamic MTP tail selection, cancellation-before-peer cleanup, and
@@ -452,6 +455,7 @@ verdicts:
 | durable journal transaction sequence continuity | `397c76c` | `docs/fable-durable-journal-transaction-sequence-v1-handoff.md` |
 | queue-independent backend cancellation delivery | `2ace56c` | `docs/fable-backend-lossless-cancellation-v1-handoff.md` |
 | active-prefix record and capability binding | `92568f6` | `docs/fable-active-prefix-record-binding-v1-handoff.md` |
+| serving active-page admission, step, and cleanup transaction | `326158a` | `docs/fable-serving-active-page-transaction-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
