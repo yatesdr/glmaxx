@@ -1,0 +1,59 @@
+{
+  "schema": "glmaxx.direct-tier-extent-cpu-proof.v1",
+  "format_version": 1,
+  "alignment": 4096,
+  "target_only": {
+    "capability": "target",
+    "logical_bytes": 2014464,
+    "physical_bytes": 2019328,
+    "physical_blocks": 493,
+    "address_aligned": true,
+    "physical_sha256": "dc4a7e39978017ec424bd076ae7e2545561ff18126eaedd666332feeded77c9e",
+    "piece_sha256": [
+      "e2877619715efc7ebfb99379234133b9d5e519afa06d2516b9bdc3d086d93e3d",
+      "5c63e672019c1a0663043a77e6d2e1d2f167f856d337ecfdeb5f81111ee2952b"
+    ],
+    "decoded_exact": true
+  },
+  "mtp": {
+    "capability": "mtp",
+    "logical_bytes": 2046464,
+    "physical_bytes": 2052096,
+    "physical_blocks": 501,
+    "address_aligned": true,
+    "physical_sha256": "d3821fa7fe515afa07e8594b6134ccdff760e7fe396db44898ece260ca7c358a",
+    "piece_sha256": [
+      "e2877619715efc7ebfb99379234133b9d5e519afa06d2516b9bdc3d086d93e3d",
+      "5c63e672019c1a0663043a77e6d2e1d2f167f856d337ecfdeb5f81111ee2952b",
+      "209c0e9bd64162f0c987c9689ec837e9fb57ca230a6034828ed8c3d2fdc04b52"
+    ],
+    "decoded_exact": true
+  },
+  "target_padding_ranges": [
+    [
+      1837056,
+      1839104
+    ],
+    [
+      2016512,
+      2019328
+    ]
+  ],
+  "mtp_padding_ranges": [
+    [
+      1837056,
+      1839104
+    ],
+    [
+      2016512,
+      2019328
+    ],
+    [
+      2051328,
+      2052096
+    ]
+  ],
+  "blocking_store_migration_rejected": true,
+  "gpu_evidence": "none: CPU extent codec only",
+  "verdict": "DIRECT_EXTENT_LAYOUT_PADDING_AND_DIGEST_PASS"
+}

@@ -4,6 +4,7 @@
 mod attention;
 mod budget;
 mod delta;
+mod direct;
 mod kv;
 mod mtp;
 mod page;
@@ -17,6 +18,15 @@ pub use budget::{Budget, BudgetError, CacheCapacity};
 pub use delta::{
     MAXIMUM_DELTA_SEQUENCES, PAGE_TABLE_DELTA_SCHEMA, PageTableDelta, PageTableDeltaError,
     PageTableMirror, RankPageEntry, SequencePageUpdate,
+};
+pub use direct::{
+    DIRECT_IO_ALIGNMENT, DIRECT_TIER_FORMAT_VERSION, DRAFT_SIDECAR_EXTENT_LENGTH,
+    DRAFT_SIDECAR_EXTENT_OFFSET, DirectExtentBuffer, DirectExtentError, DirectExtentRecord,
+    DirectExtentView, DirectPagePieces, DirectPieceRecord, DirectTierCapability, MTP_LOGICAL_BYTES,
+    MTP_PHYSICAL_BYTES, TARGET_INDEXER_EXTENT_LENGTH, TARGET_INDEXER_EXTENT_OFFSET,
+    TARGET_KV_EXTENT_LENGTH, TARGET_KV_EXTENT_OFFSET, TARGET_ONLY_LOGICAL_BYTES,
+    TARGET_ONLY_PHYSICAL_BYTES, decode_direct_extent, encode_direct_extent,
+    validate_direct_io_span,
 };
 pub use kv::{IndexerKeyRecord, KvError, KvRecord};
 pub use mtp::{MtpError, SpeculativeTail, VerifyOutcome};

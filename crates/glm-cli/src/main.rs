@@ -95,6 +95,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some("cpu-proof") => cpu_proof()?,
+        Some("direct-tier-proof") => {
+            let report = direct_tier_proof()?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("exl3-warp-proof") => {
             let report = glm_format::prove_exl3_warp_staging_v2()?;
             let mut json = serde_json::to_vec_pretty(&report)?;
@@ -386,7 +397,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -2010,6 +2021,142 @@ struct Exl3Proof {
     payload_sha256: String,
     reconstructed_f16_bytes: usize,
     reconstructed_sha256: String,
+}
+
+#[derive(Serialize)]
+struct DirectTierProof {
+    schema: &'static str,
+    format_version: u16,
+    alignment: u64,
+    target_only: DirectTierExtentProof,
+    mtp: DirectTierExtentProof,
+    target_padding_ranges: [[u64; 2]; 2],
+    mtp_padding_ranges: [[u64; 2]; 3],
+    blocking_store_migration_rejected: bool,
+    gpu_evidence: &'static str,
+    verdict: &'static str,
+}
+
+#[derive(Serialize)]
+struct DirectTierExtentProof {
+    capability: &'static str,
+    logical_bytes: u64,
+    physical_bytes: u64,
+    physical_blocks: u64,
+    address_aligned: bool,
+    physical_sha256: String,
+    piece_sha256: Vec<String>,
+    decoded_exact: bool,
+}
+
+fn direct_tier_proof() -> Result<DirectTierProof, Box<dyn std::error::Error>> {
+    let target = direct_tier_case(false)?;
+    let mtp = direct_tier_case(true)?;
+    let legacy = glm_cache::TierRecord {
+        namespace: [1; 32],
+        page_key: [2; 32],
+        generation: 1,
+        tier: glm_cache::Tier::Nvme,
+        mtp: false,
+        pieces: vec![
+            glm_cache::TierPieceRecord {
+                piece: TierPiece::TargetKv,
+                byte_length: glm_cache::TARGET_KV_EXTENT_LENGTH,
+                storage_offset: 0,
+                sha256: [3; 32],
+            },
+            glm_cache::TierPieceRecord {
+                piece: TierPiece::TargetIndexer,
+                byte_length: glm_cache::TARGET_INDEXER_EXTENT_LENGTH,
+                storage_offset: glm_cache::TARGET_INDEXER_EXTENT_OFFSET,
+                sha256: [4; 32],
+            },
+        ],
+    };
+    let blocking_store_migration_rejected = matches!(
+        glm_cache::DirectExtentRecord::try_from_blocking_store(&legacy),
+        Err(glm_cache::DirectExtentError::MigrationRequired)
+    );
+    if !target.decoded_exact || !mtp.decoded_exact || !blocking_store_migration_rejected {
+        return Err("direct-tier CPU proof failed".into());
+    }
+    Ok(DirectTierProof {
+        schema: "glmaxx.direct-tier-extent-cpu-proof.v1",
+        format_version: glm_cache::DIRECT_TIER_FORMAT_VERSION,
+        alignment: glm_cache::DIRECT_IO_ALIGNMENT,
+        target_only: target,
+        mtp,
+        target_padding_ranges: [
+            [
+                glm_cache::TARGET_KV_EXTENT_LENGTH,
+                glm_cache::TARGET_INDEXER_EXTENT_OFFSET,
+            ],
+            [
+                glm_cache::TARGET_INDEXER_EXTENT_OFFSET + glm_cache::TARGET_INDEXER_EXTENT_LENGTH,
+                glm_cache::TARGET_ONLY_PHYSICAL_BYTES,
+            ],
+        ],
+        mtp_padding_ranges: [
+            [
+                glm_cache::TARGET_KV_EXTENT_LENGTH,
+                glm_cache::TARGET_INDEXER_EXTENT_OFFSET,
+            ],
+            [
+                glm_cache::TARGET_INDEXER_EXTENT_OFFSET + glm_cache::TARGET_INDEXER_EXTENT_LENGTH,
+                glm_cache::DRAFT_SIDECAR_EXTENT_OFFSET,
+            ],
+            [
+                glm_cache::DRAFT_SIDECAR_EXTENT_OFFSET + glm_cache::DRAFT_SIDECAR_EXTENT_LENGTH,
+                glm_cache::MTP_PHYSICAL_BYTES,
+            ],
+        ],
+        blocking_store_migration_rejected,
+        gpu_evidence: "none: CPU extent codec only",
+        verdict: "DIRECT_EXTENT_LAYOUT_PADDING_AND_DIGEST_PASS",
+    })
+}
+
+fn direct_tier_case(mtp: bool) -> Result<DirectTierExtentProof, Box<dyn std::error::Error>> {
+    let target_kv = direct_tier_pattern(glm_cache::TARGET_KV_EXTENT_LENGTH, 3);
+    let target_indexer = direct_tier_pattern(glm_cache::TARGET_INDEXER_EXTENT_LENGTH, 5);
+    let draft = mtp.then(|| direct_tier_pattern(glm_cache::DRAFT_SIDECAR_EXTENT_LENGTH, 7));
+    let (record, buffer) = glm_cache::encode_direct_extent(
+        [0x11; 32],
+        [0x22; 32],
+        3,
+        5,
+        glm_cache::DIRECT_IO_ALIGNMENT * 7,
+        glm_cache::DirectPagePieces {
+            target_kv: &target_kv,
+            target_indexer: &target_indexer,
+            draft_sidecar: draft.as_deref(),
+        },
+    )?;
+    let decoded = glm_cache::decode_direct_extent(&record, buffer.as_slice())?;
+    let decoded_exact = decoded.target_kv == target_kv
+        && decoded.target_indexer == target_indexer
+        && decoded.draft_sidecar == draft.as_deref();
+    Ok(DirectTierExtentProof {
+        capability: if mtp { "mtp" } else { "target" },
+        logical_bytes: record.capability.logical_bytes(),
+        physical_bytes: record.physical_length,
+        physical_blocks: record.physical_length / glm_cache::DIRECT_IO_ALIGNMENT,
+        address_aligned: (buffer.as_slice().as_ptr() as usize)
+            .is_multiple_of(glm_cache::DIRECT_IO_ALIGNMENT as usize),
+        physical_sha256: hex(&record.physical_sha256),
+        piece_sha256: record
+            .pieces
+            .iter()
+            .map(|piece| hex(&piece.sha256))
+            .collect(),
+        decoded_exact,
+    })
+}
+
+fn direct_tier_pattern(length: u64, seed: u8) -> Vec<u8> {
+    (0..length)
+        .map(|index| seed.wrapping_add((index % 251) as u8))
+        .collect()
 }
 
 fn exl3_proof(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
