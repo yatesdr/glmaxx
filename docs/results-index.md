@@ -51,7 +51,7 @@ basenames across the full review inbox, retains every per-artifact rejection,
 reports absent and unmatched files, exits unsuccessfully when any matched
 artifact is invalid, and never copies or promotes reviewer-owned bytes. On
 the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
-rejected, and 76 configured results absent. This transient inbox inventory is
+rejected, and 77 configured results absent. This transient inbox inventory is
 diagnostic only and does not change the eight machine-accepted results.
 The next cn4 window is prepared by
 `docs/cn4-environment-capture-v1.md`, which specifies a Rust-owned,

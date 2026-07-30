@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`d961d96da3f4b99052272afcd4abf28dbe6f9854`
+`660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1`
 
-`review-proof-all` verified 113 current handoffs and skipped the two historical
+`review-proof-all` verified 114 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 95 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 96 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -133,6 +133,7 @@ result path; follow the output instructions in that handoff.
 | 111 | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` | `b602a9c26f1821f70b2872b158a2201155f71ef1` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1-r3.md` | `direct-tier-scheduler-cpu-v1-r3-accepted` |
 | 112 | `docs/fable-direct-tier-linux-probe-v1-handoff.md` | `a3771e31dd73132db1caa306c097408e05388988` | `docs/reviews/fable-direct-tier-linux-probe-v1.md` | `direct-tier-linux-probe-v1-design-accepted` |
 | 113 | `docs/fable-cn4-environment-capture-v1-handoff.md` | `d961d96da3f4b99052272afcd4abf28dbe6f9854` | `docs/reviews/fable-cn4-environment-capture-v1.md` | `cn4-environment-capture-v1-design-accepted` |
+| 114 | `docs/fable-matched-runtime-control-v1-handoff.md` | `660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1` | `docs/reviews/fable-matched-runtime-control-v1.md` | `matched-runtime-control-v1-design-accepted` |
 
 ## Verification command
 
@@ -143,5 +144,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 113 current handoffs and two
+The expected queue count for this document is 114 current handoffs and two
 explicitly skipped historical umbrella handoffs.
