@@ -123,8 +123,8 @@ kernel, and engine work stays here.
 
 The current local gate passes 399 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
-It verifies 118 candidate-based Fable handoffs against their exact committed
-inputs. Eight of 100 configured review results are present and
+It verifies 119 candidate-based Fable handoffs against their exact committed
+inputs. Eight of 101 configured review results are present and
 machine-accepted; zero present results are withheld. Recorded acceptance
 requires the exact candidate, every pinned input hash, one bare acceptance
 token, and the handoff's exact required result path. A staging-only lint
