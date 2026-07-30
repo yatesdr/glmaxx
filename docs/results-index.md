@@ -118,6 +118,14 @@ a variable-size read can overshoot them. Sixteen focused tests include every
 This is policy-only CPU evidence: no io_uring authority, durable codec,
 registered memory, storage device, CUDA transfer, or performance result is
 implied.
+The corrective scheduling proof is pinned in
+`docs/direct-tier-scheduler-cpu-proof-v1-r2.md`. It supersedes the first
+scheduler candidate after self-adversarial review found that repeated W0
+admission receipts could run before useful read or accepted-W0 service. The
+correction makes due accepted-W0 service precede admission and allows at most
+one publication admission between service decisions. The focused regression
+requires exact `admit A -> read -> service A -> admit B -> service B`
+ordering with excess shared resources.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant

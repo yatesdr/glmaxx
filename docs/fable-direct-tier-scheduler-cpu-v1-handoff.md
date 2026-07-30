@@ -2,7 +2,11 @@
 
 Date: 2026-07-30
 
-Status: CPU scheduling-policy implementation review requested
+Status: superseded by the r2 correction; do not review and do not issue the
+v1 token
+
+Superseding proof:
+`docs/direct-tier-scheduler-cpu-proof-v1-r2.md`
 
 Review candidate commit:
 `6cdbeae417e053d08751c8102304064bf86c360e`

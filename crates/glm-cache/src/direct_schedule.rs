@@ -104,6 +104,7 @@ pub struct DirectIoSchedulerStats {
     pub queued_read_bytes: u64,
     pub read_bytes_since_publication_candidate_waited: u64,
     pub read_bytes_since_admitted_publication_advanced: u64,
+    pub publication_admitted_since_service: bool,
 }
 
 #[derive(Debug)]
@@ -120,6 +121,7 @@ pub struct DirectIoScheduler {
     queued_read_bytes: u64,
     read_bytes_since_publication_candidate_waited: u64,
     read_bytes_since_admitted_publication_advanced: u64,
+    publication_admitted_since_service: bool,
 }
 
 impl DirectIoScheduler {
@@ -140,6 +142,7 @@ impl DirectIoScheduler {
             queued_read_bytes: 0,
             read_bytes_since_publication_candidate_waited: 0,
             read_bytes_since_admitted_publication_advanced: 0,
+            publication_admitted_since_service: false,
         })
     }
 
@@ -175,7 +178,27 @@ impl DirectIoScheduler {
         self.validate_resources(*resources)?;
 
         let next_read_bytes = self.next_read_bytes();
-        let publication_admission_due = !self.publication_candidates.is_empty()
+        let reads_waiting = next_read_bytes.is_some();
+        let publication_service_due = !self.admitted_publications.is_empty()
+            && (!reads_waiting
+                || self.read_bytes_since_admitted_publication_advanced
+                    >= self.config.maximum_read_bytes_before_publication_service
+                || next_read_bytes.is_some_and(|bytes| {
+                    would_exceed(
+                        self.read_bytes_since_admitted_publication_advanced,
+                        bytes,
+                        self.config.maximum_read_bytes_before_publication_service,
+                    )
+                }));
+        if publication_service_due {
+            let command = self.pop_service(DirectIoClass::PublicationWrite)?;
+            self.read_bytes_since_admitted_publication_advanced = 0;
+            self.publication_admitted_since_service = false;
+            return Ok(Some(DirectIoDecision::Service(command)));
+        }
+
+        let publication_admission_due = !self.publication_admitted_since_service
+            && !self.publication_candidates.is_empty()
             && (self.queued_read_bytes <= self.config.read_high_watermark_bytes
                 || self.read_bytes_since_publication_candidate_waited
                     >= self.config.maximum_read_bytes_before_publication_admission
@@ -197,42 +220,28 @@ impl DirectIoScheduler {
             if self.admitted_publications.len() == 1 {
                 self.read_bytes_since_admitted_publication_advanced = 0;
             }
+            self.publication_admitted_since_service = true;
             return Ok(Some(DirectIoDecision::PublicationAdmitted(
                 queued.into_command(DirectIoClass::PublicationWrite),
             )));
         }
 
-        let reads_waiting = next_read_bytes.is_some();
-        let publication_service_due = !self.admitted_publications.is_empty()
-            && (!reads_waiting
-                || self.read_bytes_since_admitted_publication_advanced
-                    >= self.config.maximum_read_bytes_before_publication_service
-                || next_read_bytes.is_some_and(|bytes| {
-                    would_exceed(
-                        self.read_bytes_since_admitted_publication_advanced,
-                        bytes,
-                        self.config.maximum_read_bytes_before_publication_service,
-                    )
-                }));
-        if publication_service_due {
-            let command = self.pop_service(DirectIoClass::PublicationWrite)?;
-            self.read_bytes_since_admitted_publication_advanced = 0;
-            return Ok(Some(DirectIoDecision::Service(command)));
-        }
-
         if !self.resume_reads.is_empty() {
             let command = self.pop_service(DirectIoClass::ResumeRead)?;
+            self.publication_admitted_since_service = false;
             self.record_read_service(command.bytes);
             return Ok(Some(DirectIoDecision::Service(command)));
         }
         if !self.admission_reads.is_empty() {
             let command = self.pop_service(DirectIoClass::AdmissionRead)?;
+            self.publication_admitted_since_service = false;
             self.record_read_service(command.bytes);
             return Ok(Some(DirectIoDecision::Service(command)));
         }
         if !self.admitted_publications.is_empty() {
             let command = self.pop_service(DirectIoClass::PublicationWrite)?;
             self.read_bytes_since_admitted_publication_advanced = 0;
+            self.publication_admitted_since_service = false;
             return Ok(Some(DirectIoDecision::Service(command)));
         }
 
@@ -247,10 +256,9 @@ impl DirectIoScheduler {
             && self.queued_read_bytes <= self.config.read_low_watermark_bytes
             && publication_pressure <= self.config.publication_low_watermark_commands
         {
-            return self
-                .pop_service(DirectIoClass::CleanerWrite)
-                .map(DirectIoDecision::Service)
-                .map(Some);
+            let command = self.pop_service(DirectIoClass::CleanerWrite)?;
+            self.publication_admitted_since_service = false;
+            return Ok(Some(DirectIoDecision::Service(command)));
         }
 
         Ok(None)
@@ -271,6 +279,7 @@ impl DirectIoScheduler {
                 .read_bytes_since_publication_candidate_waited,
             read_bytes_since_admitted_publication_advanced: self
                 .read_bytes_since_admitted_publication_advanced,
+            publication_admitted_since_service: self.publication_admitted_since_service,
         }
     }
 
@@ -1061,6 +1070,48 @@ mod tests {
     }
 
     #[test]
+    fn admission_receipts_cannot_starve_reads_or_accepted_publications() {
+        let mut scheduler = DirectIoScheduler::new(config()).unwrap();
+        for command_id in 1..=2 {
+            scheduler
+                .offer_publication(command(
+                    command_id,
+                    DirectIoClass::PublicationWrite,
+                    1,
+                    command_id,
+                    50,
+                ))
+                .unwrap();
+        }
+        scheduler
+            .enqueue_ready(command(3, DirectIoClass::ResumeRead, 1, 3, 100))
+            .unwrap();
+        let mut available = resources();
+        assert_eq!(
+            admission(scheduler.next(&mut available).unwrap()).command_id,
+            1
+        );
+        assert!(scheduler.stats().publication_admitted_since_service);
+        assert_eq!(
+            service(scheduler.next(&mut available).unwrap()).command_id,
+            3
+        );
+        assert!(!scheduler.stats().publication_admitted_since_service);
+        assert_eq!(
+            service(scheduler.next(&mut available).unwrap()).command_id,
+            1
+        );
+        assert_eq!(
+            admission(scheduler.next(&mut available).unwrap()).command_id,
+            2
+        );
+        assert_eq!(
+            service(scheduler.next(&mut available).unwrap()).command_id,
+            2
+        );
+    }
+
+    #[test]
     fn cleaner_runs_only_below_both_low_watermarks() {
         let mut scheduler = DirectIoScheduler::new(config()).unwrap();
         scheduler
@@ -1146,6 +1197,7 @@ mod tests {
                 queued_read_bytes: 0,
                 read_bytes_since_publication_candidate_waited: 0,
                 read_bytes_since_admitted_publication_advanced: 0,
+                publication_admitted_since_service: false,
             }
         );
     }
