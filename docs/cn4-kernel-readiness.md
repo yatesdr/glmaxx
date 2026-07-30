@@ -103,7 +103,7 @@ export CUTLASS_DIR=/path/to/cutlass-4.6.1
 export GLMAXX_EVIDENCE_DIR=/path/outside/repo/glmaxx-m2-$(date -u +%Y%m%dT%H%M%SZ)
 export GLMAXX_CONTAINER_DIGEST=sha256:<64-lowercase-hex-container-digest>
 export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
-export GLMAXX_REVIEW_ARTIFACT=/path/to/glmaxx/fable-manifest-abi-v022.md
+export GLMAXX_REVIEW_ARTIFACT=/path/to/glmaxx/fable-manifest-abi-v022-r2.md
 export GLMAXX_CN4_AUTHORIZATION=phase-b-authorized
 ./scripts/cn4-phase-b.sh
 ```
@@ -129,7 +129,7 @@ commit, native library, runner, and GPU idleness before launch.
 export GLMAXX_PHASE_B_EVIDENCE=/evidence/<successful-phase-b>
 export GLMAXX_EVIDENCE_DIR=/evidence/direct-baseline-<UTC timestamp>
 export GLMAXX_REVIEW_GATE=manifest-abi-v0.2.2-accepted
-export GLMAXX_REVIEW_ARTIFACT=/workspace/fable-manifest-abi-v022.md
+export GLMAXX_REVIEW_ARTIFACT=/workspace/fable-manifest-abi-v022-r2.md
 export GLMAXX_CN4_AUTHORIZATION=phase-c-authorized
 ./scripts/cn4-phase-c-baseline.sh
 ```

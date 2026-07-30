@@ -566,8 +566,11 @@ The first implementation reviews remain explicitly withheld:
 | EXL3 warp-decode v2 | `fable-exl3-warp-decode-v2.md` | token withheld |
 | NVFP4 manifest ABI v0.2.2 | `fable-manifest-abi-v022.md` | token withheld |
 
-Corrective r2 handoffs are pinned at `0edfc8d`; no corresponding accepted
-review artifact or token is present:
+Corrective r2 handoffs are pinned at `0edfc8d`. Fable's three review texts
+record substantive unqualified passes, but omit complete handoff-input
+attestations and therefore fail `review-proof-all`. The root gate artifacts
+remain absent pending the exact repair request in
+`docs/fable-kernel-r2-attestation-repair-request.md`:
 
 - `docs/fable-exl3-source-projection-v1-r2-handoff.md`;
 - `docs/fable-exl3-warp-decode-v2-r2-handoff.md`;
