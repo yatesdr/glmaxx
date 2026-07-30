@@ -222,6 +222,17 @@ review. The C and C++ header layout checks pass locally. Independent re-review
 is requested by `docs/fable-sm120-rank-executor-v1-r2-handoff.md`; this is not
 a CUDA implementation or launch result.
 
+The coordinated step-execution ABI design is pinned at `bab7866`. It
+supersedes the unpromoted plan/input/output candidates with six explicit
+target/MTP phases, a 95-byte `StepPlan.v3` hash input, fixed 480-byte
+`StepInput.v2` rows, physical-step `SamplingCounter.v2` ownership, a
+one-ahead-capable `PageTableDelta.v2`, and split common/rank-local
+`StepOutput.v2` consensus. It also corrects verifier reservation from seven
+to at most eight successor slots without increasing the two-page-per-row
+edit bound. Independent review is requested by
+`docs/fable-step-execution-abi-v3-handoff.md`; none of the current v1 Rust
+types are relabeled as implementing it.
+
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
 permission to convert a full checkpoint.
@@ -635,6 +646,7 @@ verdicts:
 | fail-closed native TP4 checkpoint-load smoke | `1770563` | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` |
 | resident tensor ID to authenticated device spans | `a49210f` | `docs/fable-resident-tensor-device-binding-v1-handoff.md` |
 | routed projection discriminator for split EXL3/combined NVFP4 | `39fbee5` | `docs/fable-target-program-projection-discriminator-v1-handoff.md` |
+| coordinated StepPlan/Input/Output/MTP/page execution ABI | `bab7866` | `docs/fable-step-execution-abi-v3-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
