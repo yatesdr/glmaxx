@@ -52,6 +52,12 @@ else
 fi
 
 clang++ -std=c++17 -fsyntax-only -x c++ kernels/include/glmaxx_kernel.h
+clang++ -std=c++17 -x c++ \
+  -include docs/sm120-rank-executor-native-abi-v1.h \
+  -fsyntax-only /dev/null
+clang -std=c11 -x c \
+  -include docs/sm120-rank-executor-native-abi-v1.h \
+  -fsyntax-only /dev/null
 
 if command -v nvcc >/dev/null 2>&1; then
   echo "nvcc is present; CUDA execution still requires explicit cn4 authorization"
