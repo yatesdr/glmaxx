@@ -45,7 +45,10 @@ pub use memory::{
     plan_system_memory,
 };
 #[cfg(feature = "cuda-ffi")]
-pub use native_worker::NativeCheckpointRankExecutor;
+pub use native_worker::{
+    LoadedNativeCheckpoint, NativeCheckpointRankExecutor, NativeCheckpointStartupConfig,
+    NativeCheckpointStartupError, load_native_checkpoint,
+};
 pub use output::{
     CommittedTokens, GLM_52_OUTPUT_VOCABULARY, MAX_COMMITTED_TOKENS_PER_SEQUENCE, OutputError,
     StepOutput,

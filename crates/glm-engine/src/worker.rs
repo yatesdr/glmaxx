@@ -48,6 +48,11 @@ pub trait RankExecutor: 'static {
         input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError>;
 
+    /// Returns the checkpoint device identity observed by this owner thread.
+    fn checkpoint_device_identity_sha256(&mut self, _rank: u8) -> Result<[u8; 32], LoadPlanError> {
+        Err(LoadPlanError::Transition)
+    }
+
     /// Prepares this rank's authenticated checkpoint in quarantined storage.
     fn prepare_weights(
         &mut self,
@@ -125,6 +130,7 @@ pub enum RankWeightPhase {
     Acknowledge = 2,
     Finalize = 3,
     Abort = 4,
+    DeviceIdentity = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -429,10 +435,17 @@ enum PoolCommand {
         table: Arc<SequencePageTable>,
         generation: u64,
         response: SyncSender<Result<(), WorkerError>>,
+        permit: ExclusivePermit,
     },
     ApplyDelta {
         delta: Arc<PageTableDelta>,
         response: SyncSender<Result<[PageDeltaAck; 4], WorkerError>>,
+        permit: ExclusivePermit,
+    },
+    CheckpointDeviceIdentities {
+        phase_timeout: Duration,
+        response: SyncSender<Result<[[u8; 32]; RANK_SET_SIZE], WorkerError>>,
+        permit: ExclusivePermit,
     },
     LoadWeights(WeightLoadCommand),
     Execute(DispatchCommand),
@@ -448,6 +461,9 @@ enum RankCommandEnvelope {
     ApplyDelta {
         delta: Arc<PageTableDelta>,
         response: SyncSender<Result<PageDeltaAck, WorkerError>>,
+    },
+    CheckpointDeviceIdentity {
+        response: SyncSender<RankDeviceIdentityResult>,
     },
     PrepareWeights {
         plan: Arc<RankSetLoadPlan>,
@@ -490,6 +506,11 @@ struct RankFinalizeResult {
 struct RankCleanupResult {
     rank: u8,
     result: Result<RankWeightCleanupAck, LoadPlanError>,
+}
+
+struct RankDeviceIdentityResult {
+    rank: u8,
+    result: Result<[u8; 32], LoadPlanError>,
 }
 
 enum RankExecutorSource {
@@ -649,9 +670,7 @@ impl Tp4WorkerPool {
         table: Arc<SequencePageTable>,
         generation: u64,
     ) -> Result<(), WorkerError> {
-        if self.outstanding() != 0 {
-            return Err(WorkerError::Saturated);
-        }
+        let permit = self.reserve_exclusive_worker()?;
         let (response, receiver) = mpsc::sync_channel(1);
         self.sender
             .as_ref()
@@ -660,6 +679,7 @@ impl Tp4WorkerPool {
                 table,
                 generation,
                 response,
+                permit,
             })
             .map_err(|_| WorkerError::Closed)?;
         receiver.recv().map_err(|_| WorkerError::Closed)?
@@ -669,15 +689,38 @@ impl Tp4WorkerPool {
         &self,
         delta: Arc<PageTableDelta>,
     ) -> Result<[PageDeltaAck; 4], WorkerError> {
-        if self.outstanding() != 0 {
-            return Err(WorkerError::Saturated);
-        }
+        let permit = self.reserve_exclusive_worker()?;
         delta.verify()?;
         let (response, receiver) = mpsc::sync_channel(1);
         self.sender
             .as_ref()
             .ok_or(WorkerError::Closed)?
-            .send(PoolCommand::ApplyDelta { delta, response })
+            .send(PoolCommand::ApplyDelta {
+                delta,
+                response,
+                permit,
+            })
+            .map_err(|_| WorkerError::Closed)?;
+        receiver.recv().map_err(|_| WorkerError::Closed)?
+    }
+
+    pub fn checkpoint_device_identities(
+        &self,
+        phase_timeout: Duration,
+    ) -> Result<[[u8; 32]; RANK_SET_SIZE], WorkerError> {
+        if phase_timeout.is_zero() {
+            return Err(WorkerError::Config);
+        }
+        let permit = self.reserve_exclusive_worker()?;
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or(WorkerError::Closed)?
+            .send(PoolCommand::CheckpointDeviceIdentities {
+                phase_timeout,
+                response,
+                permit,
+            })
             .map_err(|_| WorkerError::Closed)?;
         receiver.recv().map_err(|_| WorkerError::Closed)?
     }
@@ -749,13 +792,23 @@ impl Tp4WorkerPool {
     }
 
     fn reserve_exclusive(&self) -> Result<ExclusivePermit, WeightLoadFailure> {
-        self.outstanding
-            .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| WeightLoadFailure {
+        self.try_reserve_exclusive()
+            .map_err(|()| WeightLoadFailure {
                 cause: WeightLoadFailureCause::Saturated,
                 cleanup_failure: None,
                 cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
-            })?;
+            })
+    }
+
+    fn reserve_exclusive_worker(&self) -> Result<ExclusivePermit, WorkerError> {
+        self.try_reserve_exclusive()
+            .map_err(|()| WorkerError::Saturated)
+    }
+
+    fn try_reserve_exclusive(&self) -> Result<ExclusivePermit, ()> {
+        self.outstanding
+            .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ())?;
         Ok(ExclusivePermit {
             outstanding: Arc::clone(&self.outstanding),
         })
@@ -880,6 +933,7 @@ fn dispatch_loop(
                 table,
                 generation,
                 response,
+                permit,
             } => {
                 let result = if initialized {
                     Err(WorkerError::PageTableInitialized)
@@ -888,16 +942,33 @@ fn dispatch_loop(
                 };
                 initialized |= result.is_ok();
                 let failed = result.is_err();
+                drop(permit);
                 let _ = response.send(result);
                 (failed, failed)
             }
-            PoolCommand::ApplyDelta { delta, response } => {
+            PoolCommand::ApplyDelta {
+                delta,
+                response,
+                permit,
+            } => {
                 let result = if initialized {
                     apply_rank_page_delta(&rank_senders, delta)
                 } else {
                     Err(WorkerError::PageTableUninitialized)
                 };
                 let failed = result.is_err();
+                drop(permit);
+                let _ = response.send(result);
+                (failed, failed)
+            }
+            PoolCommand::CheckpointDeviceIdentities {
+                phase_timeout,
+                response,
+                permit,
+            } => {
+                let result = collect_checkpoint_device_identities(&rank_senders, phase_timeout);
+                let failed = result.is_err();
+                drop(permit);
                 let _ = response.send(result);
                 (failed, failed)
             }
@@ -1316,6 +1387,54 @@ fn load_rank_weights(
     })
 }
 
+fn collect_checkpoint_device_identities(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    phase_timeout: Duration,
+) -> Result<[[u8; 32]; RANK_SET_SIZE], WorkerError> {
+    let (response, receiver) = mpsc::sync_channel(RANK_SET_SIZE);
+    let mut send_failed = false;
+    for sender in rank_senders {
+        send_failed |= sender
+            .send(RankCommandEnvelope::CheckpointDeviceIdentity {
+                response: response.clone(),
+            })
+            .is_err();
+    }
+    drop(response);
+    if send_failed {
+        return Err(WorkerError::CheckpointDeviceIdentity(
+            WeightLoadFailureCause::Closed,
+        ));
+    }
+    let messages = collect_rank_messages(
+        receiver,
+        RankWeightPhase::DeviceIdentity,
+        phase_timeout,
+        |message| message.rank,
+    )
+    .map_err(WorkerError::CheckpointDeviceIdentity)?;
+    let mut identities = [[0_u8; 32]; RANK_SET_SIZE];
+    for message in messages {
+        let rank = usize::from(message.rank);
+        let identity = message.result.map_err(|error| {
+            WorkerError::CheckpointDeviceIdentity(WeightLoadFailureCause::Rank {
+                rank: message.rank,
+                phase: RankWeightPhase::DeviceIdentity,
+                error,
+            })
+        })?;
+        if identity == [0; 32] || identities[..rank].contains(&identity) {
+            return Err(WorkerError::CheckpointDeviceIdentity(
+                WeightLoadFailureCause::RankSet {
+                    phase: RankWeightPhase::DeviceIdentity,
+                },
+            ));
+        }
+        identities[rank] = identity;
+    }
+    Ok(identities)
+}
+
 fn prepare_rank_weights(
     rank_senders: &[SyncSender<RankCommandEnvelope>],
     plan: Arc<RankSetLoadPlan>,
@@ -1652,6 +1771,10 @@ fn rank_loop(
                     break;
                 }
             }
+            RankCommandEnvelope::CheckpointDeviceIdentity { response } => {
+                let result = executor.checkpoint_device_identity_sha256(rank);
+                let _ = response.send(RankDeviceIdentityResult { rank, result });
+            }
             RankCommandEnvelope::PrepareWeights {
                 plan,
                 load_attempt_generation,
@@ -1843,6 +1966,7 @@ pub enum WorkerError {
     StepOrder,
     RankSet,
     Consensus,
+    CheckpointDeviceIdentity(WeightLoadFailureCause),
     RankExecution {
         rank: u8,
         error: RankExecutionError,
@@ -2084,6 +2208,13 @@ mod tests {
         fail_code: Option<i32>,
     }
 
+    struct DeviceIdentityExecutor {
+        rank: u8,
+        identity: [u8; 32],
+        delay: Option<Duration>,
+        error: Option<LoadPlanError>,
+    }
+
     struct InvalidOutputExecutor;
 
     struct FirstStepBlockingRankExecutor {
@@ -2235,6 +2366,57 @@ mod tests {
             _input: &StepInput,
         ) -> Result<StepOutput, RankExecutionError> {
             self.execute(rank, plan, schedule)
+        }
+
+        fn checkpoint_device_identity_sha256(
+            &mut self,
+            rank: u8,
+        ) -> Result<[u8; 32], LoadPlanError> {
+            if rank != self.expected_rank {
+                return Err(LoadPlanError::Rank);
+            }
+            Ok([rank + 1; 32])
+        }
+    }
+
+    impl RankExecutor for DeviceIdentityExecutor {
+        fn execute(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if rank != self.rank {
+                return Err(RankExecutionError::Invariant);
+            }
+            cpu_output(plan, schedule)
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
+
+        fn checkpoint_device_identity_sha256(
+            &mut self,
+            rank: u8,
+        ) -> Result<[u8; 32], LoadPlanError> {
+            if rank != self.rank {
+                return Err(LoadPlanError::Rank);
+            }
+            if let Some(delay) = self.delay {
+                thread::sleep(delay);
+            }
+            if let Some(error) = self.error {
+                Err(error)
+            } else {
+                Ok(self.identity)
+            }
         }
     }
 
@@ -2419,6 +2601,150 @@ mod tests {
         let outcome = handle.receive().unwrap();
         assert_eq!(outcome.step_id, 1);
         assert_eq!(outcome.rank_acks.map(|ack| ack.rank), [0, 1, 2, 3]);
+        assert_eq!(pool.outstanding(), 0);
+    }
+
+    #[test]
+    fn checkpoint_device_identity_handshake_is_rank_exact_and_releases_exclusivity() {
+        let executors = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            Box::new(StatefulRankExecutor {
+                expected_rank: rank,
+                calls: 0,
+                thread: None,
+                fail_code: None,
+            }) as Box<dyn RankExecutor + Send>
+        });
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        assert_eq!(
+            pool.checkpoint_device_identities(Duration::from_secs(1))
+                .unwrap(),
+            [[1; 32], [2; 32], [3; 32], [4; 32]]
+        );
+        assert_eq!(pool.outstanding(), 0);
+        let (plan, schedule) = step(1);
+        pool.try_submit(plan, schedule).unwrap().receive().unwrap();
+    }
+
+    #[test]
+    fn every_identity_rank_error_is_exact_and_terminal() {
+        for failed_rank in 0..u8::try_from(RANK_SET_SIZE).unwrap() {
+            let executors = std::array::from_fn(|rank| {
+                let rank = u8::try_from(rank).unwrap();
+                Box::new(DeviceIdentityExecutor {
+                    rank,
+                    identity: [rank + 1; 32],
+                    delay: None,
+                    error: (rank == failed_rank).then_some(LoadPlanError::Identity),
+                }) as Box<dyn RankExecutor + Send>
+            });
+            let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+            assert!(matches!(
+                pool.checkpoint_device_identities(Duration::from_secs(1)),
+                Err(WorkerError::CheckpointDeviceIdentity(
+                    WeightLoadFailureCause::Rank {
+                        rank,
+                        phase: RankWeightPhase::DeviceIdentity,
+                        error: LoadPlanError::Identity,
+                    }
+                )) if rank == failed_rank
+            ));
+        }
+    }
+
+    #[test]
+    fn zero_duplicate_and_timed_out_device_identities_fail_closed() {
+        for invalid_rank in 0..u8::try_from(RANK_SET_SIZE).unwrap() {
+            let executors = std::array::from_fn(|rank| {
+                let rank = u8::try_from(rank).unwrap();
+                Box::new(DeviceIdentityExecutor {
+                    rank,
+                    identity: if rank == invalid_rank {
+                        [0; 32]
+                    } else {
+                        [rank + 1; 32]
+                    },
+                    delay: None,
+                    error: None,
+                }) as Box<dyn RankExecutor + Send>
+            });
+            let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+            assert!(matches!(
+                pool.checkpoint_device_identities(Duration::from_secs(1)),
+                Err(WorkerError::CheckpointDeviceIdentity(
+                    WeightLoadFailureCause::RankSet {
+                        phase: RankWeightPhase::DeviceIdentity,
+                    }
+                ))
+            ));
+        }
+
+        let executors = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            Box::new(DeviceIdentityExecutor {
+                rank,
+                identity: if rank == 3 { [1; 32] } else { [rank + 1; 32] },
+                delay: None,
+                error: None,
+            }) as Box<dyn RankExecutor + Send>
+        });
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        assert!(matches!(
+            pool.checkpoint_device_identities(Duration::from_secs(1)),
+            Err(WorkerError::CheckpointDeviceIdentity(
+                WeightLoadFailureCause::RankSet {
+                    phase: RankWeightPhase::DeviceIdentity,
+                }
+            ))
+        ));
+
+        let executors = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            Box::new(DeviceIdentityExecutor {
+                rank,
+                identity: [rank + 1; 32],
+                delay: (rank == 2).then_some(Duration::from_millis(50)),
+                error: None,
+            }) as Box<dyn RankExecutor + Send>
+        });
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        assert!(matches!(
+            pool.checkpoint_device_identities(Duration::from_millis(5)),
+            Err(WorkerError::CheckpointDeviceIdentity(
+                WeightLoadFailureCause::Timeout {
+                    phase: RankWeightPhase::DeviceIdentity,
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn checkpoint_identity_discovery_owns_exclusive_pool_capacity() {
+        let executors = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            Box::new(DeviceIdentityExecutor {
+                rank,
+                identity: [rank + 1; 32],
+                delay: (rank == 2).then_some(Duration::from_millis(75)),
+                error: None,
+            }) as Box<dyn RankExecutor + Send>
+        });
+        let pool = Arc::new(Tp4WorkerPool::spawn(1, executors).unwrap());
+        let discovery_pool = Arc::clone(&pool);
+        let discovery = thread::spawn(move || {
+            discovery_pool.checkpoint_device_identities(Duration::from_secs(1))
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pool.outstanding() == 0 {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let (plan, schedule) = step(1);
+        assert!(matches!(
+            pool.try_submit(plan, schedule),
+            Err(WorkerError::Saturated)
+        ));
+        discovery.join().unwrap().unwrap();
         assert_eq!(pool.outstanding(), 0);
     }
 

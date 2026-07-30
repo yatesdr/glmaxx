@@ -1,17 +1,20 @@
 use std::{
-    mem,
+    fmt, mem,
     path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
 };
 
 use glm_cuda::{KernelError, NativeRankContext, NativeRankLoadBackend};
-use glm_format::NativeRankReader;
+use glm_format::{NativeRankReader, NativeRankReaderError};
 
 use crate::{
     AcknowledgedCudaRank, AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule,
-    CudaWeightArena, LoadPlanError, PreparedCudaRank, PreparedRankReceipt, PreparedRankSet,
-    RANK_SET_SIZE, RankCheckpointLoadError, RankExecutionError, RankExecutor, RankExecutorFactory,
-    RankSetAbortCommand, RankSetLoadPlan, StepInput, StepOutput, StepPlan, Tp4WorkerPool,
-    WorkerError,
+    CudaWeightArena, LoadPlanError, LoadProfile, LoadVerificationMode, PreparedCudaRank,
+    PreparedRankReceipt, PreparedRankSet, RANK_SET_SIZE, RankCheckpointLoadError,
+    RankExecutionError, RankExecutor, RankExecutorFactory, RankSetAbortCommand,
+    RankSetLoadEnvironment, RankSetLoadPlan, StepInput, StepOutput, StepPlan, Tp4WorkerPool,
+    WeightLoadFailure, WeightLoadOutcome, WorkerError, build_rank_set_load_plan,
 };
 
 const NATIVE_PROGRAM_NOT_IMPLEMENTED: i32 = -1;
@@ -46,6 +49,99 @@ pub struct NativeCheckpointRankExecutor {
     active_weight_load: Option<ActiveWeightLoad>,
     software_provenance_sha256: [u8; 32],
     rank: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeCheckpointStartupConfig {
+    pub maximum_outstanding: usize,
+    pub verification_mode: LoadVerificationMode,
+    pub profile: LoadProfile,
+    pub memory_plan_sha256: [u8; 32],
+    pub codec_capability_sha256: [u8; 32],
+    pub staging_slot_bytes: u32,
+    pub staging_slots_per_rank: u16,
+    pub software_provenance_sha256: [u8; 32],
+    pub load_attempt_generation: u64,
+    pub owner_allocation_generations: [u64; RANK_SET_SIZE],
+    pub phase_timeout: Duration,
+}
+
+#[derive(Debug)]
+pub enum NativeCheckpointStartupError {
+    Config,
+    Reader {
+        rank: u8,
+        error: NativeRankReaderError,
+    },
+    Plan(LoadPlanError),
+    Worker(WorkerError),
+    Load(WeightLoadFailure),
+}
+
+impl fmt::Display for NativeCheckpointStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for NativeCheckpointStartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config => None,
+            Self::Reader { error, .. } => Some(error),
+            Self::Plan(error) => Some(error),
+            Self::Worker(error) => Some(error),
+            Self::Load(error) => Some(error),
+        }
+    }
+}
+
+/// A TP4 worker generation whose four immutable rank arenas were globally
+/// adopted by one successful checkpoint transaction.
+pub struct LoadedNativeCheckpoint {
+    pool: Tp4WorkerPool,
+    plan: Arc<RankSetLoadPlan>,
+    load_outcome: WeightLoadOutcome,
+    device_identity_sha256: [[u8; 32]; RANK_SET_SIZE],
+}
+
+impl LoadedNativeCheckpoint {
+    #[must_use]
+    pub const fn pool(&self) -> &Tp4WorkerPool {
+        &self.pool
+    }
+
+    #[must_use]
+    pub fn plan(&self) -> &RankSetLoadPlan {
+        &self.plan
+    }
+
+    #[must_use]
+    pub const fn load_outcome(&self) -> &WeightLoadOutcome {
+        &self.load_outcome
+    }
+
+    #[must_use]
+    pub const fn device_identity_sha256(&self) -> [[u8; 32]; RANK_SET_SIZE] {
+        self.device_identity_sha256
+    }
+
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Tp4WorkerPool,
+        Arc<RankSetLoadPlan>,
+        WeightLoadOutcome,
+        [[u8; 32]; RANK_SET_SIZE],
+    ) {
+        (
+            self.pool,
+            self.plan,
+            self.load_outcome,
+            self.device_identity_sha256,
+        )
+    }
 }
 
 impl NativeCheckpointRankExecutor {
@@ -148,6 +244,13 @@ impl RankExecutor for NativeCheckpointRankExecutor {
         _input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError> {
         self.fail_closed_execute(rank, plan, schedule)
+    }
+
+    fn checkpoint_device_identity_sha256(&mut self, rank: u8) -> Result<[u8; 32], LoadPlanError> {
+        if rank != self.rank {
+            return Err(LoadPlanError::Rank);
+        }
+        self.device_identity_sha256().map_err(map_kernel_error)
     }
 
     fn prepare_weights(
@@ -289,6 +392,101 @@ impl RankExecutor for NativeCheckpointRankExecutor {
                 self.weights = NativeWeightState::CleanupFailed;
                 Err(error)
             }
+        }
+    }
+}
+
+/// Opens, authenticates, plans, allocates, verifies, and globally adopts one
+/// four-rank native checkpoint.
+///
+/// The preflight plan uses synthetic unique device identities only to prove
+/// the four files and all non-device plan inputs before native startup. The
+/// published plan is rebuilt from identities reported by the same persistent
+/// rank executors that perform the allocation.
+pub fn load_native_checkpoint(
+    rank_files: [PathBuf; RANK_SET_SIZE],
+    config: NativeCheckpointStartupConfig,
+) -> Result<LoadedNativeCheckpoint, NativeCheckpointStartupError> {
+    if config.maximum_outstanding == 0
+        || config.software_provenance_sha256 == [0; 32]
+        || config.load_attempt_generation == 0
+        || config.owner_allocation_generations.contains(&0)
+        || config.phase_timeout.is_zero()
+    {
+        return Err(NativeCheckpointStartupError::Config);
+    }
+
+    let mut opened = Vec::with_capacity(RANK_SET_SIZE);
+    for (rank, path) in rank_files.iter().enumerate() {
+        let rank_u8 = u8::try_from(rank).map_err(|_| NativeCheckpointStartupError::Config)?;
+        let reader =
+            NativeRankReader::open(path).map_err(|error| NativeCheckpointStartupError::Reader {
+                rank: rank_u8,
+                error,
+            })?;
+        if reader.rank != u32::from(rank_u8) {
+            return Err(NativeCheckpointStartupError::Plan(LoadPlanError::Rank));
+        }
+        opened.push(reader);
+    }
+    let readers: [NativeRankReader; RANK_SET_SIZE] = opened
+        .try_into()
+        .map_err(|_| NativeCheckpointStartupError::Config)?;
+    let reader_refs = [&readers[0], &readers[1], &readers[2], &readers[3]];
+
+    let preflight_identities =
+        std::array::from_fn(|rank| [u8::try_from(rank).expect("four ranks fit") + 1; 32]);
+    build_rank_set_load_plan(
+        reader_refs,
+        config.rank_set_environment(preflight_identities),
+    )
+    .map_err(NativeCheckpointStartupError::Plan)?;
+
+    let pool = Tp4WorkerPool::spawn_native_checkpoint_loaders(
+        config.maximum_outstanding,
+        rank_files,
+        config.software_provenance_sha256,
+    )
+    .map_err(NativeCheckpointStartupError::Worker)?;
+    let device_identity_sha256 = pool
+        .checkpoint_device_identities(config.phase_timeout)
+        .map_err(NativeCheckpointStartupError::Worker)?;
+    let plan = Arc::new(
+        build_rank_set_load_plan(
+            reader_refs,
+            config.rank_set_environment(device_identity_sha256),
+        )
+        .map_err(NativeCheckpointStartupError::Plan)?,
+    );
+    let load_outcome = pool
+        .load_weights(
+            Arc::clone(&plan),
+            config.load_attempt_generation,
+            config.owner_allocation_generations,
+            config.phase_timeout,
+        )
+        .map_err(NativeCheckpointStartupError::Load)?;
+    Ok(LoadedNativeCheckpoint {
+        pool,
+        plan,
+        load_outcome,
+        device_identity_sha256,
+    })
+}
+
+impl NativeCheckpointStartupConfig {
+    fn rank_set_environment(
+        self,
+        device_identity_sha256: [[u8; 32]; RANK_SET_SIZE],
+    ) -> RankSetLoadEnvironment {
+        RankSetLoadEnvironment {
+            verification_mode: self.verification_mode,
+            profile: self.profile,
+            device_identity_sha256,
+            memory_plan_sha256: self.memory_plan_sha256,
+            codec_capability_sha256: self.codec_capability_sha256,
+            staging_slot_bytes: self.staging_slot_bytes,
+            staging_slots_per_rank: self.staging_slots_per_rank,
         }
     }
 }
