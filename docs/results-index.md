@@ -496,6 +496,7 @@ verdicts:
 | canonical page-table delta and page-granular mutation | `a1d4cb4` | `docs/fable-page-table-delta-v1-handoff.md` |
 | page-reuse quarantine and in-place tentative commit | `832bf97` | `docs/fable-page-reuse-quarantine-v1-handoff.md` |
 | fixed-capacity page transaction design | `e1dd8d8` | `docs/fable-fixed-page-transaction-v1-handoff.md` |
+| sustained serving load and fault qualification design | `1dbab21` | `docs/fable-sustained-serving-load-fault-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
