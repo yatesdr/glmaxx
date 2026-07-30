@@ -132,6 +132,14 @@ load/adoption/execution sequence, and fault/repetition evidence. It is a
 design candidate only; no subset builder, rank files, device runner, logits,
 or GPU evidence exists. Independent review is requested by
 `docs/fable-small-checkpoint-runner-v1-handoff.md`.
+The checkpoint-load CPU core is pinned in
+`docs/checkpoint-load-cpu-core-proof-v1.md`. Candidate `6561492` implements
+the exact plan, tensor-layout, prepared-receipt, prepared-set, adoption, and
+execution-permit encodings; planned streaming into quarantined arenas; and an
+adoption-bound `WeightsLoaded` startup transition. The exact candidate passes
+309 tests and the complete local gate. This is not a native-rank plan
+builder, CUDA upload, checkpoint smoke, device-residency, or production
+health result.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
