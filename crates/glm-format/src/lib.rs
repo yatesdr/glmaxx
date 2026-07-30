@@ -24,8 +24,8 @@ pub use checkpoint::{
     protected_tensor_contracts, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 pub use container::{
-    HEADER_BYTES, PlainDtype, PlainTensor, RankFile, RankFileBuilder, RankFileError,
-    TensorDescriptor, TensorPayload, TensorRecord,
+    HEADER_BYTES, NATIVE_PAYLOAD_ALIGNMENT, PlainDtype, PlainTensor, RankFile, RankFileBuilder,
+    RankFileError, TensorDescriptor, TensorPayload, TensorRecord,
 };
 pub use crc32c::crc32c;
 pub use exl3::{
@@ -43,6 +43,7 @@ pub use nvfp4::{
 };
 pub use rank_manifest::{
     PRODUCTION_RANK_MANIFEST_SCHEMA, RankManifestError, RankWeightProfile, ValidatedRankManifest,
+    ValidatedTensorSemantic, rank_invariant_tensor_catalog_sha256,
 };
 pub use safetensors::{
     SafeDtype, SafeTensorDescriptor, SafeTensorError, SafeTensorFile, SafeTensorReader,

@@ -47,6 +47,82 @@ pub struct ValidatedRankManifest {
     pub engine_spec_sha256: [u8; 32],
     pub tensor_source_payload_bytes: u64,
     pub source_verified_file_bytes: u64,
+    pub tensor_semantics: Vec<ValidatedTensorSemantic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ValidatedTensorSemantic {
+    pub tensor_id: u32,
+    pub role_id: u16,
+    pub codec_id: u16,
+    pub layer_id: i16,
+    pub expert_id: i16,
+    pub tp_shard_axis: i8,
+    pub ndim: u8,
+    pub flags: u8,
+    pub source_binding_kind: u8,
+    pub logical_dtype: u16,
+    pub stored_dtype: u16,
+    pub quant_group_elements: u32,
+    pub rank_logical_shape: [u32; 4],
+    pub global_logical_shape: [u64; 4],
+    pub name_sha256: [u8; 32],
+    pub reconstruction_id: u16,
+    pub collective_after_id: u16,
+    pub source_dtype_id: u16,
+    pub source_axis: i8,
+}
+
+impl ValidatedTensorSemantic {
+    #[must_use]
+    pub fn encode(self) -> [u8; 128] {
+        let mut output = [0_u8; 128];
+        put_u32(&mut output, 0, self.tensor_id);
+        put_u16(&mut output, 4, self.role_id);
+        put_u16(&mut output, 6, self.codec_id);
+        put_i16(&mut output, 8, self.layer_id);
+        put_i16(&mut output, 10, self.expert_id);
+        output[12] = self.tp_shard_axis.to_le_bytes()[0];
+        output[13] = self.ndim;
+        output[14] = self.flags;
+        output[15] = self.source_binding_kind;
+        put_u16(&mut output, 16, self.logical_dtype);
+        put_u16(&mut output, 18, self.stored_dtype);
+        put_u32(&mut output, 20, self.quant_group_elements);
+        for (index, dimension) in self.rank_logical_shape.into_iter().enumerate() {
+            put_u32(&mut output, 24 + index * 4, dimension);
+        }
+        for (index, dimension) in self.global_logical_shape.into_iter().enumerate() {
+            put_u64(&mut output, 40 + index * 8, dimension);
+        }
+        output[72..104].copy_from_slice(&self.name_sha256);
+        put_u16(&mut output, 104, self.reconstruction_id);
+        put_u16(&mut output, 106, self.collective_after_id);
+        put_u16(&mut output, 108, self.source_dtype_id);
+        output[110] = self.source_axis.to_le_bytes()[0];
+        output
+    }
+}
+
+pub fn rank_invariant_tensor_catalog_sha256(
+    tensors: &[ValidatedTensorSemantic],
+) -> Result<[u8; 32], RankManifestError> {
+    if tensors.is_empty() {
+        return Err(RankManifestError::TensorContract);
+    }
+    let count = u32::try_from(tensors.len()).map_err(|_| RankManifestError::Overflow)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"glmaxx.rank-invariant-tensor-catalog.v1\0");
+    hasher.update(count.to_le_bytes());
+    for (expected_id, tensor) in tensors.iter().copied().enumerate() {
+        if tensor.tensor_id
+            != u32::try_from(expected_id).map_err(|_| RankManifestError::Overflow)?
+        {
+            return Err(RankManifestError::Tensor(expected_id));
+        }
+        hasher.update(tensor.encode());
+    }
+    Ok(hasher.finalize().into())
 }
 
 pub(crate) struct RankManifestContext<'a> {
@@ -105,6 +181,7 @@ fn validate_rank_manifest_inner(
         validate_pinned_inventory(&manifest, tensor_contract_sha256)?;
     }
 
+    let tensor_semantics = validated_tensor_semantics(&manifest, &context)?;
     Ok(Some(ValidatedRankManifest {
         rank: manifest.rank,
         profile: parse_profile(&manifest)?,
@@ -117,6 +194,7 @@ fn validate_rank_manifest_inner(
         engine_spec_sha256: nonzero_sha256(&manifest.review.engine_spec_sha256)?,
         tensor_source_payload_bytes: manifest.tensor_source_payload_bytes,
         source_verified_file_bytes: manifest.integrity.source_verified_file_bytes,
+        tensor_semantics,
     }))
 }
 
@@ -334,6 +412,110 @@ fn validate_tensors(
     Ok(())
 }
 
+fn validated_tensor_semantics(
+    manifest: &RawRankManifest,
+    context: &RankManifestContext<'_>,
+) -> Result<Vec<ValidatedTensorSemantic>, RankManifestError> {
+    manifest
+        .tensors
+        .iter()
+        .zip(context.descriptors)
+        .enumerate()
+        .map(|(index, (tensor, descriptor))| {
+            let mut global_logical_shape = [1_u64; 4];
+            for (destination, source) in global_logical_shape
+                .iter_mut()
+                .zip(tensor.global_shape.iter().copied())
+            {
+                *destination = source;
+            }
+            Ok(ValidatedTensorSemantic {
+                tensor_id: u32::try_from(index).map_err(|_| RankManifestError::Overflow)?,
+                role_id: descriptor.role_id,
+                codec_id: descriptor.codec_id,
+                layer_id: descriptor.layer_id,
+                expert_id: descriptor.expert_id,
+                tp_shard_axis: descriptor.tp_shard_axis,
+                ndim: descriptor.ndim,
+                flags: tensor.flags,
+                source_binding_kind: source_binding_kind_id(&tensor.source.kind)
+                    .ok_or(RankManifestError::Tensor(index))?,
+                logical_dtype: descriptor.logical_dtype,
+                stored_dtype: descriptor.stored_dtype,
+                quant_group_elements: descriptor.quant_group_elements,
+                rank_logical_shape: descriptor.logical_shape,
+                global_logical_shape,
+                name_sha256: sha256(tensor.name.as_bytes()),
+                reconstruction_id: reconstruction_id(&tensor.reconstruction)
+                    .ok_or(RankManifestError::Tensor(index))?,
+                collective_after_id: collective_after_id(&tensor.collective_after)
+                    .ok_or(RankManifestError::Tensor(index))?,
+                source_dtype_id: source_dtype_id(&tensor.source_dtype)
+                    .ok_or(RankManifestError::Tensor(index))?,
+                source_axis: tensor.source.axis,
+            })
+        })
+        .collect()
+}
+
+fn source_binding_kind_id(kind: &str) -> Option<u8> {
+    match kind {
+        "replicated" => Some(1),
+        "contiguous_tp_slice" => Some(2),
+        "explicit_rank_components" => Some(3),
+        _ => None,
+    }
+}
+
+fn reconstruction_id(reconstruction: &str) -> Option<u16> {
+    match reconstruction {
+        "byte_exact_source_precision" => Some(1),
+        "exl3_tr3_trellis_v0" => Some(2),
+        _ => None,
+    }
+}
+
+fn collective_after_id(collective: &str) -> Option<u16> {
+    match collective {
+        "none" => Some(0),
+        "tp_embedding_reduce" => Some(1),
+        "distributed_sampling" => Some(2),
+        "tp_all_reduce" => Some(3),
+        _ => None,
+    }
+}
+
+fn source_dtype_id(dtype: &str) -> Option<u16> {
+    [
+        "BOOL",
+        "F4",
+        "F6_E2M3",
+        "F6_E3M2",
+        "U8",
+        "I8",
+        "U16",
+        "I16",
+        "U32",
+        "I32",
+        "U64",
+        "I64",
+        "F16",
+        "BF16",
+        "F32",
+        "F64",
+        "F8_E4M3",
+        "F8_E5M2",
+        "F8_E8M0",
+        "F8_E4M3FNUZ",
+        "F8_E5M2FNUZ",
+        "C64",
+    ]
+    .iter()
+    .position(|candidate| *candidate == dtype)
+    .and_then(|index| u16::try_from(index + 1).ok())
+    .or_else(|| (dtype == "EXL3_TR3_COMPONENTS").then_some(0x8000))
+}
+
 fn validate_source_binding(
     tensor: &RawManifestTensor,
     rank: u8,
@@ -544,6 +726,22 @@ fn hex_nibble(value: u8) -> u8 {
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
+}
+
+fn put_u16(output: &mut [u8], offset: usize, value: u16) {
+    output[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_i16(output: &mut [u8], offset: usize, value: i16) {
+    output[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u32(output: &mut [u8], offset: usize, value: u32) {
+    output[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(output: &mut [u8], offset: usize, value: u64) {
+    output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 #[derive(Debug)]
@@ -813,6 +1011,103 @@ mod tests {
     }
 
     #[test]
+    fn tensor_semantic_entry_is_exact_and_catalog_hash_is_domain_separated() {
+        let mut fixture = make_fixture();
+        let bytes = fixture.canonical_bytes();
+        let validated = fixture.validate_core(&bytes).unwrap().unwrap();
+        assert_eq!(validated.tensor_semantics.len(), 1);
+        let semantic = validated.tensor_semantics[0];
+        assert_eq!(
+            semantic,
+            ValidatedTensorSemantic {
+                tensor_id: 0,
+                role_id: 0x0003,
+                codec_id: CODEC_BF16_ROW_MAJOR,
+                layer_id: -1,
+                expert_id: -1,
+                tp_shard_axis: -1,
+                ndim: 2,
+                flags: 0,
+                source_binding_kind: 1,
+                logical_dtype: DTYPE_BF16,
+                stored_dtype: DTYPE_BF16,
+                quant_group_elements: 0,
+                rank_logical_shape: [2, 4, 1, 1],
+                global_logical_shape: [2, 4, 1, 1],
+                name_sha256: sha256(b"model.norm.weight"),
+                reconstruction_id: 1,
+                collective_after_id: 0,
+                source_dtype_id: 14,
+                source_axis: -1,
+            }
+        );
+        let encoded = semantic.encode();
+        assert_eq!(encoded.len(), 128);
+        assert_eq!(&encoded[0..4], 0_u32.to_le_bytes());
+        assert_eq!(&encoded[4..6], 0x0003_u16.to_le_bytes());
+        assert_eq!(&encoded[8..10], (-1_i16).to_le_bytes());
+        assert_eq!(&encoded[10..12], (-1_i16).to_le_bytes());
+        assert_eq!(encoded[12], 0xff);
+        assert_eq!(encoded[13], 2);
+        assert_eq!(encoded[15], 1);
+        assert_eq!(
+            &encoded[24..40],
+            &[2, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+        );
+        assert_eq!(&encoded[40..48], 2_u64.to_le_bytes());
+        assert_eq!(&encoded[48..56], 4_u64.to_le_bytes());
+        assert_eq!(&encoded[72..104], &sha256(b"model.norm.weight"));
+        assert_eq!(&encoded[104..106], 1_u16.to_le_bytes());
+        assert_eq!(&encoded[106..108], 0_u16.to_le_bytes());
+        assert_eq!(&encoded[108..110], 14_u16.to_le_bytes());
+        assert_eq!(encoded[110], 0xff);
+        assert!(encoded[111..].iter().all(|&byte| byte == 0));
+
+        let digest = rank_invariant_tensor_catalog_sha256(&validated.tensor_semantics).unwrap();
+        let mut independent = Sha256::new();
+        independent.update(b"glmaxx.rank-invariant-tensor-catalog.v1\0");
+        independent.update(1_u32.to_le_bytes());
+        independent.update(encoded);
+        assert_eq!(digest, <[u8; 32]>::from(independent.finalize()));
+        assert_ne!(digest, sha256(&encoded));
+    }
+
+    #[test]
+    fn source_dtype_ids_cover_the_frozen_enumeration_without_aliases() {
+        for (index, name) in [
+            "BOOL",
+            "F4",
+            "F6_E2M3",
+            "F6_E3M2",
+            "U8",
+            "I8",
+            "U16",
+            "I16",
+            "U32",
+            "I32",
+            "U64",
+            "I64",
+            "F16",
+            "BF16",
+            "F32",
+            "F64",
+            "F8_E4M3",
+            "F8_E5M2",
+            "F8_E8M0",
+            "F8_E4M3FNUZ",
+            "F8_E5M2FNUZ",
+            "C64",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(source_dtype_id(name), u16::try_from(index + 1).ok());
+        }
+        assert_eq!(source_dtype_id("EXL3_TR3_COMPONENTS"), Some(0x8000));
+        assert_eq!(source_dtype_id("BFLOAT16"), None);
+    }
+
+    #[test]
     fn production_manifest_rejects_unknown_fields_and_unreviewed_profiles() {
         let mut fixture = make_fixture();
         let bytes = fixture.canonical_bytes();
@@ -853,6 +1148,7 @@ mod tests {
 
     #[test]
     fn pinned_capacity_inventory_source_bindings_match_validator() {
+        let mut expected_catalog = None;
         for rank in 0_u8..4 {
             let plan = crate::pinned_exl3_rank_plan(rank).unwrap();
             let tensor_value = serde_json::to_value(plan.manifest_tensors().unwrap()).unwrap();
@@ -877,7 +1173,50 @@ mod tests {
                 .unwrap();
             assert_eq!(source_payload_bytes, PINNED_RANK_SOURCE_PAYLOAD_BYTES);
             assert_eq!(source_payload_bytes, plan.source_payload_bytes());
+            let semantics: Vec<_> = tensors
+                .iter()
+                .enumerate()
+                .map(|(index, tensor)| {
+                    let mut rank_logical_shape = [1_u32; 4];
+                    rank_logical_shape[..tensor.rank_shape.len()]
+                        .copy_from_slice(&tensor.rank_shape);
+                    let mut global_logical_shape = [1_u64; 4];
+                    global_logical_shape[..tensor.global_shape.len()]
+                        .copy_from_slice(&tensor.global_shape);
+                    ValidatedTensorSemantic {
+                        tensor_id: u32::try_from(index).unwrap(),
+                        role_id: tensor.role_id,
+                        codec_id: tensor.codec_id,
+                        layer_id: tensor.layer_id,
+                        expert_id: tensor.expert_id,
+                        tp_shard_axis: tensor.tp_shard_axis,
+                        ndim: tensor.ndim,
+                        flags: tensor.flags,
+                        source_binding_kind: source_binding_kind_id(&tensor.source.kind).unwrap(),
+                        logical_dtype: tensor.logical_dtype,
+                        stored_dtype: tensor.stored_dtype,
+                        quant_group_elements: tensor.quant_group_elements,
+                        rank_logical_shape,
+                        global_logical_shape,
+                        name_sha256: sha256(tensor.name.as_bytes()),
+                        reconstruction_id: reconstruction_id(&tensor.reconstruction).unwrap(),
+                        collective_after_id: collective_after_id(&tensor.collective_after).unwrap(),
+                        source_dtype_id: source_dtype_id(&tensor.source_dtype).unwrap(),
+                        source_axis: tensor.source.axis,
+                    }
+                })
+                .collect();
+            let catalog = rank_invariant_tensor_catalog_sha256(&semantics).unwrap();
+            if let Some(expected) = expected_catalog {
+                assert_eq!(catalog, expected);
+            } else {
+                expected_catalog = Some(catalog);
+            }
         }
+        assert_eq!(
+            encode_hex(&expected_catalog.unwrap()),
+            "bb08eef4631a430a4fe3660087c349927f25eb69281bde76d85a5f6eef222deb"
+        );
     }
 
     fn make_fixture() -> Fixture {

@@ -337,6 +337,11 @@ impl NativeRankReader {
         self.descriptors.len()
     }
 
+    #[must_use]
+    pub fn file_payload_bytes(&self) -> u64 {
+        self.payload_region.len()
+    }
+
     pub fn tensor_name(&self, index: usize) -> Result<&str, NativeRankReaderError> {
         self.names
             .get(index)
@@ -885,6 +890,7 @@ fn manifest_consensus(
                 && left.engine_spec_sha256 == right.engine_spec_sha256
                 && left.tensor_source_payload_bytes == right.tensor_source_payload_bytes
                 && left.source_verified_file_bytes == right.source_verified_file_bytes
+                && left.tensor_semantics == right.tensor_semantics
         }
         _ => false,
     }

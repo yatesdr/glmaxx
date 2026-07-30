@@ -9,7 +9,8 @@ use crate::{
 pub const HEADER_BYTES: usize = 4096;
 pub(crate) const DESCRIPTOR_BYTES: usize = 256;
 pub(crate) const ALIGNMENT: usize = 4096;
-pub(crate) const PAYLOAD_ALIGNMENT: usize = 256;
+pub const NATIVE_PAYLOAD_ALIGNMENT: u32 = 256;
+pub(crate) const PAYLOAD_ALIGNMENT: usize = NATIVE_PAYLOAD_ALIGNMENT as usize;
 pub(crate) const CODEC_BF16_ROW_MAJOR: u16 = 0x0001;
 pub(crate) const CODEC_FP16_ROW_MAJOR: u16 = 0x0002;
 pub(crate) const CODEC_FP32_ROW_MAJOR: u16 = 0x0003;

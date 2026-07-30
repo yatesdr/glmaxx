@@ -1,6 +1,10 @@
 use std::fmt;
 
-use glm_format::{RankTensorSink, TensorDescriptor};
+use glm_format::{
+    NATIVE_PAYLOAD_ALIGNMENT, NativeRankReader, RankTensorSink, RankWeightProfile,
+    TensorDescriptor, ValidatedRankManifest, pinned_exl3_rank_plan,
+    rank_invariant_tensor_catalog_sha256,
+};
 use sha2::{Digest, Sha256};
 
 pub const LOAD_PLAN_HEADER_BYTES: usize = 416;
@@ -47,6 +51,17 @@ pub struct RankSetLoadPlanHeader {
     pub operation_manifest_sha256: [u8; 32],
     pub tensor_catalog_sha256: [u8; 32],
     pub profile_budget_sha256: [u8; 32],
+    pub staging_slot_bytes: u32,
+    pub staging_slots_per_rank: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RankSetLoadEnvironment {
+    pub verification_mode: LoadVerificationMode,
+    pub profile: LoadProfile,
+    pub device_identity_sha256: [[u8; 32]; RANK_SET_SIZE],
+    pub memory_plan_sha256: [u8; 32],
+    pub codec_capability_sha256: [u8; 32],
     pub staging_slot_bytes: u32,
     pub staging_slots_per_rank: u16,
 }
@@ -191,6 +206,292 @@ impl RankSetLoadPlan {
                     .ok_or(LoadPlanError::Overflow)
             })
     }
+}
+
+pub fn build_rank_set_load_plan(
+    readers: [&NativeRankReader; RANK_SET_SIZE],
+    environment: RankSetLoadEnvironment,
+) -> Result<RankSetLoadPlan, LoadPlanError> {
+    NativeRankReader::validate_rank_set(readers).map_err(|_| LoadPlanError::Reader)?;
+    let sources = [
+        authenticated_rank_load_source(readers[0])?,
+        authenticated_rank_load_source(readers[1])?,
+        authenticated_rank_load_source(readers[2])?,
+        authenticated_rank_load_source(readers[3])?,
+    ];
+    let contract = pinned_capacity_tensor_load_contract()?;
+    build_rank_set_load_plan_from_sources(sources, environment, &contract)
+}
+
+#[derive(Clone, Copy)]
+struct AuthenticatedRankLoadSource<'a> {
+    rank: u8,
+    conversion_uuid: [u8; 16],
+    file_uuid: [u8; 16],
+    model_config_sha256: [u8; 32],
+    tokenizer_bundle_sha256: [u8; 32],
+    chat_template_sha256: [u8; 32],
+    weight_policy_sha256: [u8; 32],
+    kernel_abi_sha256: [u8; 32],
+    manifest_sha256: [u8; 32],
+    descriptor_sha256: [u8; 32],
+    payload_sha256: [u8; 32],
+    file_payload_bytes: u64,
+    descriptors: &'a [TensorDescriptor],
+    manifest: &'a ValidatedRankManifest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TensorLoadContract {
+    tensor_id: u32,
+    role_id: u16,
+    codec_id: u16,
+    descriptor_flags: u32,
+    metadata_bytes: u64,
+    primary_bytes: u64,
+    auxiliary_bytes: u64,
+    required_device_alignment: u32,
+}
+
+fn authenticated_rank_load_source(
+    reader: &NativeRankReader,
+) -> Result<AuthenticatedRankLoadSource<'_>, LoadPlanError> {
+    Ok(AuthenticatedRankLoadSource {
+        rank: u8::try_from(reader.rank).map_err(|_| LoadPlanError::Rank)?,
+        conversion_uuid: reader.conversion_uuid,
+        file_uuid: reader.file_uuid,
+        model_config_sha256: reader.model_config_sha256,
+        tokenizer_bundle_sha256: reader.tokenizer_bundle_sha256,
+        chat_template_sha256: reader.chat_template_sha256,
+        weight_policy_sha256: reader.weight_policy_sha256,
+        kernel_abi_sha256: reader.kernel_abi_sha256,
+        manifest_sha256: reader.manifest_sha256,
+        descriptor_sha256: reader.descriptor_sha256,
+        payload_sha256: reader.payload_sha256,
+        file_payload_bytes: reader.file_payload_bytes(),
+        descriptors: &reader.descriptors,
+        manifest: reader.validated_manifest().ok_or(LoadPlanError::Manifest)?,
+    })
+}
+
+fn pinned_capacity_tensor_load_contract() -> Result<Vec<TensorLoadContract>, LoadPlanError> {
+    let plan = pinned_exl3_rank_plan(0).map_err(|_| LoadPlanError::Manifest)?;
+    Ok(plan
+        .tensor_specs()
+        .into_iter()
+        .map(|tensor| TensorLoadContract {
+            tensor_id: tensor.tensor_id,
+            role_id: tensor.role_id,
+            codec_id: tensor.codec_id(),
+            descriptor_flags: u32::from(tensor.descriptor_flags()),
+            metadata_bytes: tensor.codec_metadata_bytes(),
+            primary_bytes: tensor.primary_bytes(),
+            auxiliary_bytes: tensor.aux_bytes(),
+            required_device_alignment: NATIVE_PAYLOAD_ALIGNMENT,
+        })
+        .collect())
+}
+
+fn build_rank_set_load_plan_from_sources(
+    sources: [AuthenticatedRankLoadSource<'_>; RANK_SET_SIZE],
+    environment: RankSetLoadEnvironment,
+    contract: &[TensorLoadContract],
+) -> Result<RankSetLoadPlan, LoadPlanError> {
+    let first = sources[0];
+    let first_manifest = first.manifest;
+    let expected_profile = match first_manifest.profile {
+        RankWeightProfile::CapacityExl3 => LoadProfile::CapacityExl3,
+    };
+    if environment.profile != expected_profile {
+        return Err(LoadPlanError::Profile);
+    }
+    let tensor_count = u32::try_from(contract.len()).map_err(|_| LoadPlanError::Overflow)?;
+    if tensor_count == 0 || first.descriptors.len() != contract.len() {
+        return Err(LoadPlanError::Tensor);
+    }
+    let tensor_catalog_sha256 =
+        rank_invariant_tensor_catalog_sha256(&first_manifest.tensor_semantics)
+            .map_err(|_| LoadPlanError::Manifest)?;
+
+    let mut tensor_layouts: [Vec<TensorArenaEntry>; RANK_SET_SIZE] =
+        std::array::from_fn(|_| Vec::new());
+    let mut rank_entries = [RankLoadEntry {
+        rank: 0,
+        device_identity_sha256: [0; 32],
+        file_uuid: [0; 16],
+        manifest_sha256: [0; 32],
+        descriptor_sha256: [0; 32],
+        payload_sha256: [0; 32],
+        tensor_count: 0,
+        file_payload_bytes: 0,
+        device_weight_arena_bytes: 0,
+        device_metadata_arena_bytes: 0,
+        arena_layout_sha256: [0; 32],
+        tensor_contract_sha256: [0; 32],
+    }; RANK_SET_SIZE];
+
+    for (rank, source) in sources.into_iter().enumerate() {
+        let manifest = source.manifest;
+        if usize::from(source.rank) != rank || usize::from(manifest.rank) != rank {
+            return Err(LoadPlanError::Rank);
+        }
+        if source.conversion_uuid != first.conversion_uuid
+            || source.model_config_sha256 != first.model_config_sha256
+            || source.tokenizer_bundle_sha256 != first.tokenizer_bundle_sha256
+            || source.chat_template_sha256 != first.chat_template_sha256
+            || source.weight_policy_sha256 != first.weight_policy_sha256
+            || source.kernel_abi_sha256 != first.kernel_abi_sha256
+        {
+            return Err(LoadPlanError::Identity);
+        }
+        if source.descriptors.len()
+            != usize::try_from(tensor_count).map_err(|_| LoadPlanError::Overflow)?
+        {
+            return Err(LoadPlanError::Tensor);
+        }
+        if manifest.profile != first_manifest.profile
+            || manifest.operation_manifest_sha256 != first_manifest.operation_manifest_sha256
+            || manifest.profile_budget_sha256 != first_manifest.profile_budget_sha256
+            || rank_invariant_tensor_catalog_sha256(&manifest.tensor_semantics)
+                .map_err(|_| LoadPlanError::Manifest)?
+                != tensor_catalog_sha256
+        {
+            return Err(LoadPlanError::Manifest);
+        }
+        let (tensors, weight_bytes, metadata_bytes) =
+            derive_tensor_arena_entries(source.descriptors, contract)?;
+        let rank_u8 = u8::try_from(rank).map_err(|_| LoadPlanError::Overflow)?;
+        let arena_layout_sha256 =
+            arena_layout_sha256(rank_u8, weight_bytes, metadata_bytes, &tensors);
+        tensor_layouts[rank] = tensors;
+        rank_entries[rank] = RankLoadEntry {
+            rank: rank_u8,
+            device_identity_sha256: environment.device_identity_sha256[rank],
+            file_uuid: source.file_uuid,
+            manifest_sha256: source.manifest_sha256,
+            descriptor_sha256: source.descriptor_sha256,
+            payload_sha256: source.payload_sha256,
+            tensor_count,
+            file_payload_bytes: source.file_payload_bytes,
+            device_weight_arena_bytes: weight_bytes,
+            device_metadata_arena_bytes: metadata_bytes,
+            arena_layout_sha256,
+            tensor_contract_sha256: manifest.tensor_contract_sha256,
+        };
+    }
+
+    RankSetLoadPlan::new(
+        RankSetLoadPlanHeader {
+            verification_mode: environment.verification_mode,
+            profile: environment.profile,
+            tensor_count,
+            conversion_uuid: first.conversion_uuid,
+            weight_policy_sha256: first.weight_policy_sha256,
+            kernel_abi_sha256: first.kernel_abi_sha256,
+            memory_plan_sha256: environment.memory_plan_sha256,
+            codec_capability_sha256: environment.codec_capability_sha256,
+            model_config_sha256: first.model_config_sha256,
+            tokenizer_bundle_sha256: first.tokenizer_bundle_sha256,
+            chat_template_sha256: first.chat_template_sha256,
+            operation_manifest_sha256: first_manifest.operation_manifest_sha256,
+            tensor_catalog_sha256,
+            profile_budget_sha256: first_manifest.profile_budget_sha256,
+            staging_slot_bytes: environment.staging_slot_bytes,
+            staging_slots_per_rank: environment.staging_slots_per_rank,
+        },
+        rank_entries,
+        tensor_layouts,
+    )
+}
+
+fn derive_tensor_arena_entries(
+    descriptors: &[TensorDescriptor],
+    contract: &[TensorLoadContract],
+) -> Result<(Vec<TensorArenaEntry>, u64, u64), LoadPlanError> {
+    if descriptors.is_empty() || descriptors.len() != contract.len() {
+        return Err(LoadPlanError::Tensor);
+    }
+    for (expected_id, (descriptor, expected)) in descriptors.iter().zip(contract).enumerate() {
+        if descriptor.tensor_id
+            != u32::try_from(expected_id).map_err(|_| LoadPlanError::Overflow)?
+            || descriptor.tensor_id != expected.tensor_id
+            || descriptor.role_id != expected.role_id
+            || descriptor.codec_id != expected.codec_id
+            || u32::from(descriptor.flags) != expected.descriptor_flags
+            || descriptor.codec_metadata_bytes != expected.metadata_bytes
+            || descriptor.payload_bytes != expected.primary_bytes
+            || descriptor.aux_bytes != expected.auxiliary_bytes
+            || descriptor.payload_alignment != expected.required_device_alignment
+            || expected.primary_bytes == 0
+            || expected.required_device_alignment == 0
+            || !expected.required_device_alignment.is_power_of_two()
+        {
+            return Err(LoadPlanError::Tensor);
+        }
+    }
+    derive_tensor_arena_entries_from_contract(contract)
+}
+
+fn derive_tensor_arena_entries_from_contract(
+    contract: &[TensorLoadContract],
+) -> Result<(Vec<TensorArenaEntry>, u64, u64), LoadPlanError> {
+    if contract.is_empty() {
+        return Err(LoadPlanError::Tensor);
+    }
+    let mut weight_cursor = 0_u64;
+    let mut metadata_cursor = 0_u64;
+    let mut tensors = Vec::with_capacity(contract.len());
+    for (expected_id, expected) in contract.iter().enumerate() {
+        if expected.tensor_id != u32::try_from(expected_id).map_err(|_| LoadPlanError::Overflow)?
+            || expected.role_id == 0
+            || expected.codec_id == 0
+            || expected.primary_bytes == 0
+            || expected.required_device_alignment == 0
+            || !expected.required_device_alignment.is_power_of_two()
+        {
+            return Err(LoadPlanError::Tensor);
+        }
+        let alignment = u64::from(expected.required_device_alignment);
+        let metadata_destination_offset = if expected.metadata_bytes == 0 {
+            0
+        } else {
+            metadata_cursor = align_up(metadata_cursor, alignment)?;
+            let destination = metadata_cursor;
+            metadata_cursor = metadata_cursor
+                .checked_add(expected.metadata_bytes)
+                .ok_or(LoadPlanError::Overflow)?;
+            destination
+        };
+        weight_cursor = align_up(weight_cursor, alignment)?;
+        let primary_destination_offset = weight_cursor;
+        weight_cursor = weight_cursor
+            .checked_add(expected.primary_bytes)
+            .ok_or(LoadPlanError::Overflow)?;
+        let auxiliary_destination_offset = if expected.auxiliary_bytes == 0 {
+            0
+        } else {
+            weight_cursor = align_up(weight_cursor, alignment)?;
+            let destination = weight_cursor;
+            weight_cursor = weight_cursor
+                .checked_add(expected.auxiliary_bytes)
+                .ok_or(LoadPlanError::Overflow)?;
+            destination
+        };
+        tensors.push(TensorArenaEntry {
+            tensor_id: expected.tensor_id,
+            role_id: expected.role_id,
+            codec_id: expected.codec_id,
+            descriptor_flags: expected.descriptor_flags,
+            metadata_destination_offset,
+            metadata_bytes: expected.metadata_bytes,
+            primary_destination_offset,
+            primary_bytes: expected.primary_bytes,
+            auxiliary_destination_offset,
+            auxiliary_bytes: expected.auxiliary_bytes,
+            required_device_alignment: expected.required_device_alignment,
+        });
+    }
+    Ok((tensors, weight_cursor, metadata_cursor))
 }
 
 #[must_use]
@@ -876,6 +1177,9 @@ pub enum LoadPlanError {
     Writer,
     Overflow,
     Encoding,
+    Reader,
+    Manifest,
+    Profile,
 }
 
 impl fmt::Display for LoadPlanError {
@@ -1053,6 +1357,13 @@ fn add_interval(
     Ok(())
 }
 
+fn align_up(value: u64, alignment: u64) -> Result<u64, LoadPlanError> {
+    value
+        .checked_add(alignment.checked_sub(1).ok_or(LoadPlanError::Alignment)?)
+        .map(|rounded| rounded / alignment * alignment)
+        .ok_or(LoadPlanError::Overflow)
+}
+
 fn require_exact_nonoverlap(
     intervals: &mut [(u64, u64)],
     arena_bytes: u64,
@@ -1165,6 +1476,7 @@ fn put_u64(output: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glm_format::ValidatedTensorSemantic;
 
     #[derive(Debug)]
     struct MockArenaWriter {
@@ -1376,6 +1688,46 @@ mod tests {
         }
     }
 
+    fn semantic(entry: TensorArenaEntry) -> ValidatedTensorSemantic {
+        ValidatedTensorSemantic {
+            tensor_id: entry.tensor_id,
+            role_id: entry.role_id,
+            codec_id: entry.codec_id,
+            layer_id: 0,
+            expert_id: -1,
+            tp_shard_axis: -1,
+            ndim: 1,
+            flags: u8::try_from(entry.descriptor_flags).unwrap(),
+            source_binding_kind: 1,
+            logical_dtype: 1,
+            stored_dtype: 1,
+            quant_group_elements: 1,
+            rank_logical_shape: [1; 4],
+            global_logical_shape: [1; 4],
+            name_sha256: digest(90 + u8::try_from(entry.tensor_id).unwrap()),
+            reconstruction_id: 1,
+            collective_after_id: 0,
+            source_dtype_id: 1,
+            source_axis: -1,
+        }
+    }
+
+    fn tensor_contract() -> Vec<TensorLoadContract> {
+        tensor_layout()
+            .into_iter()
+            .map(|entry| TensorLoadContract {
+                tensor_id: entry.tensor_id,
+                role_id: entry.role_id,
+                codec_id: entry.codec_id,
+                descriptor_flags: entry.descriptor_flags,
+                metadata_bytes: entry.metadata_bytes,
+                primary_bytes: entry.primary_bytes,
+                auxiliary_bytes: entry.auxiliary_bytes,
+                required_device_alignment: entry.required_device_alignment,
+            })
+            .collect()
+    }
+
     #[test]
     fn canonical_plan_encoding_is_exact_and_deterministic() {
         let first = plan();
@@ -1399,6 +1751,150 @@ mod tests {
         assert_eq!(
             first.plan_sha256,
             hash_domain(LOAD_PLAN_DOMAIN, &first.canonical_preimage().unwrap())
+        );
+    }
+
+    #[test]
+    fn authenticated_sources_build_the_complete_plan_and_reject_consensus_drift() {
+        let layout = tensor_layout();
+        let descriptors: Vec<_> = layout.iter().copied().map(descriptor).collect();
+        let semantics: Vec<_> = layout.iter().copied().map(semantic).collect();
+        let manifests: [ValidatedRankManifest; RANK_SET_SIZE] =
+            std::array::from_fn(|rank| ValidatedRankManifest {
+                rank: u8::try_from(rank).unwrap(),
+                profile: RankWeightProfile::CapacityExl3,
+                conversion_commit: [11; 20],
+                operation_manifest_sha256: digest(8),
+                tensor_contract_sha256: digest(70 + u8::try_from(rank).unwrap()),
+                profile_budget_sha256: digest(10),
+                review_artifact_sha256: digest(11),
+                format_spec_sha256: digest(12),
+                engine_spec_sha256: digest(13),
+                tensor_source_payload_bytes: 1024,
+                source_verified_file_bytes: 4096,
+                tensor_semantics: semantics.clone(),
+            });
+        let sources: [AuthenticatedRankLoadSource<'_>; RANK_SET_SIZE] =
+            std::array::from_fn(|rank| {
+                let rank_u8 = u8::try_from(rank).unwrap();
+                AuthenticatedRankLoadSource {
+                    rank: rank_u8,
+                    conversion_uuid: [7; 16],
+                    file_uuid: [30 + rank_u8; 16],
+                    model_config_sha256: digest(5),
+                    tokenizer_bundle_sha256: digest(6),
+                    chat_template_sha256: digest(7),
+                    weight_policy_sha256: digest(1),
+                    kernel_abi_sha256: digest(2),
+                    manifest_sha256: digest(40 + rank_u8),
+                    descriptor_sha256: digest(50 + rank_u8),
+                    payload_sha256: digest(60 + rank_u8),
+                    file_payload_bytes: 1024,
+                    descriptors: &descriptors,
+                    manifest: &manifests[rank],
+                }
+            });
+        let environment = RankSetLoadEnvironment {
+            verification_mode: LoadVerificationMode::FullSha256,
+            profile: LoadProfile::CapacityExl3,
+            device_identity_sha256: std::array::from_fn(|rank| {
+                digest(20 + u8::try_from(rank).unwrap())
+            }),
+            memory_plan_sha256: digest(3),
+            codec_capability_sha256: digest(4),
+            staging_slot_bytes: READER_CHUNK_BYTES,
+            staging_slots_per_rank: 2,
+        };
+        let contract = tensor_contract();
+
+        let observed =
+            build_rank_set_load_plan_from_sources(sources, environment, &contract).unwrap();
+        assert_eq!(observed.header.tensor_count, 3);
+        assert_eq!(observed.header.conversion_uuid, [7; 16]);
+        assert_eq!(
+            observed.header.tensor_catalog_sha256,
+            rank_invariant_tensor_catalog_sha256(&semantics).unwrap()
+        );
+        assert_eq!(observed.tensors, std::array::from_fn(|_| layout.clone()));
+        for (rank, manifest) in manifests.iter().enumerate() {
+            assert_eq!(observed.ranks[rank].rank, u8::try_from(rank).unwrap());
+            assert_eq!(
+                observed.ranks[rank].tensor_contract_sha256,
+                manifest.tensor_contract_sha256
+            );
+            assert_eq!(observed.ranks[rank].device_weight_arena_bytes, 1024);
+            assert_eq!(observed.ranks[rank].device_metadata_arena_bytes, 256);
+        }
+        assert_eq!(
+            observed,
+            build_rank_set_load_plan_from_sources(sources, environment, &contract).unwrap()
+        );
+
+        let mut identity_drift = sources;
+        identity_drift[2].weight_policy_sha256 = digest(99);
+        assert_eq!(
+            build_rank_set_load_plan_from_sources(identity_drift, environment, &contract),
+            Err(LoadPlanError::Identity)
+        );
+
+        let mut semantic_drift_manifest = manifests[3].clone();
+        semantic_drift_manifest.tensor_semantics[1].source_axis = 0;
+        let mut semantic_drift = sources;
+        semantic_drift[3].manifest = &semantic_drift_manifest;
+        assert_eq!(
+            build_rank_set_load_plan_from_sources(semantic_drift, environment, &contract),
+            Err(LoadPlanError::Manifest)
+        );
+
+        let mut wrong_profile = environment;
+        wrong_profile.profile = LoadProfile::Nvfp4Laboratory;
+        assert_eq!(
+            build_rank_set_load_plan_from_sources(sources, wrong_profile, &contract),
+            Err(LoadPlanError::Profile)
+        );
+    }
+
+    #[test]
+    fn descriptor_projection_derives_the_exact_quarantined_arena_layout() {
+        let expected = tensor_layout();
+        let descriptors: Vec<_> = expected.iter().copied().map(descriptor).collect();
+        let contract = tensor_contract();
+        let (observed, weight_bytes, metadata_bytes) =
+            derive_tensor_arena_entries(&descriptors, &contract).unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(weight_bytes, 1024);
+        assert_eq!(metadata_bytes, 256);
+
+        let mut invalid = descriptors.clone();
+        invalid[1].tensor_id = 7;
+        assert_eq!(
+            derive_tensor_arena_entries(&invalid, &contract),
+            Err(LoadPlanError::Tensor)
+        );
+        invalid = descriptors;
+        invalid[2].payload_alignment = 96;
+        assert_eq!(
+            derive_tensor_arena_entries(&invalid, &contract),
+            Err(LoadPlanError::Tensor)
+        );
+    }
+
+    #[test]
+    fn pinned_capacity_contract_has_exact_full_rank_arena_arithmetic() {
+        let contract = pinned_capacity_tensor_load_contract().unwrap();
+        assert_eq!(contract.len(), glm_format::PINNED_RANK_TENSOR_COUNT);
+        let (tensors, weight_bytes, metadata_bytes) =
+            derive_tensor_arena_entries_from_contract(&contract).unwrap();
+        let digest = arena_layout_sha256(0, weight_bytes, metadata_bytes, &tensors);
+        let digest_hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(weight_bytes, 81_605_027_840);
+        assert_eq!(metadata_bytes, 14_942_048);
+        assert_eq!(
+            digest_hex,
+            "140274b8d69521115e82ffe72b83af4018dc55c6e7ac7f6bb8ce5af8f81df039"
         );
     }
 

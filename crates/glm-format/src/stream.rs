@@ -218,6 +218,21 @@ impl StreamingTensorSpec {
     }
 
     #[must_use]
+    pub const fn descriptor_flags(&self) -> u8 {
+        self.flags
+            | if self.aux_required {
+                DESCRIPTOR_FLAG_AUX_REQUIRED
+            } else {
+                0
+            }
+    }
+
+    #[must_use]
+    pub fn codec_metadata_bytes(&self) -> u64 {
+        self.metadata.len() as u64
+    }
+
+    #[must_use]
     pub fn metadata_sha256(&self) -> [u8; 32] {
         sha256(&self.metadata)
     }
