@@ -6,6 +6,7 @@ use std::thread::ThreadId;
 use std::time::Instant;
 
 use glm_format::{Codec, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4};
+use sha2::{Digest, Sha256};
 
 use crate::abi::active_experts_for_grouped;
 use crate::{
@@ -117,6 +118,7 @@ unsafe extern "C" {
         compute_capability: *mut i32,
         multiprocessor_count: *mut i32,
         total_memory_bytes: *mut u64,
+        device_uuid: *mut u8,
     ) -> i32;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
@@ -141,6 +143,22 @@ pub struct NativeDeviceIdentity {
     pub compute_capability: u32,
     pub multiprocessor_count: u32,
     pub total_memory_bytes: u64,
+    pub device_uuid: [u8; 16],
+}
+
+impl NativeDeviceIdentity {
+    #[must_use]
+    pub fn identity_sha256(self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"glmaxx.cuda-device-identity.v1\0");
+        hasher.update(self.visible_devices.to_le_bytes());
+        hasher.update(self.device_index.to_le_bytes());
+        hasher.update(self.compute_capability.to_le_bytes());
+        hasher.update(self.multiprocessor_count.to_le_bytes());
+        hasher.update(self.total_memory_bytes.to_le_bytes());
+        hasher.update(self.device_uuid);
+        hasher.finalize().into()
+    }
 }
 
 /// One rank's thread-owned CUDA device and nonblocking execution stream.
@@ -164,6 +182,7 @@ impl NativeRankContext {
         let mut compute_capability = 0_i32;
         let mut multiprocessor_count = 0_i32;
         let mut total_memory_bytes = 0_u64;
+        let mut device_uuid = [0_u8; 16];
         // SAFETY: all outputs are valid and the rank is within the verified
         // four-device visible set.
         check(unsafe {
@@ -172,9 +191,14 @@ impl NativeRankContext {
                 std::ptr::from_mut(&mut compute_capability),
                 std::ptr::from_mut(&mut multiprocessor_count),
                 std::ptr::from_mut(&mut total_memory_bytes),
+                device_uuid.as_mut_ptr(),
             )
         })?;
-        if compute_capability != 120 || multiprocessor_count <= 0 || total_memory_bytes == 0 {
+        if compute_capability != 120
+            || multiprocessor_count <= 0
+            || total_memory_bytes == 0
+            || device_uuid == [0; 16]
+        {
             return Err(KernelError::Topology);
         }
         let stream = NativeStream::create()?;
@@ -188,6 +212,7 @@ impl NativeRankContext {
                 multiprocessor_count: u32::try_from(multiprocessor_count)
                     .map_err(|_| KernelError::Topology)?,
                 total_memory_bytes,
+                device_uuid,
             },
             stream,
             owner: std::thread::current().id(),
@@ -215,6 +240,7 @@ impl NativeRankContext {
         self.require_owner()?;
         Ok(NativeRankLoadBackend {
             owner: self.owner,
+            device_identity_sha256: self.identity.identity_sha256(),
             device_allocations: BTreeMap::new(),
             pinned_allocations: BTreeMap::new(),
             streams: BTreeSet::new(),
@@ -234,6 +260,7 @@ impl NativeRankContext {
 
 pub struct NativeRankLoadBackend {
     owner: ThreadId,
+    device_identity_sha256: [u8; 32],
     device_allocations: BTreeMap<u64, u64>,
     pinned_allocations: BTreeMap<u64, u64>,
     streams: BTreeSet<u64>,
@@ -262,6 +289,11 @@ impl NativeRankLoadBackend {
 }
 
 impl RankLoadBackend for NativeRankLoadBackend {
+    fn device_identity_sha256(&self) -> Result<[u8; 32], KernelError> {
+        self.require_owner()?;
+        Ok(self.device_identity_sha256)
+    }
+
     fn allocate_device(&mut self, bytes: u64) -> Result<u64, KernelError> {
         self.require_owner()?;
         if bytes == 0 {

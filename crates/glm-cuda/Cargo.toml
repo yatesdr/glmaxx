@@ -12,6 +12,7 @@ cuda-ffi = []
 
 [dependencies]
 glm-format = { path = "../glm-format" }
+sha2.workspace = true
 
 [lints]
 workspace = true

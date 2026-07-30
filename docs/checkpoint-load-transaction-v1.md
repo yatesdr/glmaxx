@@ -91,6 +91,12 @@ device metadata-arena bytes
 arena-layout SHA-256
 ```
 
+`CUDA device identity` is the observed, domain-separated digest defined by
+`docs/sm120-rank-runtime.md`, including the CUDA UUID and the exact visible
+device index. The rank-local load backend must recompute and compare this
+digest before its first allocation. A receipt may not merely repeat the
+planned digest.
+
 The plan SHA-256 is over a fixed-order binary encoding, not JSON text. The
 plan rejects zero identities, duplicate/missing ranks, arithmetic overflow,
 an arena interval overlap, a tensor absent from the fixed GLM-5.2 operation

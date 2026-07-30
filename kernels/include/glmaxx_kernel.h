@@ -224,7 +224,8 @@ int32_t glmaxx_device_count(int32_t* count);
 int32_t glmaxx_device_bind(int32_t device_index,
                            int32_t* compute_capability,
                            int32_t* multiprocessor_count,
-                           uint64_t* total_memory_bytes);
+                           uint64_t* total_memory_bytes,
+                           uint8_t device_uuid[16]);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);
 int32_t glmaxx_pinned_alloc(uint64_t bytes, uint64_t* pointer);

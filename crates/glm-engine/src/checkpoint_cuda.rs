@@ -684,6 +684,7 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
     ) -> Result<Self, RankCheckpointLoadError> {
         validate_reader_binding(plan, rank, reader, software_provenance_sha256)?;
         let expected = *plan.rank(rank).ok_or(LoadPlanError::Rank)?;
+        validate_device_identity(plan, rank, backend.device_identity_sha256()?)?;
         let mut lifecycle = RankArenaLifecycle::allocated(plan, rank, owner_allocation_generation)?;
         lifecycle.begin_staging()?;
         let arena = CudaQuarantinedArena::allocate(
@@ -887,6 +888,20 @@ fn validate_reader_binding(
     Ok(())
 }
 
+fn validate_device_identity(
+    plan: &RankSetLoadPlan,
+    rank: u8,
+    observed_device_identity_sha256: [u8; 32],
+) -> Result<(), LoadPlanError> {
+    let expected = plan.rank(rank).ok_or(LoadPlanError::Rank)?;
+    if observed_device_identity_sha256 == [0; 32]
+        || observed_device_identity_sha256 != expected.device_identity_sha256
+    {
+        return Err(LoadPlanError::Identity);
+    }
+    Ok(())
+}
+
 fn elapsed_nanoseconds(duration: Duration) -> Result<u64, KernelError> {
     u64::try_from(duration.as_nanos()).map_err(|_| KernelError::Overflow)
 }
@@ -1042,6 +1057,10 @@ mod tests {
     }
 
     impl RankLoadBackend for FakeBackend {
+        fn device_identity_sha256(&self) -> Result<[u8; 32], KernelError> {
+            Ok([0x5a; 32])
+        }
+
         fn allocate_device(&mut self, bytes: u64) -> Result<u64, KernelError> {
             let mut state = self.state.lock().unwrap();
             let pointer = state.next_device;
@@ -1584,6 +1603,20 @@ mod tests {
                 .filter(|operation| matches!(operation, Operation::DeviceFree(_)))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn planned_device_identity_must_equal_the_rank_backend_observation() {
+        let plan = load_plan();
+        assert!(validate_device_identity(&plan, 2, [3; 32]).is_ok());
+        assert_eq!(
+            validate_device_identity(&plan, 2, [4; 32]),
+            Err(LoadPlanError::Identity)
+        );
+        assert_eq!(
+            validate_device_identity(&plan, 2, [0; 32]),
+            Err(LoadPlanError::Identity)
         );
     }
 }

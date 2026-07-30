@@ -43,13 +43,33 @@ glmaxx_device_count(count)
 glmaxx_device_bind(device_index,
                    compute_capability,
                    multiprocessor_count,
-                   total_memory_bytes)
+                   total_memory_bytes,
+                   device_uuid[16])
 ```
 
 The first function wraps `cudaGetDeviceCount`. The second calls
 `cudaSetDevice`, reads `cudaDeviceProp`, and returns only integer properties
-needed by the Rust startup gate. It does not create a stream, allocate memory,
-enable peer access, load weights, initialize collectives, or launch a kernel.
+plus the 16-byte CUDA device UUID needed by the Rust startup gate. It does not
+create a stream, allocate memory, enable peer access, load weights, initialize
+collectives, or launch a kernel.
+
+Rust hashes the observed identity using SHA-256 over:
+
+```text
+"glmaxx.cuda-device-identity.v1\0"
+visible_device_count:u32le
+visible_device_index:u32le
+compute_capability:u32le
+multiprocessor_count:u32le
+total_memory_bytes:u64le
+cuda_device_uuid:[u8;16]
+```
+
+The UUID and every numeric field must be nonzero where the topology contract
+requires it. Before checkpoint allocation, the resulting digest must equal
+the selected rank entry's `device_identity_sha256`. Copying the planned
+digest into load evidence without this observed-device comparison is
+forbidden.
 
 Rust then creates one nonblocking stream on the bound rank thread. Its
 `NativeRankContext` records the creating thread ID and rejects stream access

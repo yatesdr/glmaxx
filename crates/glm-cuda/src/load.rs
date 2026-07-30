@@ -6,6 +6,9 @@ use crate::KernelError;
 /// context. The engine owns the allocation/ring state machine and never calls
 /// this trait from a different thread.
 pub trait RankLoadBackend: 'static {
+    /// Canonical identity of the CUDA device bound to this owner thread.
+    fn device_identity_sha256(&self) -> Result<[u8; 32], KernelError>;
+
     fn allocate_device(&mut self, bytes: u64) -> Result<u64, KernelError>;
     fn free_device(&mut self, pointer: u64) -> Result<(), KernelError>;
 

@@ -383,9 +383,11 @@ extern "C" int32_t glmaxx_device_count(int32_t* count) {
 
 extern "C" int32_t glmaxx_device_bind(
     int32_t device_index, int32_t* compute_capability,
-    int32_t* multiprocessor_count, uint64_t* total_memory_bytes) {
+    int32_t* multiprocessor_count, uint64_t* total_memory_bytes,
+    uint8_t device_uuid[16]) {
   if (device_index < 0 || compute_capability == nullptr ||
-      multiprocessor_count == nullptr || total_memory_bytes == nullptr) {
+      multiprocessor_count == nullptr || total_memory_bytes == nullptr ||
+      device_uuid == nullptr) {
     return -1;
   }
   cudaError_t status = cudaSetDevice(device_index);
@@ -398,6 +400,10 @@ extern "C" int32_t glmaxx_device_bind(
     *multiprocessor_count = properties.multiProcessorCount;
     *total_memory_bytes =
         static_cast<uint64_t>(properties.totalGlobalMem);
+    for (int32_t index = 0; index < 16; ++index) {
+      device_uuid[index] =
+          static_cast<uint8_t>(properties.uuid.bytes[index]);
+    }
   }
   return static_cast<int32_t>(status);
 }

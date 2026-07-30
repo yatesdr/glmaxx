@@ -302,6 +302,7 @@ name = "glm-cuda"
 version = "0.1.0"
 dependencies = [
  "glm-format",
+ "sha2",
 ]
 
 [[package]]
