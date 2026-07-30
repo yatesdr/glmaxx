@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     DirectBufferId, DirectBufferPool, DirectBufferState, DirectBufferStateError, DirectBufferUse,
     DirectCompletionToken, DirectDescriptorBinding, DirectDescriptorError, DirectDescriptorTable,
-    DirectExtentRecord, DirectOperationKind, DirectTierCapability,
+    DirectExtentRecord, DirectOperationKind, DirectTierCapability, decode_direct_extent,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -20,6 +20,7 @@ pub struct DirectRestoreRequest {
 pub struct DirectRestoreConfig {
     pub maximum_tickets: u32,
     pub maximum_waiters_per_ticket: u32,
+    pub maximum_hash_jobs: u32,
     pub maximum_physical_bytes: u64,
     pub maximum_logical_bytes_per_tenant: u64,
     pub buffer_slots: u32,
@@ -74,6 +75,50 @@ pub enum DirectReadCompletion {
     Exact,
     Cancelled,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectHashState {
+    None,
+    Reserved,
+    Queued,
+    Running,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectHashJob {
+    ticket: DirectRestoreTicketId,
+    buffer: DirectBufferId,
+}
+
+impl DirectHashJob {
+    #[must_use]
+    pub const fn ticket(self) -> DirectRestoreTicketId {
+        self.ticket
+    }
+
+    #[must_use]
+    pub const fn buffer(self) -> DirectBufferId {
+        self.buffer
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectHashResult {
+    job: DirectHashJob,
+    verified: bool,
+}
+
+impl DirectHashResult {
+    #[must_use]
+    pub const fn job(self) -> DirectHashJob {
+        self.job
+    }
+
+    #[must_use]
+    pub const fn verified(self) -> bool {
+        self.verified
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +257,7 @@ struct DirectRestoreTicket {
     cancel_pending: bool,
     original_token: Option<DirectCompletionToken>,
     cancel_token: Option<DirectCompletionToken>,
+    hash_state: DirectHashState,
 }
 
 #[derive(Debug)]
@@ -222,6 +268,7 @@ pub struct DirectRestoreTable {
     request_to_ticket: BTreeMap<u64, DirectRestoreTicketId>,
     logical_by_tenant: BTreeMap<u64, u64>,
     physical_bytes: u64,
+    active_hash_jobs: u32,
     buffers: DirectBufferPool,
     descriptors: DirectDescriptorTable,
     cq: DirectCqTracker,
@@ -234,10 +281,12 @@ impl DirectRestoreTable {
     ) -> Result<Self, DirectRestoreError> {
         if config.maximum_tickets == 0
             || config.maximum_waiters_per_ticket == 0
+            || config.maximum_hash_jobs == 0
             || config.maximum_physical_bytes == 0
             || config.maximum_logical_bytes_per_tenant == 0
             || config.buffer_slots == 0
             || config.descriptor_capacity == 0
+            || config.maximum_hash_jobs > config.buffer_slots
         {
             return Err(DirectRestoreError::Config);
         }
@@ -252,6 +301,7 @@ impl DirectRestoreTable {
             request_to_ticket: BTreeMap::new(),
             logical_by_tenant: BTreeMap::new(),
             physical_bytes: 0,
+            active_hash_jobs: 0,
             buffers: DirectBufferPool::new(config.buffer_slots)?,
             descriptors: DirectDescriptorTable::new(config.descriptor_capacity)?,
             cq: DirectCqTracker::new(config.descriptor_capacity, cq_entries, nodrop_present)?,
@@ -345,6 +395,7 @@ impl DirectRestoreTable {
                 cancel_pending: false,
                 original_token: None,
                 cancel_token: None,
+                hash_state: DirectHashState::None,
             },
         );
         self.request_to_ticket.insert(request.request_id, ticket_id);
@@ -375,8 +426,16 @@ impl DirectRestoreTable {
         if ticket.state != DirectRestoreState::BufferReserved
             || ticket.original_pending
             || ticket.cancel_pending
+            || ticket.hash_state != DirectHashState::None
         {
             return Err(DirectRestoreError::State);
+        }
+        let next_hash_jobs = self
+            .active_hash_jobs
+            .checked_add(1)
+            .ok_or(DirectRestoreError::Overflow)?;
+        if next_hash_jobs > self.config.maximum_hash_jobs {
+            return Err(DirectRestoreError::HashWait);
         }
         let buffer = ticket.buffer.ok_or(DirectRestoreError::State)?;
         let binding = DirectDescriptorBinding {
@@ -400,8 +459,31 @@ impl DirectRestoreTable {
         let ticket = self.ticket_mut(ticket_id)?;
         ticket.original_pending = true;
         ticket.original_token = Some(original_token);
+        ticket.hash_state = DirectHashState::Reserved;
         ticket.state = DirectRestoreState::ReadSubmitted;
+        self.active_hash_jobs = next_hash_jobs;
         Ok(())
+    }
+
+    pub fn read_destination_mut(
+        &mut self,
+        ticket_id: DirectRestoreTicketId,
+    ) -> Result<&mut [u8], DirectRestoreError> {
+        let ticket = self.ticket(ticket_id)?;
+        if ticket.state != DirectRestoreState::ReadSubmitted
+            || !ticket.original_pending
+            || ticket.cancel_pending
+            || ticket.hash_state != DirectHashState::Reserved
+        {
+            return Err(DirectRestoreError::State);
+        }
+        let buffer = ticket.buffer.ok_or(DirectRestoreError::State)?;
+        let physical_length = usize::try_from(ticket.record.physical_length)
+            .map_err(|_| DirectRestoreError::Overflow)?;
+        self.buffers
+            .bytes_mut(buffer)?
+            .get_mut(..physical_length)
+            .ok_or(DirectRestoreError::Record)
     }
 
     pub fn cancel_waiter(
@@ -522,7 +604,12 @@ impl DirectRestoreTable {
             (DirectRestoreState::ReadSubmitted, DirectReadCompletion::Exact) => {
                 self.buffers
                     .transition(buffer, DirectBufferState::HashingForRead)?;
-                self.ticket_mut(ticket_id)?.state = DirectRestoreState::DataReady;
+                let ticket = self.ticket_mut(ticket_id)?;
+                if ticket.hash_state != DirectHashState::Reserved {
+                    return Err(DirectRestoreError::HashBinding);
+                }
+                ticket.hash_state = DirectHashState::Queued;
+                ticket.state = DirectRestoreState::DataReady;
                 Ok(())
             }
             (DirectRestoreState::Abandoned, DirectReadCompletion::Exact)
@@ -576,28 +663,76 @@ impl DirectRestoreTable {
         }
     }
 
-    pub fn complete_hash(
-        &mut self,
-        ticket_id: DirectRestoreTicketId,
-        verified: bool,
-    ) -> Result<(), DirectRestoreError> {
-        let ticket = self.ticket(ticket_id)?;
+    pub fn next_hash_job(&mut self) -> Result<Option<DirectHashJob>, DirectRestoreError> {
+        let Some((&ticket_id, ticket)) = self
+            .tickets
+            .iter()
+            .find(|(_, ticket)| ticket.hash_state == DirectHashState::Queued)
+        else {
+            return Ok(None);
+        };
         if !matches!(
             ticket.state,
             DirectRestoreState::DataReady | DirectRestoreState::Abandoned
         ) || ticket.original_pending
             || ticket.cancel_pending
         {
-            return Err(DirectRestoreError::State);
+            return Err(DirectRestoreError::HashBinding);
+        }
+        let job = DirectHashJob {
+            ticket: ticket_id,
+            buffer: ticket.buffer.ok_or(DirectRestoreError::HashBinding)?,
+        };
+        self.ticket_mut(ticket_id)?.hash_state = DirectHashState::Running;
+        Ok(Some(job))
+    }
+
+    pub fn run_hash_job(&self, job: DirectHashJob) -> Result<DirectHashResult, DirectRestoreError> {
+        let ticket = self.ticket(job.ticket)?;
+        if ticket.hash_state != DirectHashState::Running
+            || ticket.buffer != Some(job.buffer)
+            || !matches!(
+                ticket.state,
+                DirectRestoreState::DataReady | DirectRestoreState::Abandoned
+            )
+            || ticket.original_pending
+            || ticket.cancel_pending
+        {
+            return Err(DirectRestoreError::HashBinding);
+        }
+        let physical_length = usize::try_from(ticket.record.physical_length)
+            .map_err(|_| DirectRestoreError::Overflow)?;
+        let bytes = self
+            .buffers
+            .bytes(job.buffer)?
+            .get(..physical_length)
+            .ok_or(DirectRestoreError::Record)?;
+        let verified = decode_direct_extent(&ticket.record, bytes).is_ok();
+        Ok(DirectHashResult { job, verified })
+    }
+
+    pub fn complete_hash(&mut self, result: DirectHashResult) -> Result<(), DirectRestoreError> {
+        let ticket_id = result.job.ticket;
+        let ticket = self.ticket(ticket_id)?;
+        if !matches!(
+            ticket.state,
+            DirectRestoreState::DataReady | DirectRestoreState::Abandoned
+        ) || ticket.original_pending
+            || ticket.cancel_pending
+            || ticket.hash_state != DirectHashState::Running
+            || ticket.buffer != Some(result.job.buffer)
+        {
+            return Err(DirectRestoreError::HashBinding);
         }
         let state = ticket.state;
         let buffer = ticket.buffer.ok_or(DirectRestoreError::State)?;
-        if !verified {
+        if !result.verified {
             self.fail_ticket(ticket_id)?;
             return Err(DirectRestoreError::Integrity);
         }
         self.buffers
             .transition(buffer, DirectBufferState::HostReady)?;
+        self.release_hash_job(ticket_id)?;
         if state == DirectRestoreState::Abandoned {
             self.buffers.transition(buffer, DirectBufferState::Free)?;
             self.remove_ticket(ticket_id)
@@ -615,6 +750,7 @@ impl DirectRestoreTable {
         if ticket.state != DirectRestoreState::HashVerified
             || ticket.original_pending
             || ticket.cancel_pending
+            || ticket.hash_state != DirectHashState::None
         {
             return Err(DirectRestoreError::State);
         }
@@ -703,6 +839,27 @@ impl DirectRestoreTable {
         self.descriptors.outstanding_descriptors()
     }
 
+    #[must_use]
+    pub const fn active_hash_jobs(&self) -> u32 {
+        self.active_hash_jobs
+    }
+
+    #[must_use]
+    pub fn queued_hash_jobs(&self) -> usize {
+        self.tickets
+            .values()
+            .filter(|ticket| ticket.hash_state == DirectHashState::Queued)
+            .count()
+    }
+
+    #[must_use]
+    pub fn running_hash_jobs(&self) -> usize {
+        self.tickets
+            .values()
+            .filter(|ticket| ticket.hash_state == DirectHashState::Running)
+            .count()
+    }
+
     pub fn validate_invariants(&self) -> Result<(), DirectRestoreError> {
         let maximum_waiters = self
             .tickets
@@ -726,6 +883,7 @@ impl DirectRestoreTable {
         let mut expected_descriptors = 0_usize;
         let mut expected_cqes = 0_u32;
         let mut expected_active_buffers = 0_usize;
+        let mut expected_hash_jobs = 0_u32;
         for (&ticket_id, ticket) in &self.tickets {
             ticket
                 .record
@@ -782,6 +940,11 @@ impl DirectRestoreTable {
             if ticket.original_pending || ticket.cancel_pending {
                 expected_descriptors += 1;
             }
+            if ticket.hash_state != DirectHashState::None {
+                expected_hash_jobs = expected_hash_jobs
+                    .checked_add(1)
+                    .ok_or(DirectRestoreError::Overflow)?;
+            }
 
             let buffer_state = ticket
                 .buffer
@@ -789,40 +952,55 @@ impl DirectRestoreTable {
                 .transpose()?;
             let state_matches = match ticket.state {
                 DirectRestoreState::Planned => {
-                    buffer_state.is_none() && !ticket.original_pending && !ticket.cancel_pending
+                    buffer_state.is_none()
+                        && !ticket.original_pending
+                        && !ticket.cancel_pending
+                        && ticket.hash_state == DirectHashState::None
                 }
                 DirectRestoreState::BufferReserved => {
                     buffer_state == Some(DirectBufferState::ReadQueued)
                         && !ticket.original_pending
                         && !ticket.cancel_pending
+                        && ticket.hash_state == DirectHashState::None
                 }
                 DirectRestoreState::ReadSubmitted => {
                     ticket.original_pending
                         && !ticket.cancel_pending
+                        && ticket.hash_state == DirectHashState::Reserved
                         && buffer_state == Some(DirectBufferState::ReadInflight)
                 }
                 DirectRestoreState::DataReady => {
                     !ticket.original_pending
                         && !ticket.cancel_pending
+                        && matches!(
+                            ticket.hash_state,
+                            DirectHashState::Queued | DirectHashState::Running
+                        )
                         && buffer_state == Some(DirectBufferState::HashingForRead)
                 }
                 DirectRestoreState::HashVerified => {
                     !ticket.original_pending
                         && !ticket.cancel_pending
+                        && ticket.hash_state == DirectHashState::None
                         && buffer_state == Some(DirectBufferState::HostReady)
                 }
                 DirectRestoreState::Abandoned => {
                     ticket.waiters.is_empty()
                         && matches!(
-                            buffer_state,
-                            Some(
-                                DirectBufferState::ReadInflight | DirectBufferState::HashingForRead
+                            (buffer_state, ticket.hash_state),
+                            (
+                                Some(DirectBufferState::ReadInflight),
+                                DirectHashState::Reserved
+                            ) | (
+                                Some(DirectBufferState::HashingForRead),
+                                DirectHashState::Queued | DirectHashState::Running
                             )
                         )
                 }
                 DirectRestoreState::Failed => {
                     ticket.waiters.is_empty()
                         && !ticket.original_pending
+                        && ticket.hash_state == DirectHashState::None
                         && buffer_state == Some(DirectBufferState::Quarantined)
                 }
             };
@@ -846,6 +1024,8 @@ impl DirectRestoreTable {
             || expected_descriptors != self.descriptors.outstanding_descriptors()
             || expected_cqes != self.cq.outstanding()
             || expected_active_buffers != self.buffers.active_slots()
+            || expected_hash_jobs != self.active_hash_jobs
+            || self.active_hash_jobs > self.config.maximum_hash_jobs
         {
             return Err(DirectRestoreError::Accounting);
         }
@@ -932,6 +1112,7 @@ impl DirectRestoreTable {
             self.buffers.fail(buffer)?;
             self.buffers.quarantine(buffer)?;
         }
+        self.release_hash_job(ticket_id)?;
         self.clear_waiters(ticket_id)?;
         self.ticket_mut(ticket_id)?.state = DirectRestoreState::Failed;
         let ticket = self.ticket(ticket_id)?;
@@ -953,8 +1134,25 @@ impl DirectRestoreTable {
             return Ok(());
         }
         let buffer = ticket.buffer.ok_or(DirectRestoreError::State)?;
+        self.release_hash_job(ticket_id)?;
         self.buffers.release_abandoned_read(buffer)?;
         self.remove_ticket(ticket_id)
+    }
+
+    fn release_hash_job(
+        &mut self,
+        ticket_id: DirectRestoreTicketId,
+    ) -> Result<(), DirectRestoreError> {
+        let hash_state = self.ticket(ticket_id)?.hash_state;
+        if hash_state == DirectHashState::None {
+            return Ok(());
+        }
+        self.active_hash_jobs = self
+            .active_hash_jobs
+            .checked_sub(1)
+            .ok_or(DirectRestoreError::Accounting)?;
+        self.ticket_mut(ticket_id)?.hash_state = DirectHashState::None;
+        Ok(())
     }
 
     fn remove_ticket(
@@ -972,6 +1170,10 @@ impl DirectRestoreTable {
         if ticket.original_token.is_some() || ticket.cancel_token.is_some() {
             self.tickets.insert(ticket_id, ticket);
             return Err(DirectRestoreError::DescriptorBinding);
+        }
+        if ticket.hash_state != DirectHashState::None {
+            self.tickets.insert(ticket_id, ticket);
+            return Err(DirectRestoreError::HashBinding);
         }
         for (request_id, waiter) in ticket.waiters {
             self.request_to_ticket.remove(&request_id);
@@ -1042,6 +1244,8 @@ pub enum DirectRestoreError {
     CqConfig,
     CqWait,
     CqUnderflow,
+    HashWait,
+    HashBinding,
     Accounting,
     Overflow,
     Buffer(DirectBufferStateError),
@@ -1076,8 +1280,21 @@ mod tests {
         MTP_PHYSICAL_BYTES, TARGET_INDEXER_EXTENT_LENGTH, TARGET_INDEXER_EXTENT_OFFSET,
         TARGET_KV_EXTENT_LENGTH, TARGET_KV_EXTENT_OFFSET, TARGET_ONLY_PHYSICAL_BYTES, TierPiece,
     };
+    use sha2::{Digest, Sha256};
 
     use super::*;
+
+    fn zero_sha256(length: u64) -> [u8; 32] {
+        let zeros = [0_u8; 4_096];
+        let mut remaining = length;
+        let mut hasher = Sha256::new();
+        while remaining != 0 {
+            let bytes = usize::try_from(remaining.min(zeros.len() as u64)).unwrap();
+            hasher.update(&zeros[..bytes]);
+            remaining -= bytes as u64;
+        }
+        hasher.finalize().into()
+    }
 
     fn record(capability: DirectTierCapability, key: u8) -> DirectExtentRecord {
         let mut pieces = vec![
@@ -1085,13 +1302,13 @@ mod tests {
                 piece: TierPiece::TargetKv,
                 extent_offset: TARGET_KV_EXTENT_OFFSET,
                 logical_length: TARGET_KV_EXTENT_LENGTH,
-                sha256: [0x31; 32],
+                sha256: zero_sha256(TARGET_KV_EXTENT_LENGTH),
             },
             crate::DirectPieceRecord {
                 piece: TierPiece::TargetIndexer,
                 extent_offset: TARGET_INDEXER_EXTENT_OFFSET,
                 logical_length: TARGET_INDEXER_EXTENT_LENGTH,
-                sha256: [0x32; 32],
+                sha256: zero_sha256(TARGET_INDEXER_EXTENT_LENGTH),
             },
         ];
         if capability == DirectTierCapability::Mtp {
@@ -1099,7 +1316,7 @@ mod tests {
                 piece: TierPiece::DraftSidecar,
                 extent_offset: DRAFT_SIDECAR_EXTENT_OFFSET,
                 logical_length: DRAFT_SIDECAR_EXTENT_LENGTH,
-                sha256: [0x33; 32],
+                sha256: zero_sha256(DRAFT_SIDECAR_EXTENT_LENGTH),
             });
         }
         DirectExtentRecord {
@@ -1114,7 +1331,7 @@ mod tests {
                 DirectTierCapability::Target => TARGET_ONLY_PHYSICAL_BYTES,
                 DirectTierCapability::Mtp => MTP_PHYSICAL_BYTES,
             },
-            physical_sha256: [0x41 + key; 32],
+            physical_sha256: zero_sha256(capability.physical_bytes()),
             pieces,
         }
     }
@@ -1123,6 +1340,7 @@ mod tests {
         DirectRestoreConfig {
             maximum_tickets: 8,
             maximum_waiters_per_ticket: 4,
+            maximum_hash_jobs: 4,
             maximum_physical_bytes: MTP_PHYSICAL_BYTES * 8,
             maximum_logical_bytes_per_tenant: crate::MTP_LOGICAL_BYTES * 4,
             buffer_slots: 4,
@@ -1154,6 +1372,14 @@ mod tests {
         table.reserve_buffer(ticket).unwrap();
         table.submit_read(ticket).unwrap();
         table.validate_invariants().unwrap();
+    }
+
+    fn verify_next_hash(table: &mut DirectRestoreTable, expected_ticket: DirectRestoreTicketId) {
+        let job = table.next_hash_job().unwrap().unwrap();
+        assert_eq!(job.ticket(), expected_ticket);
+        let result = table.run_hash_job(job).unwrap();
+        assert!(result.verified());
+        table.complete_hash(result).unwrap();
     }
 
     fn assert_valid(table: &DirectRestoreTable) {
@@ -1209,7 +1435,7 @@ mod tests {
             .complete_original(ticket, DirectReadCompletion::Exact)
             .unwrap();
         assert_valid(&table);
-        table.complete_hash(ticket, true).unwrap();
+        verify_next_hash(&mut table, ticket);
         assert_valid(&table);
         assert_eq!(table.finish_cpu_delivery(ticket).unwrap(), vec![10, 20, 30]);
         assert_eq!(table.ticket_count(), 0);
@@ -1377,7 +1603,7 @@ mod tests {
             DirectCancellation::WaitingForHashAcknowledgement
         );
         assert_eq!(table.active_buffers(), 1);
-        table.complete_hash(ticket, true).unwrap();
+        verify_next_hash(&mut table, ticket);
         assert_eq!(table.ticket_count(), 0);
         assert_eq!(table.active_buffers(), 0);
         assert_eq!(table.physical_bytes(), 0);
@@ -1395,7 +1621,7 @@ mod tests {
         table
             .complete_original(ticket, DirectReadCompletion::Exact)
             .unwrap();
-        table.complete_hash(ticket, true).unwrap();
+        verify_next_hash(&mut table, ticket);
         assert_eq!(
             table.cancel_waiter(1, true).unwrap(),
             DirectCancellation::ReleasedAfterVerification
@@ -1480,11 +1706,15 @@ mod tests {
             record(DirectTierCapability::Mtp, 7),
         );
         submit(&mut table, ticket);
+        table.read_destination_mut(ticket).unwrap()[0] = 1;
         table
             .complete_original(ticket, DirectReadCompletion::Exact)
             .unwrap();
+        let job = table.next_hash_job().unwrap().unwrap();
+        let result = table.run_hash_job(job).unwrap();
+        assert!(!result.verified());
         assert_eq!(
-            table.complete_hash(ticket, false),
+            table.complete_hash(result),
             Err(DirectRestoreError::Integrity)
         );
         assert_eq!(table.quarantined_buffers(), 1);
@@ -1493,6 +1723,98 @@ mod tests {
         assert_eq!(table.waiter_count(), 0);
         assert_eq!(table.physical_bytes(), 0);
         assert_eq!(table.tenant_logical_bytes(1), 0);
+    }
+
+    #[test]
+    fn checksum_capacity_waits_before_read_submission_and_preserves_reservation() {
+        let mut limited = config();
+        limited.maximum_hash_jobs = 1;
+        let mut table = DirectRestoreTable::new(limited, false).unwrap();
+        let first = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 23),
+        );
+        let second = plan(
+            &mut table,
+            request(2, 2, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 24),
+        );
+        table.reserve_buffer(first).unwrap();
+        table.reserve_buffer(second).unwrap();
+        table.submit_read(first).unwrap();
+        assert_eq!(table.active_hash_jobs(), 1);
+        assert_eq!(table.submit_read(second), Err(DirectRestoreError::HashWait));
+        assert_eq!(
+            table.state(second).unwrap(),
+            DirectRestoreState::BufferReserved
+        );
+        assert_eq!(table.outstanding_descriptors(), 1);
+        assert_eq!(table.outstanding_cqes(), 1);
+        assert_valid(&table);
+
+        table
+            .complete_original(first, DirectReadCompletion::Exact)
+            .unwrap();
+        assert_eq!(table.queued_hash_jobs(), 1);
+        let job = table.next_hash_job().unwrap().unwrap();
+        assert_eq!(job.ticket(), first);
+        assert_eq!(table.queued_hash_jobs(), 0);
+        assert_eq!(table.running_hash_jobs(), 1);
+        assert_eq!(table.submit_read(second), Err(DirectRestoreError::HashWait));
+        let result = table.run_hash_job(job).unwrap();
+        table.complete_hash(result).unwrap();
+        table.finish_cpu_delivery(first).unwrap();
+        assert_eq!(table.active_hash_jobs(), 0);
+
+        table.submit_read(second).unwrap();
+        table
+            .complete_original(second, DirectReadCompletion::Exact)
+            .unwrap();
+        verify_next_hash(&mut table, second);
+        table.finish_cpu_delivery(second).unwrap();
+        assert_eq!(table.ticket_count(), 0);
+        assert_valid(&table);
+    }
+
+    #[test]
+    fn checksum_jobs_are_bound_to_the_exact_ticket_and_buffer_generation() {
+        let mut table = DirectRestoreTable::new(config(), false).unwrap();
+        let ticket = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 25),
+        );
+        submit(&mut table, ticket);
+        table
+            .complete_original(ticket, DirectReadCompletion::Exact)
+            .unwrap();
+        let job = table.next_hash_job().unwrap().unwrap();
+        let wrong_generation = DirectHashJob {
+            ticket,
+            buffer: DirectBufferId {
+                slot: job.buffer().slot,
+                generation: job.buffer().generation + 1,
+            },
+        };
+        assert_eq!(
+            table.run_hash_job(wrong_generation),
+            Err(DirectRestoreError::HashBinding)
+        );
+        let result = table.run_hash_job(job).unwrap();
+        assert!(result.verified());
+        table.complete_hash(result).unwrap();
+        assert_eq!(
+            table.complete_hash(result),
+            Err(DirectRestoreError::HashBinding)
+        );
+        table.finish_cpu_delivery(ticket).unwrap();
+        assert_eq!(
+            table.run_hash_job(job),
+            Err(DirectRestoreError::MissingTicket)
+        );
+        assert_eq!(table.active_hash_jobs(), 0);
+        assert_valid(&table);
     }
 
     #[test]
@@ -1642,6 +1964,7 @@ mod tests {
     fn buffer_and_descriptor_waits_preserve_every_reservation() {
         let mut buffer_limited = config();
         buffer_limited.buffer_slots = 1;
+        buffer_limited.maximum_hash_jobs = 1;
         let mut table = DirectRestoreTable::new(buffer_limited, false).unwrap();
         let first = plan(
             &mut table,
@@ -1698,13 +2021,13 @@ mod tests {
         table
             .complete_original(first, DirectReadCompletion::Exact)
             .unwrap();
-        table.complete_hash(first, true).unwrap();
+        verify_next_hash(&mut table, first);
         table.finish_cpu_delivery(first).unwrap();
         table.submit_read(second).unwrap();
         table
             .complete_original(second, DirectReadCompletion::Exact)
             .unwrap();
-        table.complete_hash(second, true).unwrap();
+        verify_next_hash(&mut table, second);
         table.finish_cpu_delivery(second).unwrap();
         assert_eq!(table.ticket_count(), 0);
         assert_eq!(table.outstanding_descriptors(), 0);

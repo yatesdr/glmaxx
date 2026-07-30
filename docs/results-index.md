@@ -123,6 +123,16 @@ MTP0 arenas. The complete local gate passes 378 tests. This is a CPU static
 memory-planning result; fixed hot-path page transactions, the global quota
 ledger, measured fit, GPU payloads, model execution, and performance remain
 outside it.
+The direct-tier checksum-authority CPU proof is pinned in
+`docs/direct-tier-checksum-authority-cpu-v1.md`. It removes the restore
+state machine's caller-supplied verification boolean, reserves bounded hash
+capacity before read submission, binds queued/running work to the exact
+ticket and buffer generation, and runs the real physical/piece/padding
+decoder before publishing `HOST_READY`. Its deterministic proof covers
+atomic `HashWait`, canonical SHA acceptance, replay rejection, corrupt-byte
+quarantine, and zero terminal resource accounting. This is a synchronous CPU
+authority proof only: worker threads, io_uring, storage, CUDA, model
+execution, and performance remain absent.
 The direct-tier scheduling CPU proof is pinned in
 `docs/direct-tier-scheduler-cpu-proof-v1.md`. It implements preallocated
 deterministic R0/R1/W0/W1 ordering, preserves read-reserved buffers,

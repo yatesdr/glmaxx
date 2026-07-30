@@ -32,9 +32,10 @@ pub use direct::{
     validate_direct_io_span,
 };
 pub use direct_restore::{
-    DirectCancellation, DirectCatalogBinding, DirectCqKind, DirectCqTracker, DirectReadCompletion,
-    DirectRestoreAdmission, DirectRestoreConfig, DirectRestoreError, DirectRestoreRequest,
-    DirectRestoreState, DirectRestoreTable, DirectRestoreTicketId,
+    DirectCancellation, DirectCatalogBinding, DirectCqKind, DirectCqTracker, DirectHashJob,
+    DirectHashResult, DirectReadCompletion, DirectRestoreAdmission, DirectRestoreConfig,
+    DirectRestoreError, DirectRestoreRequest, DirectRestoreState, DirectRestoreTable,
+    DirectRestoreTicketId,
 };
 pub use direct_schedule::{
     DIRECT_PUBLICATION_CQ_RESERVATION, DirectIoClass, DirectIoCommand, DirectIoDecision,
