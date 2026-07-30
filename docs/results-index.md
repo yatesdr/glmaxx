@@ -1,9 +1,9 @@
 # Results index
 
-Date: 2026-07-29
+Date: 2026-07-30
 
 Current CPU implementation baseline:
-`cd42ad4640f9d9d519ee970aaab07a4f51cad6d5`
+`cbe3e9f0881ebc3d8f8c0b3bc1abc571c29a4888`
 
 The complete local gate most recently ran against active-prefix record
 binding implementation
@@ -110,6 +110,13 @@ file-backed native reader, and streaming writer now share one offset-aware
 chunk validator; conversion no longer allocates a complete tensor plane only
 to inspect padding. Independent review is requested by
 `docs/fable-plain-padding-streaming-v1-handoff.md`.
+The new-write I/O correction is pinned in
+`docs/streaming-write-single-pass-proof-v1.md`. Each source chunk is now
+semantically validated before its single staging-file write, and final
+cross-plane validation precedes pending descriptor insertion. Completed
+descriptors are still hash-checked and semantically reread on resume. The
+complete local gate passes 293 Rust tests; no conversion-speed claim is made
+without a matched benchmark.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
