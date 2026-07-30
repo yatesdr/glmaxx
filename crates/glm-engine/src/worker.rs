@@ -23,6 +23,10 @@ use crate::{
 
 const CPU_TOKEN_DOMAIN: &[u8] = b"glmaxx.cpu-worker-token.v1\0";
 const TP_RANKS: u8 = 4;
+const WORKER_STATE_POISONED: usize = 1_usize << (usize::BITS - 1);
+const WORKER_STATE_CLOSED: usize = 1_usize << (usize::BITS - 2);
+const WORKER_STATE_EXCLUSIVE: usize = 1_usize << (usize::BITS - 3);
+const WORKER_STATE_COUNT_MASK: usize = WORKER_STATE_EXCLUSIVE - 1;
 
 /// Rank-local execution boundary for one persistent TP4 worker thread.
 ///
@@ -137,6 +141,7 @@ pub enum RankWeightPhase {
 pub enum WeightLoadFailureCause {
     Config,
     Saturated,
+    Poisoned,
     Closed,
     Timeout {
         phase: RankWeightPhase,
@@ -391,32 +396,53 @@ impl StepHandle {
 }
 
 struct OutstandingPermit {
-    outstanding: Arc<AtomicUsize>,
+    state_word: Arc<AtomicUsize>,
 }
 
 struct ExclusivePermit {
-    outstanding: Arc<AtomicUsize>,
+    state_word: Arc<AtomicUsize>,
+}
+
+struct PoolClosedGuard {
+    state_word: Arc<AtomicUsize>,
+}
+
+impl Drop for PoolClosedGuard {
+    fn drop(&mut self) {
+        self.state_word
+            .fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+    }
 }
 
 impl Drop for ExclusivePermit {
     fn drop(&mut self) {
-        let prior = self.outstanding.swap(0, Ordering::AcqRel);
-        debug_assert_eq!(
-            prior,
-            usize::MAX,
-            "exclusive worker operation lost ownership"
-        );
+        self.state_word
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                let owns_exclusive = current & WORKER_STATE_EXCLUSIVE != 0
+                    && current & WORKER_STATE_COUNT_MASK == 0
+                    && current & WORKER_STATE_POISONED == 0;
+                Some(if owns_exclusive {
+                    current & !WORKER_STATE_EXCLUSIVE
+                } else {
+                    (current & !WORKER_STATE_EXCLUSIVE) | WORKER_STATE_POISONED
+                })
+            })
+            .expect("exclusive worker state update closure always returns a value");
     }
 }
 
 impl Drop for OutstandingPermit {
     fn drop(&mut self) {
-        let released =
-            self.outstanding
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    current.checked_sub(1)
-                });
-        debug_assert!(released.is_ok(), "step outstanding counter underflow");
+        self.state_word
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                let count = current & WORKER_STATE_COUNT_MASK;
+                Some(if count == 0 {
+                    current | WORKER_STATE_POISONED
+                } else {
+                    (current & !WORKER_STATE_COUNT_MASK) | (count - 1)
+                })
+            })
+            .expect("step quota update closure always returns a value");
     }
 }
 
@@ -569,7 +595,7 @@ pub struct PageDeltaAck {
 pub struct Tp4WorkerPool {
     sender: Option<SyncSender<PoolCommand>>,
     dispatcher: Option<JoinHandle<()>>,
-    outstanding: Arc<AtomicUsize>,
+    state_word: Arc<AtomicUsize>,
     maximum_outstanding: usize,
 }
 
@@ -613,15 +639,23 @@ impl Tp4WorkerPool {
         sources: [RankExecutorSource; 4],
         rank_spawn_fault: Option<u8>,
     ) -> Result<Self, WorkerError> {
-        if maximum_outstanding == 0 {
+        if maximum_outstanding == 0 || maximum_outstanding > WORKER_STATE_COUNT_MASK {
             return Err(WorkerError::Config);
         }
         let (sender, receiver) = mpsc::sync_channel(maximum_outstanding);
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+        let state_word = Arc::new(AtomicUsize::new(0));
+        let dispatcher_state_word = Arc::clone(&state_word);
         let dispatcher = thread::Builder::new()
             .name("glmaxx-step-dispatch".into())
             .spawn(move || {
-                dispatch_loop(receiver, sources, startup_sender, rank_spawn_fault);
+                dispatch_loop(
+                    receiver,
+                    sources,
+                    startup_sender,
+                    rank_spawn_fault,
+                    dispatcher_state_word,
+                );
             })
             .map_err(WorkerError::Thread)?;
         match startup_receiver.recv() {
@@ -641,7 +675,7 @@ impl Tp4WorkerPool {
         Ok(Self {
             sender: Some(sender),
             dispatcher: Some(dispatcher),
-            outstanding: Arc::new(AtomicUsize::new(0)),
+            state_word,
             maximum_outstanding,
         })
     }
@@ -681,7 +715,7 @@ impl Tp4WorkerPool {
             binding,
             response,
             permit: OutstandingPermit {
-                outstanding: Arc::clone(&self.outstanding),
+                state_word: Arc::clone(&self.state_word),
             },
         });
         let Some(sender) = &self.sender else {
@@ -828,7 +862,7 @@ impl Tp4WorkerPool {
         }
         let permit = self
             .try_reserve_exclusive()
-            .map_err(|()| empty_failure(WeightLoadFailureCause::Saturated))?;
+            .map_err(|error| empty_failure(weight_admission_failure(error)))?;
         let (response, receiver) = mpsc::sync_channel(1);
         self.sender
             .as_ref()
@@ -849,28 +883,39 @@ impl Tp4WorkerPool {
 
     #[must_use]
     pub fn outstanding(&self) -> usize {
-        self.outstanding
-            .load(Ordering::Acquire)
-            .min(self.maximum_outstanding)
+        let state = self.state_word.load(Ordering::Acquire);
+        if state & WORKER_STATE_EXCLUSIVE != 0 {
+            self.maximum_outstanding
+        } else {
+            state & WORKER_STATE_COUNT_MASK
+        }
+    }
+
+    #[must_use]
+    pub fn quota_poisoned(&self) -> bool {
+        self.state_word.load(Ordering::Acquire) & WORKER_STATE_POISONED != 0
+    }
+
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.state_word.load(Ordering::Acquire) & WORKER_STATE_CLOSED != 0
     }
 
     fn reserve_slot(&self) -> Result<(), WorkerError> {
-        self.outstanding
+        self.state_word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                if current < self.maximum_outstanding {
-                    current.checked_add(1)
-                } else {
-                    None
-                }
+                let count = current & WORKER_STATE_COUNT_MASK;
+                (current & !WORKER_STATE_COUNT_MASK == 0 && count < self.maximum_outstanding)
+                    .then_some(current + 1)
             })
             .map(|_| ())
-            .map_err(|_| WorkerError::Saturated)
+            .map_err(worker_admission_error)
     }
 
     fn reserve_exclusive(&self) -> Result<ExclusivePermit, WeightLoadFailure> {
         self.try_reserve_exclusive()
-            .map_err(|()| WeightLoadFailure {
-                cause: WeightLoadFailureCause::Saturated,
+            .map_err(|error| WeightLoadFailure {
+                cause: weight_admission_failure(error),
                 cleanup_failure: None,
                 cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
             })
@@ -878,15 +923,19 @@ impl Tp4WorkerPool {
 
     fn reserve_exclusive_worker(&self) -> Result<ExclusivePermit, WorkerError> {
         self.try_reserve_exclusive()
-            .map_err(|()| WorkerError::Saturated)
     }
 
-    fn try_reserve_exclusive(&self) -> Result<ExclusivePermit, ()> {
-        self.outstanding
-            .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| ())?;
+    fn try_reserve_exclusive(&self) -> Result<ExclusivePermit, WorkerError> {
+        self.state_word
+            .compare_exchange(
+                0,
+                WORKER_STATE_EXCLUSIVE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(worker_admission_error)?;
         Ok(ExclusivePermit {
-            outstanding: Arc::clone(&self.outstanding),
+            state_word: Arc::clone(&self.state_word),
         })
     }
 }
@@ -900,12 +949,35 @@ impl Drop for Tp4WorkerPool {
     }
 }
 
+fn worker_admission_error(state: usize) -> WorkerError {
+    if state & WORKER_STATE_POISONED != 0 {
+        WorkerError::Poisoned
+    } else if state & WORKER_STATE_CLOSED != 0 {
+        WorkerError::Closed
+    } else {
+        WorkerError::Saturated
+    }
+}
+
+fn weight_admission_failure(error: WorkerError) -> WeightLoadFailureCause {
+    match error {
+        WorkerError::Poisoned => WeightLoadFailureCause::Poisoned,
+        WorkerError::Closed => WeightLoadFailureCause::Closed,
+        WorkerError::Saturated => WeightLoadFailureCause::Saturated,
+        _ => unreachable!("worker admission reports only poison, closed, or saturation"),
+    }
+}
+
 fn dispatch_loop(
     receiver: Receiver<PoolCommand>,
     sources: [RankExecutorSource; 4],
     startup: SyncSender<Result<(), WorkerError>>,
     rank_spawn_fault: Option<u8>,
+    state_word: Arc<AtomicUsize>,
 ) {
+    let _closed_guard = PoolClosedGuard {
+        state_word: Arc::clone(&state_word),
+    };
     let mut rank_senders: Vec<SyncSender<RankCommandEnvelope>> =
         Vec::with_capacity(usize::from(TP_RANKS));
     let mut rank_workers: Vec<JoinHandle<()>> = Vec::with_capacity(usize::from(TP_RANKS));
@@ -1018,6 +1090,9 @@ fn dispatch_loop(
                 };
                 initialized |= result.is_ok();
                 let failed = result.is_err();
+                if failed {
+                    state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+                }
                 drop(permit);
                 let _ = response.send(result);
                 failed
@@ -1033,6 +1108,9 @@ fn dispatch_loop(
                     Err(WorkerError::PageTableUninitialized)
                 };
                 let failed = result.is_err();
+                if failed {
+                    state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+                }
                 drop(permit);
                 let _ = response.send(result);
                 failed
@@ -1044,6 +1122,9 @@ fn dispatch_loop(
             } => {
                 let result = collect_checkpoint_device_identities(&rank_senders, phase_timeout);
                 let failed = result.is_err();
+                if failed {
+                    state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+                }
                 drop(permit);
                 let _ = response.send(result);
                 failed
@@ -1074,6 +1155,9 @@ fn dispatch_loop(
                 };
                 weights_loaded |= result.is_ok();
                 let failed = result.is_err();
+                if failed {
+                    state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+                }
                 drop(permit);
                 let _ = response.send(result);
                 failed
@@ -1102,6 +1186,7 @@ fn dispatch_loop(
                     })
                 };
                 weights_loaded = false;
+                state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
                 drop(permit);
                 let _ = response.send(result);
                 // A normal teardown deliberately retires the worker
@@ -1127,8 +1212,11 @@ fn dispatch_loop(
                 };
                 // Quota belongs to the queued/running TP4 operation, not its
                 // response handle.
-                drop(permit);
                 let failed = result.is_err();
+                if failed {
+                    state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
+                }
+                drop(permit);
                 let _ = response.send(result);
                 failed
             }
@@ -1137,6 +1225,7 @@ fn dispatch_loop(
             // Any rank, mirror, backend, or consensus failure is fatal for
             // this worker generation. A successful weight teardown also
             // retires the generation by contract.
+            state_word.fetch_or(WORKER_STATE_CLOSED, Ordering::AcqRel);
             break;
         }
     }
@@ -2101,6 +2190,7 @@ fn cpu_bound_output(
 pub enum WorkerError {
     Config,
     Saturated,
+    Poisoned,
     Closed,
     Timeout,
     StepOrder,
@@ -3044,6 +3134,82 @@ mod tests {
     }
 
     #[test]
+    fn step_quota_underflow_is_release_visible_and_blocks_all_admission() {
+        let state_word = Arc::new(AtomicUsize::new(0));
+        drop(OutstandingPermit {
+            state_word: Arc::clone(&state_word),
+        });
+        assert_eq!(
+            state_word.load(Ordering::Acquire) & WORKER_STATE_COUNT_MASK,
+            0
+        );
+        assert_ne!(
+            state_word.load(Ordering::Acquire) & WORKER_STATE_POISONED,
+            0
+        );
+
+        let pool = Tp4WorkerPool {
+            sender: None,
+            dispatcher: None,
+            state_word,
+            maximum_outstanding: 1,
+        };
+        assert!(pool.quota_poisoned());
+        assert!(!pool.is_closed());
+        assert_eq!(pool.outstanding(), 0);
+        assert!(matches!(pool.reserve_slot(), Err(WorkerError::Poisoned)));
+        assert!(matches!(
+            pool.try_reserve_exclusive(),
+            Err(WorkerError::Poisoned)
+        ));
+    }
+
+    #[test]
+    fn lost_exclusive_ownership_poison_is_release_visible() {
+        let state_word = Arc::new(AtomicUsize::new(0));
+        drop(ExclusivePermit {
+            state_word: Arc::clone(&state_word),
+        });
+        let state = state_word.load(Ordering::Acquire);
+        assert_eq!(state & WORKER_STATE_COUNT_MASK, 0);
+        assert_eq!(state & WORKER_STATE_EXCLUSIVE, 0);
+        assert_ne!(state & WORKER_STATE_POISONED, 0);
+
+        let pool = Tp4WorkerPool {
+            sender: None,
+            dispatcher: None,
+            state_word,
+            maximum_outstanding: 1,
+        };
+        assert!(pool.quota_poisoned());
+        assert!(matches!(pool.reserve_slot(), Err(WorkerError::Poisoned)));
+        assert!(matches!(
+            pool.try_reserve_exclusive(),
+            Err(WorkerError::Poisoned)
+        ));
+    }
+
+    #[test]
+    fn worker_quota_rejects_counts_that_overlap_state_flags() {
+        assert!(matches!(
+            Tp4WorkerPool::spawn_cpu(WORKER_STATE_COUNT_MASK + 1, None),
+            Err(WorkerError::Config)
+        ));
+        assert_eq!(
+            weight_admission_failure(WorkerError::Poisoned),
+            WeightLoadFailureCause::Poisoned
+        );
+        assert_eq!(
+            weight_admission_failure(WorkerError::Closed),
+            WeightLoadFailureCause::Closed
+        );
+        assert_eq!(
+            weight_admission_failure(WorkerError::Saturated),
+            WeightLoadFailureCause::Saturated
+        );
+    }
+
+    #[test]
     fn pool_spawn_waits_for_all_four_ranks_and_cleans_partial_startup() {
         let drops = Arc::new(AtomicUsize::new(0));
         let executors = std::array::from_fn(|_| {
@@ -3228,6 +3394,10 @@ mod tests {
             *states.lock().unwrap(),
             [MockWeightState::Aborted; RANK_SET_SIZE]
         );
+        assert!(pool.is_closed());
+        assert!(!pool.quota_poisoned());
+        assert_eq!(pool.outstanding(), 0);
+        assert!(matches!(pool.reserve_slot(), Err(WorkerError::Closed)));
         drop(pool);
     }
 
@@ -3469,6 +3639,15 @@ mod tests {
                 error: RankExecutionError::Backend(17),
             })
         ));
+        assert!(pool.is_closed());
+        assert!(!pool.quota_poisoned());
+        assert_eq!(pool.outstanding(), 0);
+        let (next_plan, next_schedule) = step(2);
+        assert!(matches!(
+            pool.try_submit(next_plan, next_schedule),
+            Err(WorkerError::Closed)
+        ));
+        assert_eq!(pool.outstanding(), 0);
     }
 
     #[test]
