@@ -20,7 +20,7 @@ use crate::{
         derive_header_flags, encode_rank_header, first_16, sha256, validate_plain_geometry,
         validate_plain_padding,
     },
-    nvfp4::validate_scale_plane,
+    nvfp4::Nvfp4PlaneValidator,
 };
 
 const STREAM_BUFFER_BYTES: usize = 8 * 1024 * 1024;
@@ -917,8 +917,47 @@ impl StreamingRankWriter {
                 .map_err(StreamRankError::RankFile)
             }
             0x0100 | 0x0101 => {
-                let aux = read_range_vec(&self.file, descriptor.aux_offset, descriptor.aux_bytes)?;
-                validate_scale_plane(&aux).map_err(StreamRankError::Nvfp4)
+                let metadata = Nvfp4Metadata::decode(&self.config.tensors[index].metadata)
+                    .map_err(StreamRankError::Nvfp4)?;
+                let mut validator =
+                    Nvfp4PlaneValidator::new(&metadata).map_err(StreamRankError::Nvfp4)?;
+                let mut primary_offset = 0_u64;
+                read_chunks(
+                    &self.file,
+                    descriptor.payload_offset,
+                    descriptor.payload_bytes,
+                    |chunk| {
+                        validator
+                            .value_chunk(chunk, primary_offset)
+                            .map_err(StreamRankError::Nvfp4)?;
+                        primary_offset = primary_offset
+                            .checked_add(
+                                u64::try_from(chunk.len())
+                                    .map_err(|_| StreamRankError::Overflow)?,
+                            )
+                            .ok_or(StreamRankError::Overflow)?;
+                        Ok(())
+                    },
+                )?;
+                let mut aux_offset = 0_u64;
+                read_chunks(
+                    &self.file,
+                    descriptor.aux_offset,
+                    descriptor.aux_bytes,
+                    |chunk| {
+                        validator
+                            .scale_chunk(chunk, aux_offset)
+                            .map_err(StreamRankError::Nvfp4)?;
+                        aux_offset = aux_offset
+                            .checked_add(
+                                u64::try_from(chunk.len())
+                                    .map_err(|_| StreamRankError::Overflow)?,
+                            )
+                            .ok_or(StreamRankError::Overflow)?;
+                        Ok(())
+                    },
+                )?;
+                validator.finish().map_err(StreamRankError::Nvfp4)
             }
             CODEC_EXL3_SOURCE => {
                 let metadata = Exl3Metadata::decode(&self.config.tensors[index].metadata)
@@ -1685,6 +1724,21 @@ mod tests {
             "first streaming/reference difference at {difference:?}; body {body_difference:?}"
         );
         RankFile::read(observed).unwrap();
+    }
+
+    #[test]
+    fn streaming_writer_rejects_zero_scale_over_nonzero_values() {
+        let path = TempPath::new();
+        let (config, _builder, planes) = configs(0);
+        let mut invalid_scales = planes[1].clone();
+        assert_ne!(invalid_scales[0], 0);
+        invalid_scales[0] = 0;
+        let mut writer = StreamingRankWriter::create_or_resume(&path.0, config).unwrap();
+        assert!(matches!(
+            writer.write_tensor(0, &mut &planes[0][..], &mut &invalid_scales[..]),
+            Err(StreamRankError::Nvfp4(crate::Nvfp4Error::ZeroScaleValue))
+        ));
+        assert_eq!(writer.completed_tensors(), 0);
     }
 
     #[test]

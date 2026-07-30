@@ -19,7 +19,8 @@ use crate::{
         DESCRIPTOR_FLAG_AUX_REQUIRED, DTYPE_BF16, DTYPE_FP16, DTYPE_I16, DTYPE_PACKED_E2M1X2,
         PAYLOAD_ALIGNMENT, align_up, derive_header_flags, validate_plain_geometry,
     },
-    crc32c, decode_e4m3,
+    crc32c,
+    nvfp4::Nvfp4PlaneValidator,
     rank_manifest::{RankManifestContext, RankManifestError, validate_rank_manifest},
 };
 
@@ -381,6 +382,13 @@ impl NativeRankReader {
         for (index, descriptor) in self.descriptors.iter().enumerate() {
             let name = &self.names[index];
             let metadata = self.tensor_codec_metadata(index)?;
+            let mut nvfp4_validator =
+                if matches!(descriptor.codec_id, CODEC_NVFP4_1D | CODEC_NVFP4_2D) {
+                    let metadata = Nvfp4Metadata::decode(metadata).map_err(RankFileError::Nvfp4)?;
+                    Some(Nvfp4PlaneValidator::new(&metadata)?)
+                } else {
+                    None
+                };
             sink.begin_tensor(self.rank, index, name, descriptor, metadata)
                 .map_err(NativeRankReaderError::Sink)?;
 
@@ -411,6 +419,9 @@ impl NativeRankReader {
                 &mut stream_chunks,
                 |chunk, offset| {
                     validate_plain_padding_chunk(descriptor, chunk, offset)?;
+                    if let Some(validator) = &mut nvfp4_validator {
+                        validator.value_chunk(chunk, offset)?;
+                    }
                     if let Some(bytes) = &mut exl3_primary {
                         bytes.extend_from_slice(chunk);
                     }
@@ -454,6 +465,16 @@ impl NativeRankReader {
                     )
                     .ok_or(RankFileError::Overflow)?,
             );
+            maximum_reader_scratch_bytes = maximum_reader_scratch_bytes.max(
+                buffer
+                    .len()
+                    .checked_add(
+                        nvfp4_validator
+                            .as_ref()
+                            .map_or(0, Nvfp4PlaneValidator::scratch_bytes),
+                    )
+                    .ok_or(RankFileError::Overflow)?,
+            );
             let aux_hash = stream_plane(
                 &self.file,
                 &mut buffer,
@@ -461,13 +482,9 @@ impl NativeRankReader {
                 descriptor.aux_bytes,
                 &mut whole,
                 &mut stream_chunks,
-                |chunk, _| {
-                    if matches!(descriptor.codec_id, CODEC_NVFP4_1D | CODEC_NVFP4_2D)
-                        && chunk
-                            .iter()
-                            .any(|&code| code & 0x80 != 0 || !decode_e4m3(code).is_finite())
-                    {
-                        return Err(crate::Nvfp4Error::ScaleEncoding.into());
+                |chunk, offset| {
+                    if let Some(validator) = &mut nvfp4_validator {
+                        validator.scale_chunk(chunk, offset)?;
                     }
                     if let Some(bytes) = &mut exl3_aux {
                         bytes.extend_from_slice(chunk);
@@ -483,6 +500,9 @@ impl NativeRankReader {
                 let exl3_metadata = Exl3Metadata::decode(metadata).map_err(RankFileError::Exl3)?;
                 Exl3Trellis::from_container_planes(exl3_metadata, &primary, &aux)
                     .map_err(RankFileError::Exl3)?;
+            }
+            if let Some(validator) = nvfp4_validator {
+                validator.finish()?;
             }
             sink.finish_tensor().map_err(NativeRankReaderError::Sink)?;
             cursor = descriptor
@@ -1170,10 +1190,10 @@ mod tests {
                 .into_iter()
                 .flat_map(u16::to_le_bytes)
                 .collect();
-            let nvfp4_values: Vec<f32> = (0..128 * 64)
+            let nvfp4_values: Vec<f32> = (0..129 * 65)
                 .map(|index| ((index * 17 + rank * 3) % 127) as f32 / 31.0 - 2.0)
                 .collect();
-            let nvfp4 = PackedNvfp4::pack(&nvfp4_values, 128, 64, Codec::OneDimensional).unwrap();
+            let nvfp4 = PackedNvfp4::pack(&nvfp4_values, 129, 65, Codec::OneDimensional).unwrap();
             let exl3_metadata =
                 Exl3Metadata::new(Exl3Projection::Gate, 78, 0, rank as u8, 3, 128, 128).unwrap();
             let exl3 = Exl3Trellis {
@@ -1373,6 +1393,46 @@ mod tests {
             Err(NativeRankReaderError::Format(
                 RankFileError::NonCanonicalLayout
             ))
+        ));
+        drop(reader);
+
+        let mut bytes = builders[0].build(conversion).unwrap();
+        let descriptor_start = usize::try_from(get_u64(&bytes, 56)).unwrap() + DESCRIPTOR_BYTES;
+        let payload_offset = usize::try_from(get_u64(&bytes, descriptor_start + 72)).unwrap();
+        let payload_bytes = usize::try_from(get_u64(&bytes, descriptor_start + 80)).unwrap();
+        let padded_value = 65_usize;
+        bytes[payload_offset + padded_value / 2] |= 0x10;
+        let payload_sha256 = hash(&bytes[payload_offset..payload_offset + payload_bytes]);
+        bytes[descriptor_start + 128..descriptor_start + 160].copy_from_slice(&payload_sha256);
+        resign_header(&mut bytes);
+        let padding_path = directory.join("nvfp4-value-padding.g5n");
+        fs::write(&padding_path, bytes).unwrap();
+        let reader = NativeRankReader::open(&padding_path).unwrap();
+        assert!(matches!(
+            reader.verify(),
+            Err(NativeRankReaderError::Format(RankFileError::Nvfp4(
+                crate::Nvfp4Error::NonCanonicalPadding
+            )))
+        ));
+        drop(reader);
+
+        let mut bytes = builders[0].build(conversion).unwrap();
+        let descriptor_start = usize::try_from(get_u64(&bytes, 56)).unwrap() + DESCRIPTOR_BYTES;
+        let aux_offset = usize::try_from(get_u64(&bytes, descriptor_start + 88)).unwrap();
+        let aux_bytes = usize::try_from(get_u64(&bytes, descriptor_start + 96)).unwrap();
+        assert_ne!(bytes[aux_offset], 0);
+        bytes[aux_offset] = 0;
+        let aux_sha256 = hash(&bytes[aux_offset..aux_offset + aux_bytes]);
+        bytes[descriptor_start + 160..descriptor_start + 192].copy_from_slice(&aux_sha256);
+        resign_header(&mut bytes);
+        let zero_scale_path = directory.join("nvfp4-zero-scale.g5n");
+        fs::write(&zero_scale_path, bytes).unwrap();
+        let reader = NativeRankReader::open(&zero_scale_path).unwrap();
+        assert!(matches!(
+            reader.verify(),
+            Err(NativeRankReaderError::Format(RankFileError::Nvfp4(
+                crate::Nvfp4Error::ZeroScaleValue
+            )))
         ));
         drop(reader);
 

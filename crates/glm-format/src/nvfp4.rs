@@ -316,12 +316,158 @@ pub(crate) fn validate_scale_plane(scales: &[u8]) -> Result<(), Nvfp4Error> {
     Ok(())
 }
 
+/// Bounded semantic validator for separated NVFP4 value and scale planes.
+///
+/// Rank files place the complete value plane before the swizzled scale
+/// plane. Retaining one bit per scale records whether the corresponding
+/// 16-value block contains a nonzero code; retaining the scale plane itself
+/// permits the 2D repeated-scale contract to be checked after streaming.
+pub(crate) struct Nvfp4PlaneValidator {
+    metadata: Nvfp4Metadata,
+    nonzero_blocks: Vec<u8>,
+    scales: Vec<u8>,
+    value_bytes_seen: u64,
+    scale_bytes_seen: u64,
+}
+
+impl Nvfp4PlaneValidator {
+    pub(crate) fn new(metadata: &Nvfp4Metadata) -> Result<Self, Nvfp4Error> {
+        metadata.validate()?;
+        let scale_bytes =
+            usize::try_from(metadata.scale_plane_bytes).map_err(|_| Nvfp4Error::Overflow)?;
+        let bitset_bytes = scale_bytes.checked_add(7).ok_or(Nvfp4Error::Overflow)? / 8;
+        Ok(Self {
+            metadata: metadata.clone(),
+            nonzero_blocks: try_zeroed(bitset_bytes)?,
+            scales: try_zeroed(scale_bytes)?,
+            value_bytes_seen: 0,
+            scale_bytes_seen: 0,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn scratch_bytes(&self) -> usize {
+        self.nonzero_blocks.len() + self.scales.len()
+    }
+
+    pub(crate) fn value_chunk(&mut self, bytes: &[u8], offset: u64) -> Result<(), Nvfp4Error> {
+        let end = offset
+            .checked_add(u64::try_from(bytes.len()).map_err(|_| Nvfp4Error::Overflow)?)
+            .ok_or(Nvfp4Error::Overflow)?;
+        if offset != self.value_bytes_seen
+            || end > u64::from(self.metadata.value_plane_bytes)
+            || !offset.is_multiple_of(8)
+            || !bytes.len().is_multiple_of(8)
+        {
+            return Err(Nvfp4Error::ByteAccounting);
+        }
+        let padded_n = usize::try_from(self.metadata.padded_n).map_err(|_| Nvfp4Error::Overflow)?;
+        let padded_k = usize::try_from(self.metadata.padded_k).map_err(|_| Nvfp4Error::Overflow)?;
+        let logical_n =
+            usize::try_from(self.metadata.logical_n).map_err(|_| Nvfp4Error::Overflow)?;
+        let logical_k =
+            usize::try_from(self.metadata.logical_k).map_err(|_| Nvfp4Error::Overflow)?;
+        let groups_k = padded_k / 16;
+        let first_group = usize::try_from(offset / 8).map_err(|_| Nvfp4Error::Overflow)?;
+
+        for (local_group, block) in bytes.chunks_exact(8).enumerate() {
+            let linear_group = first_group
+                .checked_add(local_group)
+                .ok_or(Nvfp4Error::Overflow)?;
+            let row = linear_group / groups_k;
+            let group = linear_group % groups_k;
+            if row >= padded_n {
+                return Err(Nvfp4Error::ByteAccounting);
+            }
+            let group_start = group.checked_mul(16).ok_or(Nvfp4Error::Overflow)?;
+            if row >= logical_n || group_start >= logical_k {
+                if block.iter().any(|&byte| byte != 0) {
+                    return Err(Nvfp4Error::NonCanonicalPadding);
+                }
+            } else {
+                let logical_lanes = logical_k.saturating_sub(group_start).min(16);
+                for lane in logical_lanes..16 {
+                    let byte = block[lane / 2];
+                    let code = if lane & 1 == 0 {
+                        byte & 0x0f
+                    } else {
+                        byte >> 4
+                    };
+                    if code != 0 {
+                        return Err(Nvfp4Error::NonCanonicalPadding);
+                    }
+                }
+            }
+            if block.iter().any(|&byte| byte != 0) {
+                let scale = scale_offset(row, group, padded_n, padded_k)?;
+                self.nonzero_blocks[scale / 8] |= 1 << (scale & 7);
+            }
+        }
+        self.value_bytes_seen = end;
+        Ok(())
+    }
+
+    pub(crate) fn scale_chunk(&mut self, bytes: &[u8], offset: u64) -> Result<(), Nvfp4Error> {
+        let end = offset
+            .checked_add(u64::try_from(bytes.len()).map_err(|_| Nvfp4Error::Overflow)?)
+            .ok_or(Nvfp4Error::Overflow)?;
+        if offset != self.scale_bytes_seen || end > u64::from(self.metadata.scale_plane_bytes) {
+            return Err(Nvfp4Error::ByteAccounting);
+        }
+        validate_scale_plane(bytes)?;
+        let start = usize::try_from(offset).map_err(|_| Nvfp4Error::Overflow)?;
+        let finish = usize::try_from(end).map_err(|_| Nvfp4Error::Overflow)?;
+        self.scales[start..finish].copy_from_slice(bytes);
+        self.scale_bytes_seen = end;
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<(), Nvfp4Error> {
+        if self.value_bytes_seen != u64::from(self.metadata.value_plane_bytes)
+            || self.scale_bytes_seen != u64::from(self.metadata.scale_plane_bytes)
+        {
+            return Err(Nvfp4Error::ByteAccounting);
+        }
+        let logical_n =
+            usize::try_from(self.metadata.logical_n).map_err(|_| Nvfp4Error::Overflow)?;
+        let logical_k =
+            usize::try_from(self.metadata.logical_k).map_err(|_| Nvfp4Error::Overflow)?;
+        let padded_n = usize::try_from(self.metadata.padded_n).map_err(|_| Nvfp4Error::Overflow)?;
+        let padded_k = usize::try_from(self.metadata.padded_k).map_err(|_| Nvfp4Error::Overflow)?;
+        for row in 0..padded_n {
+            for group in 0..padded_k / 16 {
+                let offset = scale_offset(row, group, padded_n, padded_k)?;
+                let scale = self.scales[offset];
+                let any_code = self.nonzero_blocks[offset / 8] & (1 << (offset & 7)) != 0;
+                if scale == 0 && any_code {
+                    return Err(Nvfp4Error::ZeroScaleValue);
+                }
+                let scale_has_logical_domain = group * 16 < logical_k
+                    && match self.metadata.codec {
+                        Codec::OneDimensional => row < logical_n,
+                        Codec::TwoDimensional => (row / 16) * 16 < logical_n,
+                    };
+                if !scale_has_logical_domain && scale != 0 {
+                    return Err(Nvfp4Error::NonCanonicalPadding);
+                }
+                if self.metadata.codec == Codec::TwoDimensional {
+                    let tile_scale =
+                        self.scales[scale_offset((row / 16) * 16, group, padded_n, padded_k)?];
+                    if scale != tile_scale {
+                        return Err(Nvfp4Error::ScaleSharing);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_nvfp4_planes(
     metadata: &Nvfp4Metadata,
     values: &[u8],
     scales: &[u8],
 ) -> Result<(), Nvfp4Error> {
-    metadata.validate()?;
     if values.len()
         != usize::try_from(metadata.value_plane_bytes).map_err(|_| Nvfp4Error::Overflow)?
         || scales.len()
@@ -329,49 +475,19 @@ pub(crate) fn validate_nvfp4_planes(
     {
         return Err(Nvfp4Error::ByteAccounting);
     }
-    validate_scale_plane(scales)?;
-    let logical_n = usize::try_from(metadata.logical_n).map_err(|_| Nvfp4Error::Overflow)?;
-    let logical_k = usize::try_from(metadata.logical_k).map_err(|_| Nvfp4Error::Overflow)?;
-    let padded_n = usize::try_from(metadata.padded_n).map_err(|_| Nvfp4Error::Overflow)?;
-    let padded_k = usize::try_from(metadata.padded_k).map_err(|_| Nvfp4Error::Overflow)?;
-    for row in 0..padded_n {
-        for group in 0..padded_k / 16 {
-            let scale = scales[scale_offset(row, group, padded_n, padded_k)?];
-            let mut any_code = false;
-            for lane in 0..16 {
-                let column = group
-                    .checked_mul(16)
-                    .and_then(|column| column.checked_add(lane))
-                    .ok_or(Nvfp4Error::Overflow)?;
-                let linear = row
-                    .checked_mul(padded_k)
-                    .and_then(|linear| linear.checked_add(column))
-                    .ok_or(Nvfp4Error::Overflow)?;
-                let byte = values[linear / 2];
-                let code = if linear & 1 == 0 {
-                    byte & 0x0f
-                } else {
-                    byte >> 4
-                };
-                if (row >= logical_n || column >= logical_k) && code != 0 {
-                    return Err(Nvfp4Error::NonCanonicalPadding);
-                }
-                any_code |= code != 0;
-            }
-            if scale == 0 && any_code {
-                return Err(Nvfp4Error::ZeroScaleValue);
-            }
-            let scale_has_logical_domain = group * 16 < logical_k
-                && match metadata.codec {
-                    Codec::OneDimensional => row < logical_n,
-                    Codec::TwoDimensional => (row / 16) * 16 < logical_n,
-                };
-            if !scale_has_logical_domain && scale != 0 {
-                return Err(Nvfp4Error::NonCanonicalPadding);
-            }
-        }
-    }
-    Ok(())
+    let mut validator = Nvfp4PlaneValidator::new(metadata)?;
+    validator.value_chunk(values, 0)?;
+    validator.scale_chunk(scales, 0)?;
+    validator.finish()
+}
+
+fn try_zeroed(bytes: usize) -> Result<Vec<u8>, Nvfp4Error> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(bytes)
+        .map_err(|_| Nvfp4Error::Allocation)?;
+    output.resize(bytes, 0);
+    Ok(output)
 }
 
 pub fn scale_offset(
@@ -512,6 +628,8 @@ pub enum Nvfp4Error {
     ScaleEncoding,
     ZeroScaleValue,
     NonCanonicalPadding,
+    ScaleSharing,
+    Allocation,
 }
 
 impl fmt::Display for Nvfp4Error {
@@ -563,6 +681,44 @@ mod tests {
             }
         }
         assert!(seen.into_iter().all(|value| value));
+    }
+
+    #[test]
+    fn streaming_validation_is_chunk_stable_and_bounded() {
+        let input: Vec<f32> = (0..129 * 65)
+            .map(|index| (index % 31) as f32 - 15.0)
+            .collect();
+        let packed = PackedNvfp4::pack(&input, 129, 65, Codec::TwoDimensional).unwrap();
+        let mut validator = Nvfp4PlaneValidator::new(&packed.metadata).unwrap();
+        validator.value_chunk(&packed.values[..8], 0).unwrap();
+        validator.value_chunk(&packed.values[8..], 8).unwrap();
+        validator.scale_chunk(&packed.scales[..13], 0).unwrap();
+        validator.scale_chunk(&packed.scales[13..], 13).unwrap();
+        validator.finish().unwrap();
+
+        let mut out_of_order = Nvfp4PlaneValidator::new(&packed.metadata).unwrap();
+        assert_eq!(
+            out_of_order.value_chunk(&packed.values[8..16], 8),
+            Err(Nvfp4Error::ByteAccounting)
+        );
+
+        let actual_fc1 = Nvfp4Metadata {
+            codec: Codec::OneDimensional,
+            logical_n: 1_024,
+            logical_k: 6_144,
+            padded_n: 1_024,
+            padded_k: 6_144,
+            global_scale: 1.0,
+            global_amax: 0.0,
+            value_plane_bytes: 3_145_728,
+            scale_plane_bytes: 393_216,
+        };
+        assert_eq!(
+            Nvfp4PlaneValidator::new(&actual_fc1)
+                .unwrap()
+                .scratch_bytes(),
+            442_368
+        );
     }
 
     #[test]
@@ -659,6 +815,16 @@ mod tests {
         .unwrap();
         packed.scales[padded_scale] = encode_e4m3(1.0).unwrap();
         assert_eq!(packed.validate(), Err(Nvfp4Error::NonCanonicalPadding));
+
+        let mut shared =
+            PackedNvfp4::pack(&vec![1.0; 129 * 65], 129, 65, Codec::TwoDimensional).unwrap();
+        let padded_n = usize::try_from(shared.metadata.padded_n).unwrap();
+        let padded_k = usize::try_from(shared.metadata.padded_k).unwrap();
+        let first = scale_offset(0, 0, padded_n, padded_k).unwrap();
+        let second = scale_offset(1, 0, padded_n, padded_k).unwrap();
+        assert_eq!(shared.scales[first], shared.scales[second]);
+        shared.scales[second] = if shared.scales[first] == 1 { 2 } else { 1 };
+        assert_eq!(shared.validate(), Err(Nvfp4Error::ScaleSharing));
     }
 
     #[test]
