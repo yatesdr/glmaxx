@@ -105,6 +105,9 @@ passed:
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
   deterministic proof regeneration, and all 69 candidate-based review-handoff
   hash proofs with 0/50 configured result artifacts;
+- a later standalone `review-proof-all` run passes all 72 current handoffs
+  with 0/53 configured result artifacts; code and deterministic fixtures are
+  unchanged since the 286-test run;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
