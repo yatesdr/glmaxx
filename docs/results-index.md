@@ -51,7 +51,7 @@ basenames across the full review inbox, retains every per-artifact rejection,
 reports absent and unmatched files, exits unsuccessfully when any matched
 artifact is invalid, and never copies or promotes reviewer-owned bytes. On
 the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
-rejected, and 77 configured results absent. This transient inbox inventory is
+rejected, and 78 configured results absent. This transient inbox inventory is
 diagnostic only and does not change the eight machine-accepted results.
 The next cn4 window is prepared by
 `docs/cn4-environment-capture-v1.md`, which specifies a Rust-owned,
@@ -697,6 +697,8 @@ verdicts:
 | consolidated direct-tier read-class fairness CPU proof | `b602a9c` | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` |
 | Linux direct-tier feature and fault probe design | `a3771e3` | `docs/fable-direct-tier-linux-probe-v1-handoff.md` |
 | cn4 read-only environment capture design | `d961d96` | `docs/fable-cn4-environment-capture-v1-handoff.md` |
+| matched runtime control and comparison design | `660a070` | `docs/fable-matched-runtime-control-v1-handoff.md` |
+| corrected fused NVFP4 routed-MoE design | `2afb205` | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |

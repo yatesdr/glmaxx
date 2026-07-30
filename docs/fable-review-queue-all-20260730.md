@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1`
+`2afb205f7cfe5c90cdeac1262996b9fb9df0f726`
 
-`review-proof-all` verified 114 current handoffs and skipped the two historical
+`review-proof-all` verified 115 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 96 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 97 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -116,7 +116,7 @@ result path; follow the output instructions in that handoff.
 | 94 | `docs/fable-direct-tier-state-cpu-v1-handoff.md` | `ccd636967bec031c8a8b0349a18b39113c0a6ae6` | `docs/reviews/fable-direct-tier-state-cpu-v1.md` | `direct-tier-state-cpu-v1-accepted` |
 | 95 | `docs/fable-direct-tier-durable-format-v1-handoff.md` | `96be26e8a1d43cac047cd57a38bf3d13f6dbb756` | `docs/reviews/fable-direct-tier-durable-format-v1.md` | `direct-tier-durable-format-v1-design-accepted` |
 | 96 | `docs/fable-hbm-dram-transfer-v1-handoff.md` | `839f377473e08994269bcac68881f3e7afa14790` | `docs/reviews/fable-hbm-dram-transfer-v1.md` | `hbm-dram-transfer-v1-design-accepted` |
-| 97 | `docs/fable-nvfp4-fused-routed-moe-v1-handoff.md` | `803ae518424aef00d98e09e73b940f6b2c9832ca` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1.md` | `nvfp4-fused-routed-moe-v1-design-accepted` |
+| 97 | `docs/fable-nvfp4-fused-routed-moe-v1-handoff.md` | `803ae518424aef00d98e09e73b940f6b2c9832ca` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1.md` | superseded; do not issue token |
 | 98 | `docs/fable-online-prefix-publication-v1-r2-handoff.md` | `a9b40f1b1440797a05543d5e65e61927fd141b97` | `docs/reviews/fable-online-prefix-publication-v1-r2.md` | `online-prefix-publication-v1-accepted` |
 | 99 | `docs/fable-rank-residency-content-identity-v1-r2-handoff.md` | `386ea9a61bae10836a97efec24176118ee8e7632` | `docs/reviews/fable-rank-residency-content-identity-v1-r2.md` | `rank-residency-content-identity-v1-accepted` |
 | 100 | `docs/fable-restore-operation-quota-v1-r2-handoff.md` | `12c0c49c0ab966101eaf2797a3a23555ec069b2f` | `docs/reviews/fable-restore-operation-quota-v1-r2.md` | `restore-operation-quota-v1-accepted` |
@@ -134,6 +134,7 @@ result path; follow the output instructions in that handoff.
 | 112 | `docs/fable-direct-tier-linux-probe-v1-handoff.md` | `a3771e31dd73132db1caa306c097408e05388988` | `docs/reviews/fable-direct-tier-linux-probe-v1.md` | `direct-tier-linux-probe-v1-design-accepted` |
 | 113 | `docs/fable-cn4-environment-capture-v1-handoff.md` | `d961d96da3f4b99052272afcd4abf28dbe6f9854` | `docs/reviews/fable-cn4-environment-capture-v1.md` | `cn4-environment-capture-v1-design-accepted` |
 | 114 | `docs/fable-matched-runtime-control-v1-handoff.md` | `660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1` | `docs/reviews/fable-matched-runtime-control-v1.md` | `matched-runtime-control-v1-design-accepted` |
+| 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | `nvfp4-fused-routed-moe-v1-r2-design-accepted` |
 
 ## Verification command
 
@@ -144,5 +145,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 114 current handoffs and two
+The expected queue count for this document is 115 current handoffs and two
 explicitly skipped historical umbrella handoffs.
