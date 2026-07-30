@@ -55,7 +55,8 @@ passed:
 
 - `scripts/local-checks.sh`: 265 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 59 candidate-based review-handoff hash proofs;
+  and all 59 then-present candidate-based review-handoff hash proofs; the new
+  backend runtime-readiness handoff separately passes `review-proof`;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -419,6 +420,7 @@ verdicts:
 | TP4 quota owned through four-rank operation completion | `da46a30` | `docs/fable-tp4-step-operation-quota-v1-handoff.md` |
 | synchronous exact four-rank startup and partial cleanup | `1eb8e1c` | `docs/fable-tp4-rank-startup-handshake-v1-handoff.md` |
 | synchronous retained HTTP partial-start cleanup | `20c773c` | `docs/fable-retained-http-startup-cleanup-v1-handoff.md` |
+| backend runtime readiness and synchronous pre-ready cleanup | `5ff3d48` | `docs/fable-backend-runtime-readiness-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
