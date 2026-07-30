@@ -109,8 +109,9 @@ The protected-precision converter padding correction is pinned in
 `docs/plain-padding-streaming-proof-v1.md`. The in-memory decoder,
 file-backed native reader, and streaming writer now share one offset-aware
 chunk validator; conversion no longer allocates a complete tensor plane only
-to inspect padding. Independent review is requested by
-`docs/fable-plain-padding-streaming-v1-handoff.md`.
+to inspect padding. Fable accepted the CPU implementation; the
+machine-verified result is
+`fable-plain-padding-streaming-v1.md`.
 The new-write I/O correction is pinned in
 `docs/streaming-write-single-pass-proof-v1.md`. Each source chunk is now
 semantically validated before its single staging-file write, and final
