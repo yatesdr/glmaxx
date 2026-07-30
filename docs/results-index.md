@@ -116,7 +116,8 @@ semantically validated before its single staging-file write, and final
 cross-plane validation precedes pending descriptor insertion. Completed
 descriptors are still hash-checked and semantically reread on resume. The
 complete local gate passes 293 Rust tests; no conversion-speed claim is made
-without a matched benchmark.
+without a matched benchmark. Independent review is requested by
+`docs/fable-streaming-write-single-pass-v1-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
