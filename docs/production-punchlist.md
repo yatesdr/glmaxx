@@ -2,7 +2,7 @@
 
 Date: 2026-07-30
 
-Baseline audited: `a2cb01bfa4cd291579974a6e50e0e3c4adb70d4b`
+Baseline audited: `da6d89fe0c7997653807080bcfbebc6a00356395`
 
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
@@ -85,10 +85,10 @@ State meanings:
 
 | ID | State | Required outcome | Current evidence / blocker | Next gate |
 |---|---|---|---|---|
-| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Latest full local run at `a2cb01b`: 341 Rust tests with zero failures; workspace formatting, Clippy with warnings denied, CUDA-FFI host checks, deterministic fixture comparisons, C/C++17 executor-ABI layout checks, and all 90 handoffs passed with 0/71 configured results. The external tokenizer proof was not rerun because its directory variable was unset and its pinned fixture is unchanged. This host has no `nvcc`; no GPU evidence is implied | Keep green at every milestone |
+| D01 | PASS | Local format, tests, Clippy, FFI checks, deterministic fixtures, review provenance, and pinned tokenizer proof pass | Latest full local run at `da6d89f`: 341 Rust tests with zero failures; workspace formatting, Clippy with warnings denied, CUDA-FFI host checks, deterministic fixture comparisons, C/C++17 executor-ABI layout checks, and all 91 handoffs passed with 0/72 configured results. The external tokenizer proof was not rerun because its directory variable was unset and its pinned fixture is unchanged. This host has no `nvcc`; no GPU evidence is implied | Keep green at every milestone |
 | D02 | OPEN | Current cn4 environment record pins source, container, driver, firmware, topology, clocks, occupancy, toolchains, and commands | `docs/cn4-release-20260729.md` pins the final GPU/driver/topology/occupancy observation, but source, container, firmware, clocks, and toolchains were not established because another workload already occupied the host | H01 |
 | D03 | OPEN | Exact build, conversion, deployment, serving, recovery, and benchmark commands reproduce production | Preparation scripts exist; no production server/deployment | Complete relevant implementation, then freeze commands |
-| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed v2 verifier proves candidate hashes for all 90 pinned handoffs and 0/71 configured results, automatically ingests declared result paths when they appear, and rejects self-review or token-only acceptance artifacts that omit candidate/input attestations. The v3 current-tree binding design is pending review; most required result artifacts still do not exist | Accept and implement v3, then append only provenance-complete records and supply each review artifact explicitly |
+| D04 | OPEN | Immutable results index covers every accepted CPU, GPU, quality, capacity, and benchmark artifact | Fail-closed v2 verifier proves candidate hashes for all 91 pinned handoffs and 0/72 configured results, automatically ingests declared result paths when they appear, and rejects self-review or token-only acceptance artifacts that omit candidate/input attestations. The v3 current-tree binding design is pending review; most required result artifacts still do not exist | Accept and implement v3, then append only provenance-complete records and supply each review artifact explicitly |
 | D05 | OPEN | Full-checkpoint conversion is allowed only after policy fit and quality gates pass | Profile correctly blocks conversion today | Q01/Q02 and measured HBM budget |
 
 ## External state

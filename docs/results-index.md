@@ -3,10 +3,10 @@
 Date: 2026-07-30
 
 Current host implementation baseline:
-`a2cb01bfa4cd291579974a6e50e0e3c4adb70d4b`
+`da6d89fe0c7997653807080bcfbebc6a00356395`
 
 The complete local gate most recently ran at
-`a2cb01bfa4cd291579974a6e50e0e3c4adb70d4b`, whose latest behavioral
+`da6d89fe0c7997653807080bcfbebc6a00356395`, whose latest behavioral
 implementation is
 `a49210fe384012066d80087f61668d5d8a8e2a78`. The
 target CUDA/kernel and strict production-manifest baseline remains
@@ -239,13 +239,13 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run at `a2cb01b`
+The latest complete local run at `da6d89f`
 passed:
 
 - `scripts/local-checks.sh` passes 341 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
   deterministic proof regeneration, the rank-executor ABI header as C and
-  C++17, and all 90 candidate-based review-handoff hash proofs with 0/71
+  C++17, and all 91 candidate-based review-handoff hash proofs with 0/72
   configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
