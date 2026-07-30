@@ -84,10 +84,11 @@ impl FileTierStore {
         journal_file.seek(SeekFrom::Start(0))?;
         journal_file.read_to_end(&mut journal_bytes)?;
         let valid_journal_bytes = journal_bytes.len() / JOURNAL_RECORD_BYTES * JOURNAL_RECORD_BYTES;
+        let data_bytes = data.metadata()?.len();
+        validate_journal_data_presence(valid_journal_bytes, data_bytes)?;
         let (events, next_transaction) = decode_journal(&journal_bytes)?;
         let journal = TierJournal::from_events(events)?;
         let published = journal.recover()?;
-        let data_bytes = data.metadata()?.len();
         validate_catalog_extents(&published, data_bytes)?;
         // Never reuse bytes after a crash orphan or an extent retained by an
         // older snapshot. Segment cleaning is the only future reclamation
@@ -279,15 +280,28 @@ impl FileTierReader {
         let data = OpenOptions::new().read(true).open(root.join("pages.dat"))?;
         let mut journal_bytes = Vec::new();
         journal_file.read_to_end(&mut journal_bytes)?;
+        let valid_journal_bytes = journal_bytes.len() / JOURNAL_RECORD_BYTES * JOURNAL_RECORD_BYTES;
+        let data_bytes = data.metadata()?.len();
+        validate_journal_data_presence(valid_journal_bytes, data_bytes)?;
         let (events, _) = decode_journal(&journal_bytes)?;
         let published = TierJournal::from_events(events)?.recover()?;
-        validate_catalog_extents(&published, data.metadata()?.len())?;
+        validate_catalog_extents(&published, data_bytes)?;
         Ok(Self { data, published })
     }
 
     pub fn restore(&mut self, page_key: [u8; 32]) -> Result<Option<RestoredPage>, StoreError> {
         restore_published(&mut self.data, &self.published, page_key)
     }
+}
+
+fn validate_journal_data_presence(
+    valid_journal_bytes: usize,
+    data_bytes: u64,
+) -> Result<(), StoreError> {
+    if valid_journal_bytes == 0 && data_bytes != 0 {
+        return Err(StoreError::UnjournaledData);
+    }
+    Ok(())
 }
 
 fn validate_catalog_extents(
@@ -610,6 +624,7 @@ pub enum StoreError {
     JournalSequence,
     JournalEncoding,
     JournalChecksum,
+    UnjournaledData,
     CatalogOverlap,
     CatalogOutOfBounds,
     Overflow,
@@ -972,6 +987,33 @@ mod tests {
         assert!(matches!(
             FileTierReader::open(&root),
             Err(StoreError::CatalogOutOfBounds)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nonempty_data_without_a_complete_journal_fails_closed() {
+        let root = temporary_store("unjournaled-data");
+        drop(FileTierStore::open(&root).unwrap());
+        fs::write(root.join("pages.dat"), [0xa5; 4_096]).unwrap();
+
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::UnjournaledData)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::UnjournaledData)
+        ));
+
+        fs::write(root.join("journal.log"), [0x5a; 113]).unwrap();
+        assert!(matches!(
+            FileTierStore::open(&root),
+            Err(StoreError::UnjournaledData)
+        ));
+        assert!(matches!(
+            FileTierReader::open(&root),
+            Err(StoreError::UnjournaledData)
         ));
         fs::remove_dir_all(root).unwrap();
     }
