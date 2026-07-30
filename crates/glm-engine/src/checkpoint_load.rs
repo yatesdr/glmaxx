@@ -769,6 +769,200 @@ impl AdoptedRankSetReceipt {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RankSetAbortCommand {
+    plan_sha256: [u8; 32],
+    load_attempt_generation: u64,
+}
+
+impl RankSetAbortCommand {
+    #[must_use]
+    pub const fn plan_sha256(self) -> [u8; 32] {
+        self.plan_sha256
+    }
+
+    #[must_use]
+    pub const fn load_attempt_generation(self) -> u64 {
+        self.load_attempt_generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RankSetLoadCoordinatorState {
+    Preparing,
+    Adopting,
+    Adopted,
+    Aborted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RankSetLoadAction {
+    Wait,
+    Adopt(AdoptionCommand),
+    Complete(AdoptedRankSetReceipt),
+    Abort(RankSetAbortCommand),
+}
+
+/// Process-wide coordinator for one four-rank checkpoint-load attempt.
+///
+/// Rank threads retain their allocation lifecycles. This coordinator owns
+/// only authenticated receipts and emits one process-common route. Any rank
+/// failure, malformed/duplicate message, or phase violation changes the
+/// attempt to terminal `Aborted`; it never returns a rank-local fallback.
+pub struct RankSetLoadCoordinator<'a> {
+    plan: &'a RankSetLoadPlan,
+    abort_command: RankSetAbortCommand,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    state: RankSetLoadCoordinatorState,
+    prepared_receipts: [Option<PreparedRankReceipt>; RANK_SET_SIZE],
+    prepared_set: Option<PreparedRankSet>,
+    adoption_acknowledgements: [Option<AdoptionAcknowledgement>; RANK_SET_SIZE],
+    adopted_receipt: Option<AdoptedRankSetReceipt>,
+    terminal_error: Option<LoadPlanError>,
+}
+
+impl<'a> RankSetLoadCoordinator<'a> {
+    pub fn new(
+        plan: &'a RankSetLoadPlan,
+        load_attempt_generation: u64,
+        owner_allocation_generations: [u64; RANK_SET_SIZE],
+    ) -> Result<Self, LoadPlanError> {
+        if load_attempt_generation == 0 || owner_allocation_generations.contains(&0) {
+            return Err(LoadPlanError::Transition);
+        }
+        Ok(Self {
+            plan,
+            abort_command: RankSetAbortCommand {
+                plan_sha256: plan.plan_sha256,
+                load_attempt_generation,
+            },
+            owner_allocation_generations,
+            state: RankSetLoadCoordinatorState::Preparing,
+            prepared_receipts: [None; RANK_SET_SIZE],
+            prepared_set: None,
+            adoption_acknowledgements: [None; RANK_SET_SIZE],
+            adopted_receipt: None,
+            terminal_error: None,
+        })
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> RankSetLoadCoordinatorState {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn abort_command(&self) -> RankSetAbortCommand {
+        self.abort_command
+    }
+
+    #[must_use]
+    pub const fn terminal_error(&self) -> Option<LoadPlanError> {
+        self.terminal_error
+    }
+
+    #[must_use]
+    pub const fn adopted_receipt(&self) -> Option<AdoptedRankSetReceipt> {
+        self.adopted_receipt
+    }
+
+    pub fn report_prepared(&mut self, receipt: PreparedRankReceipt) -> RankSetLoadAction {
+        if self.state == RankSetLoadCoordinatorState::Aborted {
+            return RankSetLoadAction::Abort(self.abort_command);
+        }
+        if self.state != RankSetLoadCoordinatorState::Preparing {
+            return self.fail(LoadPlanError::Transition);
+        }
+        let rank = usize::from(receipt.rank);
+        if rank >= RANK_SET_SIZE
+            || self.prepared_receipts[rank].is_some()
+            || receipt.owner_allocation_generation != self.owner_allocation_generations[rank]
+            || receipt.validate(self.plan).is_err()
+        {
+            return self.fail(LoadPlanError::Receipt);
+        }
+        self.prepared_receipts[rank] = Some(receipt);
+        if self.prepared_receipts.iter().any(Option::is_none) {
+            return RankSetLoadAction::Wait;
+        }
+        let receipts = std::array::from_fn(|index| {
+            self.prepared_receipts[index].expect("all ranks checked above")
+        });
+        match PreparedRankSet::new(self.plan, receipts) {
+            Ok(prepared) => {
+                let command = prepared.adoption_command();
+                self.prepared_set = Some(prepared);
+                self.state = RankSetLoadCoordinatorState::Adopting;
+                RankSetLoadAction::Adopt(command)
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    pub fn report_rank_failure(&mut self, rank: u8, error: LoadPlanError) -> RankSetLoadAction {
+        if self.state == RankSetLoadCoordinatorState::Aborted {
+            return RankSetLoadAction::Abort(self.abort_command);
+        }
+        if usize::from(rank) >= RANK_SET_SIZE {
+            return self.fail(LoadPlanError::Rank);
+        }
+        self.fail(error)
+    }
+
+    pub fn report_adoption_acknowledgement(
+        &mut self,
+        acknowledgement: AdoptionAcknowledgement,
+    ) -> RankSetLoadAction {
+        if self.state == RankSetLoadCoordinatorState::Aborted {
+            return RankSetLoadAction::Abort(self.abort_command);
+        }
+        if self.state != RankSetLoadCoordinatorState::Adopting {
+            return self.fail(LoadPlanError::Transition);
+        }
+        let rank = usize::from(acknowledgement.rank);
+        let Some(prepared) = self.prepared_set.as_ref() else {
+            return self.fail(LoadPlanError::Adoption);
+        };
+        if rank >= RANK_SET_SIZE
+            || self.adoption_acknowledgements[rank].is_some()
+            || acknowledgement.plan_sha256 != prepared.plan_sha256
+            || acknowledgement.rank_set_receipt_sha256 != prepared.rank_set_receipt_sha256
+            || acknowledgement.owner_allocation_generation
+                != prepared
+                    .receipt(acknowledgement.rank)
+                    .map(|receipt| receipt.owner_allocation_generation)
+                    .unwrap_or(0)
+        {
+            return self.fail(LoadPlanError::Adoption);
+        }
+        self.adoption_acknowledgements[rank] = Some(acknowledgement);
+        if self.adoption_acknowledgements.iter().any(Option::is_none) {
+            return RankSetLoadAction::Wait;
+        }
+        let acknowledgements = std::array::from_fn(|index| {
+            self.adoption_acknowledgements[index].expect("all ranks checked above")
+        });
+        match prepared.complete_adoption(acknowledgements) {
+            Ok(adopted) => {
+                self.adopted_receipt = Some(adopted);
+                self.state = RankSetLoadCoordinatorState::Adopted;
+                RankSetLoadAction::Complete(adopted)
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    fn fail(&mut self, error: LoadPlanError) -> RankSetLoadAction {
+        self.state = RankSetLoadCoordinatorState::Aborted;
+        self.prepared_receipts.fill(None);
+        self.prepared_set = None;
+        self.adoption_acknowledgements.fill(None);
+        self.adopted_receipt = None;
+        self.terminal_error.get_or_insert(error);
+        RankSetLoadAction::Abort(self.abort_command)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RankArenaState {
     Allocated,
     Staging,
@@ -1728,6 +1922,36 @@ mod tests {
             .collect()
     }
 
+    fn prepared_attempt(
+        plan: &RankSetLoadPlan,
+        generation_base: u64,
+    ) -> (
+        [RankArenaLifecycle; RANK_SET_SIZE],
+        [PreparedRankReceipt; RANK_SET_SIZE],
+    ) {
+        let receipts = std::array::from_fn(|rank| {
+            PreparedRankReceipt::new(
+                plan,
+                u8::try_from(rank).unwrap(),
+                generation_base + u64::try_from(rank).unwrap(),
+                digest(130 + u8::try_from(rank).unwrap()),
+            )
+            .unwrap()
+        });
+        let lifecycles = std::array::from_fn(|rank| {
+            let mut lifecycle = RankArenaLifecycle::allocated(
+                plan,
+                u8::try_from(rank).unwrap(),
+                receipts[rank].owner_allocation_generation,
+            )
+            .unwrap();
+            lifecycle.begin_staging().unwrap();
+            lifecycle.prepare(plan, receipts[rank]).unwrap();
+            lifecycle
+        });
+        (lifecycles, receipts)
+    }
+
     #[test]
     fn canonical_plan_encoding_is_exact_and_deterministic() {
         let first = plan();
@@ -1998,6 +2222,186 @@ mod tests {
             prepared.complete_adoption(divergent),
             Err(LoadPlanError::Adoption)
         );
+    }
+
+    #[test]
+    fn coordinator_success_requires_all_prepared_and_all_adoption_acknowledgements() {
+        let plan = plan();
+        let (mut lifecycles, receipts) = prepared_attempt(&plan, 100);
+        let generations = receipts.map(|receipt| receipt.owner_allocation_generation);
+        let mut coordinator = RankSetLoadCoordinator::new(&plan, 7, generations).unwrap();
+        assert_eq!(coordinator.state(), RankSetLoadCoordinatorState::Preparing);
+        for (rank, receipt) in receipts.iter().copied().enumerate() {
+            let action = coordinator.report_prepared(receipt);
+            if rank + 1 == RANK_SET_SIZE {
+                assert!(matches!(action, RankSetLoadAction::Adopt(_)));
+            } else {
+                assert_eq!(action, RankSetLoadAction::Wait);
+            }
+        }
+        assert_eq!(coordinator.state(), RankSetLoadCoordinatorState::Adopting);
+
+        let prepared = PreparedRankSet::new(&plan, receipts).unwrap();
+        let acknowledgements: [AdoptionAcknowledgement; RANK_SET_SIZE] =
+            std::array::from_fn(|rank| lifecycles[rank].acknowledge_adoption(&prepared).unwrap());
+        let mut adopted = None;
+        for (rank, acknowledgement) in acknowledgements.into_iter().enumerate() {
+            let action = coordinator.report_adoption_acknowledgement(acknowledgement);
+            if rank + 1 == RANK_SET_SIZE {
+                let RankSetLoadAction::Complete(receipt) = action else {
+                    panic!("fourth acknowledgement must complete adoption");
+                };
+                adopted = Some(receipt);
+            } else {
+                assert_eq!(action, RankSetLoadAction::Wait);
+            }
+        }
+
+        let adopted = adopted.unwrap();
+        assert_eq!(coordinator.state(), RankSetLoadCoordinatorState::Adopted);
+        assert_eq!(coordinator.adopted_receipt(), Some(adopted));
+        assert_eq!(coordinator.terminal_error(), None);
+        let permits = lifecycles.map(|lifecycle| lifecycle.execution_permit(adopted).unwrap());
+        assert!(
+            permits
+                .iter()
+                .enumerate()
+                .all(|(rank, permit)| usize::from(permit.rank()) == rank)
+        );
+    }
+
+    #[test]
+    fn every_preparation_rank_failure_emits_one_common_abort_and_no_adoption() {
+        let plan = plan();
+        for failed_rank in 0..RANK_SET_SIZE {
+            let (mut lifecycles, receipts) = prepared_attempt(&plan, 200);
+            let generations = receipts.map(|receipt| receipt.owner_allocation_generation);
+            let mut coordinator =
+                RankSetLoadCoordinator::new(&plan, 10 + failed_rank as u64, generations).unwrap();
+            for receipt in receipts.iter().take(failed_rank).copied() {
+                assert_eq!(
+                    coordinator.report_prepared(receipt),
+                    RankSetLoadAction::Wait
+                );
+            }
+            let action = coordinator
+                .report_rank_failure(u8::try_from(failed_rank).unwrap(), LoadPlanError::Reader);
+            assert_eq!(
+                action,
+                RankSetLoadAction::Abort(coordinator.abort_command())
+            );
+            assert_eq!(coordinator.state(), RankSetLoadCoordinatorState::Aborted);
+            assert_eq!(coordinator.terminal_error(), Some(LoadPlanError::Reader));
+            assert_eq!(coordinator.adopted_receipt(), None);
+            assert_eq!(
+                coordinator.report_prepared(receipts[failed_rank]),
+                RankSetLoadAction::Abort(coordinator.abort_command())
+            );
+            for lifecycle in &mut lifecycles {
+                assert!(lifecycle.abort());
+                assert!(!lifecycle.abort());
+                assert_eq!(lifecycle.state(), RankArenaState::Aborted);
+            }
+        }
+    }
+
+    #[test]
+    fn every_adoption_rank_failure_aborts_prepared_and_already_adopted_ranks() {
+        let plan = plan();
+        for failed_rank in 0..RANK_SET_SIZE {
+            let (mut lifecycles, receipts) = prepared_attempt(&plan, 300);
+            let generations = receipts.map(|receipt| receipt.owner_allocation_generation);
+            let mut coordinator =
+                RankSetLoadCoordinator::new(&plan, 20 + failed_rank as u64, generations).unwrap();
+            for receipt in receipts {
+                let _ = coordinator.report_prepared(receipt);
+            }
+            let prepared = PreparedRankSet::new(&plan, receipts).unwrap();
+            for lifecycle in lifecycles.iter_mut().take(failed_rank) {
+                let acknowledgement = lifecycle.acknowledge_adoption(&prepared).unwrap();
+                assert_eq!(
+                    coordinator.report_adoption_acknowledgement(acknowledgement),
+                    RankSetLoadAction::Wait
+                );
+            }
+            let action = coordinator
+                .report_rank_failure(u8::try_from(failed_rank).unwrap(), LoadPlanError::Adoption);
+            assert_eq!(
+                action,
+                RankSetLoadAction::Abort(coordinator.abort_command())
+            );
+            assert_eq!(coordinator.state(), RankSetLoadCoordinatorState::Aborted);
+            assert_eq!(coordinator.adopted_receipt(), None);
+            for lifecycle in &mut lifecycles {
+                assert!(lifecycle.abort());
+                assert_eq!(lifecycle.state(), RankArenaState::Aborted);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_or_malformed_coordinator_messages_are_terminal() {
+        let plan = plan();
+        let (_, receipts) = prepared_attempt(&plan, 400);
+        let generations = receipts.map(|receipt| receipt.owner_allocation_generation);
+        let mut stale_generation = RankSetLoadCoordinator::new(&plan, 30, generations).unwrap();
+        let mut stale_receipt = receipts[0];
+        stale_receipt.owner_allocation_generation += 1;
+        assert_eq!(
+            stale_generation.report_prepared(stale_receipt),
+            RankSetLoadAction::Abort(stale_generation.abort_command())
+        );
+        assert_eq!(
+            stale_generation.terminal_error(),
+            Some(LoadPlanError::Receipt)
+        );
+
+        let mut duplicate_prepared = RankSetLoadCoordinator::new(&plan, 31, generations).unwrap();
+        assert_eq!(
+            duplicate_prepared.report_prepared(receipts[0]),
+            RankSetLoadAction::Wait
+        );
+        assert_eq!(
+            duplicate_prepared.report_prepared(receipts[0]),
+            RankSetLoadAction::Abort(duplicate_prepared.abort_command())
+        );
+        assert_eq!(
+            duplicate_prepared.terminal_error(),
+            Some(LoadPlanError::Receipt)
+        );
+
+        let (mut lifecycles, receipts) = prepared_attempt(&plan, 500);
+        let generations = receipts.map(|receipt| receipt.owner_allocation_generation);
+        let mut duplicate_ack = RankSetLoadCoordinator::new(&plan, 32, generations).unwrap();
+        for receipt in receipts {
+            let _ = duplicate_ack.report_prepared(receipt);
+        }
+        let prepared = PreparedRankSet::new(&plan, receipts).unwrap();
+        let acknowledgement = lifecycles[0].acknowledge_adoption(&prepared).unwrap();
+        assert_eq!(
+            duplicate_ack.report_adoption_acknowledgement(acknowledgement),
+            RankSetLoadAction::Wait
+        );
+        assert_eq!(
+            duplicate_ack.report_adoption_acknowledgement(acknowledgement),
+            RankSetLoadAction::Abort(duplicate_ack.abort_command())
+        );
+        assert_eq!(
+            duplicate_ack.terminal_error(),
+            Some(LoadPlanError::Adoption)
+        );
+        for lifecycle in &mut lifecycles {
+            assert!(lifecycle.abort());
+        }
+
+        assert!(matches!(
+            RankSetLoadCoordinator::new(&plan, 0, [1; RANK_SET_SIZE]),
+            Err(LoadPlanError::Transition)
+        ));
+        assert!(matches!(
+            RankSetLoadCoordinator::new(&plan, 1, [0; RANK_SET_SIZE]),
+            Err(LoadPlanError::Transition)
+        ));
     }
 
     #[test]

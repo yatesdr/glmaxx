@@ -19,7 +19,8 @@ pub use checkpoint_load::{
     LoadPlanError, LoadProfile, LoadVerificationMode, PREPARED_RANK_RECEIPT_BYTES,
     PlannedRankTensorSink, PreparedRankReceipt, PreparedRankSet, QuarantinedArenaWriter,
     RANK_LOAD_ENTRY_BYTES, RANK_SET_SIZE, READER_CHUNK_BYTES, RankArenaLifecycle, RankArenaState,
-    RankArenaUploadSummary, RankLoadEntry, RankSetLoadEnvironment, RankSetLoadPlan,
+    RankArenaUploadSummary, RankLoadEntry, RankSetAbortCommand, RankSetLoadAction,
+    RankSetLoadCoordinator, RankSetLoadCoordinatorState, RankSetLoadEnvironment, RankSetLoadPlan,
     RankSetLoadPlanHeader, TENSOR_ARENA_ENTRY_BYTES, TensorArenaEntry, WeightArenaExecutionPermit,
     arena_layout_sha256, build_rank_set_load_plan,
 };
