@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Current CPU implementation baseline:
-`dfc1253c961c1d5aeaf7b490842d4d7528f69bb1`
+`c3314686bb371d11c6a563d8397cf1903d24a454`
 
-The complete local gate most recently ran against native-rank load-plan
+The complete local gate most recently ran against rank-set load-coordinator
 implementation
-`dfc1253c961c1d5aeaf7b490842d4d7528f69bb1`. The
+`c3314686bb371d11c6a563d8397cf1903d24a454`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -148,6 +148,14 @@ metadata arena from the compiled checkpoint contract rather than
 file-controlled plane lengths. The exact candidate passes 314 tests and the
 complete local gate. Complete rank files, device allocation, CUDA upload,
 checkpoint smoke, and GPU evidence remain absent.
+The process-wide fault successor is pinned in
+`docs/rank-set-load-coordinator-proof-v1.md`. Candidate `c331468` requires
+all four prepared receipts and all four adoption acknowledgements, rejects
+stale owner generations and duplicate/malformed messages, and emits one
+common abort route for every rank position in preparation and adoption. The
+exact candidate passes 318 tests and the complete local gate. Physical
+thread cleanup, CUDA, full rank files, and checkpoint execution remain
+absent.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -155,14 +163,14 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run against native-rank load-plan implementation
-`dfc1253`
+The latest complete local run against rank-set load-coordinator implementation
+`c331468`
 passed:
 
-- `scripts/local-checks.sh` passes 314 Rust tests with zero failures,
+- `scripts/local-checks.sh` passes 318 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 79 candidate-based review-handoff
-  hash proofs with 0/60 configured result artifacts;
+  deterministic proof regeneration, and all 80 candidate-based review-handoff
+  hash proofs with 0/61 configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
