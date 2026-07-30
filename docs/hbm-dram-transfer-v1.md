@@ -169,6 +169,22 @@ as its own term in `pinned_host_total`; it cannot hide inside tier staging or
 free system RAM. Startup checks the configured pinned-host process cap after
 this addition.
 
+One complete 1,048,576-token chain contains exactly 16,384 sealed pages,
+4,096 per owner rank. Its slot allocation is:
+
+```text
+target-only total       33,084,669,952 bytes = 30.8125 GiB
+target-only per rank     8,271,167,488 bytes =  7.703125 GiB
+MTP-capable total       33,621,540,864 bytes = 31.3125 GiB
+MTP-capable per rank     8,405,385,216 bytes =  7.828125 GiB
+```
+
+Those are allocated physical host bytes, including canonical padding.
+Logical tenant charges remain 2,014,464/2,046,464 bytes per page. A production
+DRAM profile claiming one full-chain capacity must reserve at least the
+corresponding four per-rank terms plus transfer rings and process headroom; it
+cannot quote only the aggregate free RAM.
+
 The underlying mappings:
 
 - are regular anonymous host mappings, not Rust `Vec` reallocations;
