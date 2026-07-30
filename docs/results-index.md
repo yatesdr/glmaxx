@@ -108,6 +108,16 @@ MTP0 arenas. The complete local gate passes 378 tests. This is a CPU static
 memory-planning result; fixed hot-path page transactions, the global quota
 ledger, measured fit, GPU payloads, model execution, and performance remain
 outside it.
+The direct-tier scheduling CPU proof is pinned in
+`docs/direct-tier-scheduler-cpu-proof-v1.md`. It implements preallocated
+deterministic R0/R1/W0/W1 ordering, preserves read-reserved buffers,
+descriptors, and two-CQE cancellation capacity, and enforces independent
+new-publication-admission and accepted-publication-service byte bounds before
+a variable-size read can overshoot them. Sixteen focused tests include every
+1,377 resource-boundary combination and exhaustive projected-byte arithmetic.
+This is policy-only CPU evidence: no io_uring authority, durable codec,
+registered memory, storage device, CUDA transfer, or performance result is
+implied.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant

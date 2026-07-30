@@ -6,6 +6,7 @@ mod budget;
 mod delta;
 mod direct;
 mod direct_restore;
+mod direct_schedule;
 mod direct_state;
 mod kv;
 mod mtp;
@@ -34,6 +35,11 @@ pub use direct_restore::{
     DirectCancellation, DirectCatalogBinding, DirectCqKind, DirectCqTracker, DirectReadCompletion,
     DirectRestoreAdmission, DirectRestoreConfig, DirectRestoreError, DirectRestoreRequest,
     DirectRestoreState, DirectRestoreTable, DirectRestoreTicketId,
+};
+pub use direct_schedule::{
+    DIRECT_PUBLICATION_CQ_RESERVATION, DirectIoClass, DirectIoCommand, DirectIoDecision,
+    DirectIoOrderKey, DirectIoResources, DirectIoScheduleError, DirectIoScheduler,
+    DirectIoSchedulerConfig, DirectIoSchedulerStats, MAX_DIRECT_IO_QUEUED_COMMANDS,
 };
 pub use direct_state::{
     DirectBufferId, DirectBufferPool, DirectBufferState, DirectBufferStateError, DirectBufferUse,
