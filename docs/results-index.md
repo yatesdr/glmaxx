@@ -102,7 +102,8 @@ The production file-backed extension is pinned in
 `docs/nvfp4-streaming-canonicality-proof-v2.md`. A bounded shared validator
 now covers the in-memory decoder, streaming converter, and tentative direct
 upload reader; it additionally enforces exact 2D scale replication. The v2
-review handoff is pending.
+review is requested by
+`docs/fable-nvfp4-streaming-canonicality-v2-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
