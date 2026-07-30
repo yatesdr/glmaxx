@@ -5,7 +5,7 @@ Date: 2026-07-30
 Repository state used for enumeration:
 `5d6a6ed144915b879211f6802eed4a8f57ce608e`
 
-`review-proof-all` verified 77 current handoffs and skipped the two historical
+`review-proof-all` verified 78 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -97,6 +97,7 @@ result path; follow the output instructions in that handoff.
 | 75 | `docs/fable-torn-journal-resume-v1-handoff.md` | `8fb3adf9535683b0de9b54fe2743cb5651b9bdc2` | `fable-torn-journal-resume-v1.md` | `torn-journal-resume-v1-accepted` |
 | 76 | `docs/fable-tp4-rank-startup-handshake-v1-handoff.md` | `1eb8e1c2f6c98a2d20b8e4f168b8e88aadeb97ac` | `fable-tp4-rank-startup-handshake-v1.md` | `tp4-rank-startup-handshake-v1-accepted` |
 | 77 | `docs/fable-tp4-step-operation-quota-v1-handoff.md` | `da46a30a5df430e35d4a9d23aa6a449923494660` | `fable-tp4-step-operation-quota-v1.md` | `tp4-step-operation-quota-v1-accepted` |
+| 78 | `docs/fable-small-checkpoint-runner-v1-handoff.md` | `2b3318176d34eded55cc97e49998423ad4e902ce` | `docs/reviews/fable-small-checkpoint-runner-v1.md` | `small-checkpoint-runner-v1-design-accepted` |
 
 ## Verification command
 
@@ -107,5 +108,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 77 current handoffs and two
+The expected queue count for this document is 78 current handoffs and two
 explicitly skipped historical umbrella handoffs.

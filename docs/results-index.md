@@ -130,7 +130,8 @@ The deterministic M4 target is specified in
 subset, exact rank-local tensor/byte inventory, captured M3 input boundary,
 load/adoption/execution sequence, and fault/repetition evidence. It is a
 design candidate only; no subset builder, rank files, device runner, logits,
-or GPU evidence exists.
+or GPU evidence exists. Independent review is requested by
+`docs/fable-small-checkpoint-runner-v1-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
