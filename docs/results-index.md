@@ -104,6 +104,11 @@ now covers the in-memory decoder, streaming converter, and tentative direct
 upload reader; it additionally enforces exact 2D scale replication. The v2
 review is requested by
 `docs/fable-nvfp4-streaming-canonicality-v2-handoff.md`.
+The protected-precision converter padding correction is pinned in
+`docs/plain-padding-streaming-proof-v1.md`. The in-memory decoder,
+file-backed native reader, and streaming writer now share one offset-aware
+chunk validator; conversion no longer allocates a complete tensor plane only
+to inspect padding.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
