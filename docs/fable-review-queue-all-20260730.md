@@ -7,9 +7,8 @@ Latest candidate included in the enumeration:
 
 `review-proof-all` verified 105 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. One of 86 configured result artifacts is
-present and machine-accepted: the protected-precision plain-padding
-streaming review.
+`docs/fable-review-handoff.md`. Seven of 86 configured result artifacts are
+present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
 provenance, scope, result-path, and token rules. Review the pinned candidate

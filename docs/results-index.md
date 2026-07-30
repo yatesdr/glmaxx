@@ -38,6 +38,12 @@ abandonment.
 The retained pool constructor now waits for exact readiness receipts from
 all four rank threads and synchronously joins/destroys partial startup state
 instead of publishing a disconnected pool.
+The machine provenance gate accepts seven configured Fable results:
+protected-precision plain-padding streaming, durable catalog extent
+integrity, durable content deduplication, prefix/residency coherence, atomic
+sequence removal, TP4 startup handshake, and TP4 physical-step quota. Their
+root artifacts are byte-identical to Fable's staged review bytes. Each
+acceptance is limited to its stated CPU scope and does not authorize cn4.
 The retained HTTP server now synchronously joins connection workers after a
 worker or accept-thread spawn failure, surfaces cleanup panics, and proves
 its saturation rollback against barrier-held physical TP4 work.
@@ -438,8 +444,8 @@ The active-sequence removal correction is pinned in
 table now restores the sequence, physical references, prefix mappings, and
 target/draft free sets together when a late page release fails. Its
 two-owner-page corruption/repair regression distinguishes the old
-remove-before-release path and proves exact retry. The dedicated handoff
-passes local provenance validation; independent acceptance is absent.
+remove-before-release path and proves exact retry. Fable's machine-verified
+result accepts this bounded CPU correction.
 
 The durable-store write correction is pinned in
 `docs/durable-store-write-fail-stop-proof-v1.md`. Request and extent
@@ -471,8 +477,8 @@ The cross-component prefix/residency correction is pinned in
 post-insert index record as its sole residency authority, proves existing
 index/rank agreement, plans all four rank changes before mutation, preserves
 exact dedup and MTP capability, and rejects an unreconstructable prepopulated
-index at coordinator construction. The dedicated handoff passes local
-provenance validation; independent acceptance is absent.
+index at coordinator construction. Fable's machine-verified result accepts
+this bounded CPU correction.
 
 The durable logical-content correction is pinned in
 `docs/durable-content-dedup-proof-v1.md`. One validated relation now drives
@@ -481,8 +487,7 @@ no write and retains the existing revision, only a strictly newer
 target-only→MTP transition replaces a record, and target/indexer/draft
 collisions fail before mutation and during recovery. It explicitly
 supersedes the earlier candidate's same-content revision-refresh behavior.
-The dedicated handoff passes local provenance validation; independent
-acceptance is absent.
+Fable's machine-verified result accepts this bounded CPU correction.
 
 The journal-tail correction is pinned in
 `docs/journal-tail-corruption-proof-v1.md`. Every complete 512-byte journal
