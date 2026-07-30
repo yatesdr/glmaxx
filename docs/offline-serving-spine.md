@@ -142,9 +142,14 @@ The underlying committed-page append at `271d1f4` is now page-granular, and
 all 64 tail occupancies at tentative depths one through seven are exhausted.
 The same milestone adds a standalone canonical `PageTableDelta` with complete
 changed suffixes, global and rank-local digests, owner/arena validation, and
-an atomic independent mirror. The coordinator has not yet delivered those
-deltas to rank workers, so fixed-capacity undo, rank acknowledgments,
-quarantine, and cache-only cleanup remain open.
+an atomic independent mirror. `StepInput.v1` at `d1f9825` now binds that
+delta's successor generation and global digest to exact request rows, prompt
+IDs, configured/effective MTP posture, sampling parameters, seeds, and RNG
+counters. It also validates the schedule's logits collective and rejects
+reservations beyond remaining output capacity. The coordinator has not yet
+constructed this object or delivered deltas to rank workers, so fixed-capacity
+undo, rank acknowledgments, post-output commit deltas, quarantine, RNG output
+commit, and cache-only cleanup remain open.
 
 ## Reproducible proof
 

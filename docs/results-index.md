@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`6a5c574bf7a3d4060cb28ef78bc0425bd61f305a`
+`d1f98257ebf83d03c5e5e56ab2d2c1ce5404ac35`
 
 The complete local gate most recently ran against active-prefix record
 binding implementation
@@ -68,8 +68,11 @@ budget. A CPU boundary test accounts and releases all target and draft pages
 at 1,048,576 positions without claiming model KV payloads.
 Committed page mutation is now page-granular. A separate canonical page-table
 delta carries sorted changed suffixes/removals, global and rank-local digests,
-and reconstructs atomically in an arena-bounded independent CPU mirror. It is
-not yet delivered to rank workers.
+and reconstructs atomically in an arena-bounded independent CPU mirror.
+Immutable `StepInput.v1` now binds the delta successor/digest to exact
+row-ordered prompt IDs, configured/effective MTP posture, sampling float bits,
+seed, RNG counter, context, and generation limits. It is not yet constructed
+by serving or delivered to rank workers.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -77,16 +80,17 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at canonical page-table delta implementation
-`271d1f4` passed:
+The latest local run at immutable step-input implementation `d1f9825`
+passed:
 
-- `scripts/local-checks.sh`: 278 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 282 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 66 candidate-based review-handoff hash proofs;
-- the subsequently added page-table delta handoff separately passes
-  `review-proof`; repository-wide verification now covers 67 handoffs and
-  0/48 configured result artifacts;
-- new cache regressions cover page-granular append equivalence, all 448
+  and all 67 candidate-based review-handoff hash proofs with 0/48 configured
+  result artifacts;
+- new engine regressions cover exact prompt/delta hashing, configured MTP6
+  tail fallback to effective MTP0, top-k route binding, output/context bounds,
+  all three canonical sampling classes, and invalid float/filter rejection;
+- cache regressions cover page-granular append equivalence, all 448
   tail/depth reservations, canonical tentative/admission/removal delta
   reconstruction, unchanged-prefix suffix omission, and fail-closed digest,
   owner, arena, generation, and no-op checks;
