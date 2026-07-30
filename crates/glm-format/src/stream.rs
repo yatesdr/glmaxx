@@ -420,6 +420,114 @@ impl StreamLayout {
     }
 }
 
+enum TensorWriteValidator {
+    None,
+    Plain {
+        dtype: PlainDtype,
+        ndim: u8,
+        logical_shape: [u32; 4],
+        padded_shape: [u32; 4],
+    },
+    Nvfp4(Nvfp4PlaneValidator),
+    Exl3 {
+        metadata: Exl3Metadata,
+        primary: Vec<u8>,
+        aux: Vec<u8>,
+    },
+}
+
+impl TensorWriteValidator {
+    fn new(
+        spec: &StreamingTensorSpec,
+        descriptor: &TensorDescriptor,
+    ) -> Result<Self, StreamRankError> {
+        match descriptor.codec_id {
+            CODEC_BF16_ROW_MAJOR | CODEC_FP16_ROW_MAJOR | CODEC_FP32_ROW_MAJOR => {
+                if descriptor.logical_shape == descriptor.padded_shape {
+                    return Ok(Self::None);
+                }
+                let dtype = match descriptor.codec_id {
+                    CODEC_BF16_ROW_MAJOR => PlainDtype::Bf16,
+                    CODEC_FP16_ROW_MAJOR => PlainDtype::Fp16,
+                    CODEC_FP32_ROW_MAJOR => PlainDtype::Fp32,
+                    _ => unreachable!(),
+                };
+                Ok(Self::Plain {
+                    dtype,
+                    ndim: descriptor.ndim,
+                    logical_shape: descriptor.logical_shape,
+                    padded_shape: descriptor.padded_shape,
+                })
+            }
+            0x0100 | 0x0101 => {
+                let metadata =
+                    Nvfp4Metadata::decode(&spec.metadata).map_err(StreamRankError::Nvfp4)?;
+                Ok(Self::Nvfp4(
+                    Nvfp4PlaneValidator::new(&metadata).map_err(StreamRankError::Nvfp4)?,
+                ))
+            }
+            CODEC_EXL3_SOURCE => {
+                let metadata =
+                    Exl3Metadata::decode(&spec.metadata).map_err(StreamRankError::Exl3)?;
+                Ok(Self::Exl3 {
+                    metadata,
+                    primary: try_empty_with_capacity(descriptor.payload_bytes)?,
+                    aux: try_empty_with_capacity(descriptor.aux_bytes)?,
+                })
+            }
+            _ => Err(StreamRankError::Spec),
+        }
+    }
+
+    fn primary_chunk(&mut self, bytes: &[u8], offset: u64) -> Result<(), StreamRankError> {
+        match self {
+            Self::None => Ok(()),
+            Self::Plain {
+                dtype,
+                ndim,
+                logical_shape,
+                padded_shape,
+            } => validate_plain_padding_chunk(
+                bytes,
+                offset,
+                *dtype,
+                *ndim,
+                *logical_shape,
+                *padded_shape,
+            )
+            .map_err(StreamRankError::RankFile),
+            Self::Nvfp4(validator) => validator
+                .value_chunk(bytes, offset)
+                .map_err(StreamRankError::Nvfp4),
+            Self::Exl3 { primary, .. } => append_sequential(primary, bytes, offset),
+        }
+    }
+
+    fn aux_chunk(&mut self, bytes: &[u8], offset: u64) -> Result<(), StreamRankError> {
+        match self {
+            Self::None | Self::Plain { .. } => Ok(()),
+            Self::Nvfp4(validator) => validator
+                .scale_chunk(bytes, offset)
+                .map_err(StreamRankError::Nvfp4),
+            Self::Exl3 { aux, .. } => append_sequential(aux, bytes, offset),
+        }
+    }
+
+    fn finish(self) -> Result<(), StreamRankError> {
+        match self {
+            Self::None | Self::Plain { .. } => Ok(()),
+            Self::Nvfp4(validator) => validator.finish().map_err(StreamRankError::Nvfp4),
+            Self::Exl3 {
+                metadata,
+                primary,
+                aux,
+            } => Exl3Trellis::from_container_planes(metadata, &primary, &aux)
+                .map(|_| ())
+                .map_err(StreamRankError::Exl3),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StreamingRankWriter {
     path: PathBuf,
@@ -545,14 +653,22 @@ impl StreamingRankWriter {
         {
             return Err(StreamRankError::AlreadyComplete(index));
         }
+        let mut validator = TensorWriteValidator::new(&self.config.tensors[index], &expected)?;
         let primary_hash = copy_exact_at(
             &self.file,
             primary,
             expected.payload_offset,
             expected.payload_bytes,
+            |chunk, offset| validator.primary_chunk(chunk, offset),
         )?;
-        let aux_hash = copy_exact_at(&self.file, aux, expected.aux_offset, expected.aux_bytes)?;
-        self.validate_planes(index)?;
+        let aux_hash = copy_exact_at(
+            &self.file,
+            aux,
+            expected.aux_offset,
+            expected.aux_bytes,
+            |chunk, offset| validator.aux_chunk(chunk, offset),
+        )?;
+        validator.finish()?;
 
         let mut completed = expected;
         completed.payload_sha256 = primary_hash;
@@ -1340,6 +1456,7 @@ fn copy_exact_at(
     input: &mut impl Read,
     offset: u64,
     bytes: u64,
+    mut validate: impl FnMut(&[u8], u64) -> Result<(), StreamRankError>,
 ) -> Result<[u8; 32], StreamRankError> {
     let buffer_bytes = usize::try_from(bytes.clamp(1, STREAM_BUFFER_BYTES as u64))
         .map_err(|_| StreamRankError::Overflow)?;
@@ -1352,6 +1469,7 @@ fn copy_exact_at(
         input
             .read_exact(&mut buffer[..chunk])
             .map_err(StreamRankError::Io)?;
+        validate(&buffer[..chunk], consumed)?;
         write_all_at(
             file,
             &buffer[..chunk],
@@ -1366,6 +1484,27 @@ fn copy_exact_at(
         return Err(StreamRankError::TrailingSource);
     }
     Ok(hasher.finalize().into())
+}
+
+fn try_empty_with_capacity(bytes: u64) -> Result<Vec<u8>, StreamRankError> {
+    let capacity = usize::try_from(bytes).map_err(|_| StreamRankError::Overflow)?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(capacity)
+        .map_err(|_| StreamRankError::Allocation)?;
+    Ok(output)
+}
+
+fn append_sequential(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    offset: u64,
+) -> Result<(), StreamRankError> {
+    if u64::try_from(output.len()).map_err(|_| StreamRankError::Overflow)? != offset {
+        return Err(StreamRankError::Layout);
+    }
+    output.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn hash_range(file: &File, offset: u64, bytes: u64) -> Result<[u8; 32], StreamRankError> {
@@ -1498,6 +1637,7 @@ pub enum StreamRankError {
     Spec,
     Layout,
     Overflow,
+    Allocation,
     TensorIndex,
     AlreadyComplete(usize),
     Incomplete,
@@ -1750,6 +1890,61 @@ mod tests {
             Err(StreamRankError::Nvfp4(crate::Nvfp4Error::ZeroScaleValue))
         ));
         assert_eq!(writer.completed_tensors(), 0);
+        assert!(writer.pending.is_empty());
+        let mut descriptor = [1_u8; DESCRIPTOR_BYTES];
+        read_exact_at(
+            &writer.file,
+            &mut descriptor,
+            writer.layout.descriptor_offset as u64,
+        )
+        .unwrap();
+        assert_eq!(descriptor, [0; DESCRIPTOR_BYTES]);
+    }
+
+    #[test]
+    fn streaming_writer_rejects_plain_padding_before_descriptor_publication() {
+        let path = TempPath::new();
+        let (config, _builder, planes) = configs(0);
+        let mut invalid_primary = planes[4].clone();
+        invalid_primary[6] = 1;
+        let mut writer = StreamingRankWriter::create_or_resume(&path.0, config).unwrap();
+        assert!(matches!(
+            writer.write_tensor(2, &mut &invalid_primary[..], &mut &planes[5][..]),
+            Err(StreamRankError::RankFile(RankFileError::NonCanonicalLayout))
+        ));
+        assert_eq!(writer.completed_tensors(), 0);
+        assert!(writer.pending.is_empty());
+        let mut descriptor = [1_u8; DESCRIPTOR_BYTES];
+        read_exact_at(
+            &writer.file,
+            &mut descriptor,
+            (writer.layout.descriptor_offset + 2 * DESCRIPTOR_BYTES) as u64,
+        )
+        .unwrap();
+        assert_eq!(descriptor, [0; DESCRIPTOR_BYTES]);
+    }
+
+    #[test]
+    fn streaming_writer_rejects_exl3_marker_before_descriptor_publication() {
+        let path = TempPath::new();
+        let (config, _builder, planes) = configs(0);
+        let mut invalid_aux = planes[3].clone();
+        invalid_aux[0] ^= 1;
+        let mut writer = StreamingRankWriter::create_or_resume(&path.0, config).unwrap();
+        assert!(matches!(
+            writer.write_tensor(1, &mut &planes[2][..], &mut &invalid_aux[..]),
+            Err(StreamRankError::Exl3(crate::Exl3Error::CodebookMarker))
+        ));
+        assert_eq!(writer.completed_tensors(), 0);
+        assert!(writer.pending.is_empty());
+        let mut descriptor = [1_u8; DESCRIPTOR_BYTES];
+        read_exact_at(
+            &writer.file,
+            &mut descriptor,
+            (writer.layout.descriptor_offset + DESCRIPTOR_BYTES) as u64,
+        )
+        .unwrap();
+        assert_eq!(descriptor, [0; DESCRIPTOR_BYTES]);
     }
 
     #[test]
