@@ -6,6 +6,7 @@ use std::{
 use crate::{PAGE_TOKENS, PageState, PrefixPageKey, TierPiece, TierRecord, owner_rank};
 
 pub const MAXIMUM_CONTEXT_TOKENS: u64 = 1_048_576;
+pub const MAXIMUM_PHYSICAL_PAGES_PER_RANK: u32 = 1_048_576;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalPageId {
@@ -188,7 +189,7 @@ pub struct SequencePageTable {
 impl SequencePageTable {
     pub fn new(config: PageTableConfig) -> Result<Self, SequencePageError> {
         if config.target_pages_per_rank == 0
-            || config.target_pages_per_rank > 1_048_576
+            || config.target_pages_per_rank > MAXIMUM_PHYSICAL_PAGES_PER_RANK
             || config.draft_pages_per_rank > config.target_pages_per_rank
         {
             return Err(SequencePageError::Config);

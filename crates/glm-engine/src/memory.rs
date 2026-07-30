@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use glm_cache::{
-    DRAFT_INDEXER_GROUPS, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES, PAGE_TOKENS,
-    PageTableConfig, TARGET_LAYERS,
+    DRAFT_INDEXER_GROUPS, INDEXER_GROUPS, INDEXER_RECORD_BYTES, KV_RECORD_BYTES,
+    MAXIMUM_PHYSICAL_PAGES_PER_RANK, PAGE_TOKENS, PageTableConfig, TARGET_LAYERS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,7 +17,11 @@ pub const CAPACITY_EXL3_RANK_WEIGHT_BYTES: u64 = 81_590_319_104;
 pub const MAXIMUM_ACTIVE_SEQUENCES: u64 = MAX_ACTIVE_SEQUENCES as u64;
 pub const MAXIMUM_VERIFIER_ROWS: u64 = MAX_VERIFIER_ROWS as u64;
 pub const MIN_PAGE_SLACK_SLOTS_PER_RANK: u64 = MAXIMUM_ACTIVE_SEQUENCES * PAGE_TOKENS;
+/// Sixty-four one-token speculative spills consume rank 0's exact 64-page
+/// alignment slack, leaving one additional target page in the MTP0 arena.
 pub const MIN_MTP0_TENTATIVE_SLOTS_PER_RANK: u64 = MAXIMUM_ACTIVE_SEQUENCES;
+/// MTP6 reserves seven positions per active row and leaves seven physical
+/// pages above the exact 4,160-page adversarial rank-0 use.
 pub const MIN_MTP_TENTATIVE_SLOTS_PER_RANK: u64 = MAXIMUM_VERIFIER_ROWS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -439,20 +443,27 @@ impl ProfileBudgetArtifact {
             return Err(ProfileBudgetError::RankSet);
         }
         let mut minimum_floor = u64::MAX;
+        let [
+            expected_target_kv,
+            expected_target_indexer,
+            expected_draft_kv,
+            expected_draft_indexer,
+        ] = capacity_exl3_cache_terms()?;
         for rank in ranks {
             let terms = rank.terms;
             if terms.weight_bytes != CAPACITY_EXL3_RANK_WEIGHT_BYTES
                 || terms.emergency_escrow_bytes < MIN_ESCROW_BYTES
-                || terms.target_kv_committed_and_slack_bytes != 7_655_012_352
-                || terms.target_indexer_key_committed_and_slack_bytes != 739_259_136
-                || terms.draft_kv_committed_and_slack_bytes != 98_141_184
-                || terms.draft_indexer_key_committed_and_slack_bytes != 35_202_816
+                || terms.target_kv_committed_and_slack_bytes != expected_target_kv
+                || terms.target_indexer_key_committed_and_slack_bytes != expected_target_indexer
+                || terms.draft_kv_committed_and_slack_bytes != expected_draft_kv
+                || terms.draft_indexer_key_committed_and_slack_bytes != expected_draft_indexer
                 || terms.required()? != rank.required_bytes
                 || rank
                     .observed_pre_context_free_bytes
                     .checked_sub(rank.required_bytes)
                     != Some(rank.headroom_against_pre_context_observation_bytes)
                 || rank.planned_usable_hbm_floor_bytes > rank.observed_pre_context_free_bytes
+                || rank.required_bytes > rank.planned_usable_hbm_floor_bytes
             {
                 return Err(ProfileBudgetError::Arithmetic(rank.rank));
             }
@@ -638,6 +649,30 @@ pub fn plan_system_memory(
     {
         return Err(MemoryPlanError::ProfileMismatch);
     }
+    let arena_shape = (
+        ranks[0].target_committed_slots,
+        ranks[0].target_page_slack_slots,
+        ranks[0].target_tentative_slots,
+        ranks[0].target_slots,
+        ranks[0].draft_committed_slots,
+        ranks[0].draft_page_slack_slots,
+        ranks[0].draft_tentative_slots,
+        ranks[0].draft_slots,
+    );
+    if ranks.iter().skip(1).any(|plan| {
+        (
+            plan.target_committed_slots,
+            plan.target_page_slack_slots,
+            plan.target_tentative_slots,
+            plan.target_slots,
+            plan.draft_committed_slots,
+            plan.draft_page_slack_slots,
+            plan.draft_tentative_slots,
+            plan.draft_slots,
+        ) != arena_shape
+    }) {
+        return Err(MemoryPlanError::ArenaMismatch);
+    }
     let aggregate_required_bytes = ranks.iter().try_fold(0_u64, |sum, plan| {
         sum.checked_add(plan.required_bytes)
             .ok_or(MemoryPlanError::Overflow)
@@ -652,20 +687,20 @@ pub fn plan_system_memory(
         .map(|plan| plan.target_committed_slots)
         .min()
         .ok_or(MemoryPlanError::RankCount)?;
-    let target_slots_per_rank = ranks
-        .iter()
-        .map(|plan| plan.target_slots)
-        .min()
-        .ok_or(MemoryPlanError::RankCount)?;
-    let draft_slots_per_rank = ranks
-        .iter()
-        .map(|plan| plan.draft_slots)
-        .min()
-        .ok_or(MemoryPlanError::RankCount)?;
+    let target_slots_per_rank = ranks[0].target_slots;
+    let draft_slots_per_rank = ranks[0].draft_slots;
+    let target_pages_per_rank = page_count(target_slots_per_rank)?;
+    let draft_pages_per_rank = page_count(draft_slots_per_rank)?;
+    if target_pages_per_rank == 0
+        || target_pages_per_rank > MAXIMUM_PHYSICAL_PAGES_PER_RANK
+        || draft_pages_per_rank > target_pages_per_rank
+    {
+        return Err(MemoryPlanError::PageTableConfig);
+    }
     let cache_arena = CacheArenaLayout {
         page_tokens: PAGE_TOKENS,
-        target_pages_per_rank: page_count(target_slots_per_rank)?,
-        draft_pages_per_rank: page_count(draft_slots_per_rank)?,
+        target_pages_per_rank,
+        draft_pages_per_rank,
         target_slots_per_rank,
         draft_slots_per_rank,
     };
@@ -684,6 +719,28 @@ fn bytes_for(slots: u64, groups: u64, bytes: u64) -> Result<u64, MemoryPlanError
         .checked_mul(groups)
         .and_then(|value| value.checked_mul(bytes))
         .ok_or(MemoryPlanError::Overflow)
+}
+
+fn capacity_exl3_cache_terms() -> Result<[u64; 4], ProfileBudgetError> {
+    let slots = MIN_LOCAL_CAPACITY_TOKENS
+        .checked_add(MIN_PAGE_SLACK_SLOTS_PER_RANK)
+        .and_then(|value| value.checked_add(MIN_MTP_TENTATIVE_SLOTS_PER_RANK))
+        .ok_or(ProfileBudgetError::Overflow)?;
+    if !slots.is_multiple_of(PAGE_TOKENS) {
+        return Err(ProfileBudgetError::Overflow);
+    }
+    let derive = |groups, bytes| {
+        bytes_for(slots, groups, bytes).map_err(|error| match error {
+            MemoryPlanError::Overflow => ProfileBudgetError::Overflow,
+            _ => ProfileBudgetError::MemoryPlan(error),
+        })
+    };
+    Ok([
+        derive(TARGET_LAYERS, KV_RECORD_BYTES)?,
+        derive(INDEXER_GROUPS, INDEXER_RECORD_BYTES)?,
+        derive(1, KV_RECORD_BYTES)?,
+        derive(DRAFT_INDEXER_GROUPS, INDEXER_RECORD_BYTES)?,
+    ])
 }
 
 fn round_up_to_page(slots: u64) -> Result<u64, MemoryPlanError> {
@@ -710,6 +767,8 @@ pub enum MemoryPlanError {
     RankCount,
     RankSet,
     ProfileMismatch,
+    ArenaMismatch,
+    PageTableConfig,
     ServingFloor,
     TargetSlackFloor,
     DraftFloor,
@@ -737,6 +796,7 @@ impl std::error::Error for MemoryPlanError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glm_cache::SequencePageTable;
 
     #[test]
     fn checked_in_profile_budget_is_arithmetically_valid_but_blocks_conversion() {
@@ -762,6 +822,11 @@ mod tests {
         artifact.measurement_status = "complete".into();
         artifact.conversion_allowed = true;
         assert_eq!(artifact.validate(), Err(ProfileBudgetError::Status));
+
+        let mut artifact: ProfileBudgetArtifact =
+            serde_json::from_str(include_str!("../../../profiles/profile-budget-v0.json")).unwrap();
+        artifact.ranks[1].planned_usable_hbm_floor_bytes = artifact.ranks[1].required_bytes - 1;
+        assert_eq!(artifact.validate(), Err(ProfileBudgetError::Arithmetic(1)));
     }
 
     #[test]
@@ -844,6 +909,10 @@ mod tests {
         assert_eq!(plan.terms.target_indexer_keys, 739_259_136);
         assert_eq!(plan.terms.draft_kv, 98_141_184);
         assert_eq!(plan.terms.draft_indexer_keys, 35_202_816);
+        assert_eq!(
+            capacity_exl3_cache_terms(),
+            Ok([7_655_012_352, 739_259_136, 98_141_184, 35_202_816])
+        );
     }
 
     #[test]
@@ -918,6 +987,13 @@ mod tests {
             plan_system_memory(vec![input(0), input(1), input(2), mismatch]),
             Err(MemoryPlanError::ProfileMismatch)
         );
+
+        let mut asymmetric = input(3);
+        asymmetric.target_tentative_slots += PAGE_TOKENS;
+        assert_eq!(
+            plan_system_memory(vec![input(0), input(1), input(2), asymmetric]),
+            Err(MemoryPlanError::ArenaMismatch)
+        );
     }
 
     #[test]
@@ -974,6 +1050,71 @@ mod tests {
                 draft_pages_per_rank: 4_167,
             }
         );
+        SequencePageTable::new(plan.cache_arena.page_table_config()).unwrap();
+    }
+
+    #[test]
+    fn system_plan_emits_only_constructible_page_table_configs() {
+        let empty_laboratory = |rank| {
+            let mut value = input(rank);
+            value.profile = ProfileClass::Nvfp4Laboratory;
+            value.mtp_enabled = false;
+            value.weight_bytes = 0;
+            value.draft_committed_slots = 0;
+            value.draft_page_slack_slots = 0;
+            value.draft_tentative_slots = 0;
+            value.target_committed_slots = 0;
+            value.target_page_slack_slots = 0;
+            value.target_tentative_slots = 0;
+            value
+        };
+        assert_eq!(
+            plan_system_memory((0..4).map(empty_laboratory).collect()),
+            Err(MemoryPlanError::PageTableConfig)
+        );
+
+        let oversized_laboratory = |rank| {
+            let mut value = empty_laboratory(rank);
+            value.measured_usable_hbm_bytes = u64::MAX;
+            value.target_committed_slots =
+                (u64::from(MAXIMUM_PHYSICAL_PAGES_PER_RANK) + 1) * PAGE_TOKENS;
+            value
+        };
+        assert_eq!(
+            plan_system_memory((0..4).map(oversized_laboratory).collect()),
+            Err(MemoryPlanError::PageTableConfig)
+        );
+    }
+
+    #[test]
+    fn exact_serving_arenas_survive_adversarial_c64_tail_pressure() {
+        let mut mtp = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 4_167,
+            draft_pages_per_rank: 4_167,
+        })
+        .unwrap();
+        for sequence_id in 1..=MAX_ACTIVE_SEQUENCES as u64 {
+            mtp.admit_with_prefix(sequence_id, true, &[]).unwrap();
+            mtp.append_committed(sequence_id, 16_384).unwrap();
+            mtp.begin_tentative(sequence_id, 1).unwrap();
+        }
+        let mtp_stats = mtp.stats().unwrap();
+        assert_eq!(mtp_stats.target_pages_used, [4_160, 4_096, 4_096, 4_096]);
+        assert_eq!(mtp_stats.draft_pages_used, [4_160, 4_096, 4_096, 4_096]);
+
+        let mut mtp0 = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 4_161,
+            draft_pages_per_rank: 0,
+        })
+        .unwrap();
+        for sequence_id in 1..=MAX_ACTIVE_SEQUENCES as u64 {
+            mtp0.admit_with_prefix(sequence_id, false, &[]).unwrap();
+            mtp0.append_committed(sequence_id, 16_384).unwrap();
+            mtp0.begin_tentative(sequence_id, 1).unwrap();
+        }
+        let mtp0_stats = mtp0.stats().unwrap();
+        assert_eq!(mtp0_stats.target_pages_used, [4_160, 4_096, 4_096, 4_096]);
+        assert_eq!(mtp0_stats.draft_pages_used, [0; 4]);
     }
 
     #[test]
@@ -985,6 +1126,8 @@ mod tests {
         mtp0.draft_page_slack_slots = 0;
         mtp0.draft_tentative_slots = 0;
         let plan = RankMemoryPlan::build(mtp0).unwrap();
+        assert_eq!(plan.target_slots, 266_304);
+        assert_eq!(plan.target_slots / PAGE_TOKENS, 4_161);
         assert_eq!(plan.draft_slots, 0);
         assert_eq!(plan.terms.draft_kv, 0);
         assert_eq!(plan.terms.draft_indexer_keys, 0);

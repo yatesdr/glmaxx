@@ -98,6 +98,16 @@ incremental logical-state commitments, admission-charged final page-index
 blocks, and a bounded eight-slot/174-entry first-install stream. The amendment
 is a design candidate, not an implementation, CUDA/device-integrity, or
 performance result.
+The cache-arena static-planner correction is pinned in
+`docs/cache-arena-budget-v2-r2-proof.md`. It derives the four cache byte terms
+from shared record/shape constants, rejects rank-asymmetric and
+unconstructible page arenas, enforces required bytes below the planned floor
+even while conversion is pending, and permanently constructs the exact
+4,160-page rank-0 C64 pressure case inside the 4,167-page MTP6 and 4,161-page
+MTP0 arenas. The complete local gate passes 378 tests. This is a CPU static
+memory-planning result; fixed hot-path page transactions, the global quota
+ledger, measured fit, GPU payloads, model execution, and performance remain
+outside it.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
