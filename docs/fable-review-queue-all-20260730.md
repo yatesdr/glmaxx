@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`1212fe9bf39f690401df8e49dcaca44708502a20`
+`46f251e8af7d0b75593c7ad66c00ae41dcd3f7a8`
 
-`review-proof-all` verified 101 current handoffs and skipped the two historical
+`review-proof-all` verified 102 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -121,6 +121,7 @@ result path; follow the output instructions in that handoff.
 | 99 | `docs/fable-rank-residency-content-identity-v1-r2-handoff.md` | `386ea9a61bae10836a97efec24176118ee8e7632` | `docs/reviews/fable-rank-residency-content-identity-v1-r2.md` | `rank-residency-content-identity-v1-accepted` |
 | 100 | `docs/fable-restore-operation-quota-v1-r2-handoff.md` | `12c0c49c0ab966101eaf2797a3a23555ec069b2f` | `docs/reviews/fable-restore-operation-quota-v1-r2.md` | `restore-operation-quota-v1-accepted` |
 | 101 | `docs/fable-kv-reconstruction-rounding-v2-handoff.md` | `1212fe9bf39f690401df8e49dcaca44708502a20` | `docs/reviews/fable-kv-reconstruction-rounding-v2.md` | `kv-reconstruction-rounding-v2-design-accepted` |
+| 102 | `docs/fable-tp4-worker-admission-state-v1-handoff.md` | `46f251e8af7d0b75593c7ad66c00ae41dcd3f7a8` | `docs/reviews/fable-tp4-worker-admission-state-v1.md` | `tp4-worker-admission-state-v1-accepted` |
 
 ## Verification command
 
@@ -131,5 +132,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 101 current handoffs and two
+The expected queue count for this document is 102 current handoffs and two
 explicitly skipped historical umbrella handoffs.
