@@ -3,11 +3,12 @@
 Date: 2026-07-30
 
 Current host implementation baseline:
-`1770563713722685db26b0d3378f32e4ecf92519`
+`a49210fe384012066d80087f61668d5d8a8e2a78`
 
-The complete local gate most recently ran against native checkpoint-load smoke
-implementation
-`1770563713722685db26b0d3378f32e4ecf92519`. The
+The complete local gate most recently ran at review-handoff commit
+`e3ce668232cebb1d9e278249f96a62b8823372c8`, whose latest behavioral
+implementation is
+`a49210fe384012066d80087f61668d5d8a8e2a78`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -188,20 +189,33 @@ cn4 access, checkpoint load, or model kernel was used; independent review is
 requested by
 `docs/fable-native-checkpoint-load-smoke-v1-handoff.md`.
 
+The resident tensor-address successor is pinned in
+`docs/resident-tensor-device-binding-proof-v1.md`. Candidate `a49210f` stores
+each rank layout as one immutable plan-shared slice, seals plan fields from
+external post-hash mutation, resolves only authenticated numeric tensor IDs
+to checked device spans after global adoption, and reconciles all 59,585
+bindings with native descriptors and validated semantics on the persistent
+rank owner before finalize success. Its CPU fault proof rejects layout,
+bounds, alignment, absent-plane, and ID drift. It also records that current
+capacity-EXL3 gate and up are distinct descriptors sharing the same
+`(layer, role, expert)` tuple; a reviewed projection discriminator is still
+required before the target program can be compiled. No CUDA execution or
+model-kernel claim is made. Independent review is requested by
+`docs/fable-resident-tensor-device-binding-v1-handoff.md`.
+
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
 permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run against native checkpoint-load smoke
-implementation `1770563`
+The latest complete local run at `e3ce668`
 passed:
 
-- `scripts/local-checks.sh` passes 340 Rust tests with zero failures,
+- `scripts/local-checks.sh` passes 341 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 87 candidate-based review-handoff
-  hash proofs with 0/68 configured result artifacts;
+  deterministic proof regeneration, and all 88 candidate-based review-handoff
+  hash proofs with 0/69 configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
@@ -598,6 +612,7 @@ verdicts:
 | persistent native checkpoint rank adapter | `b62325a` | `docs/fable-native-checkpoint-rank-adapter-v1-handoff.md` |
 | one-call native checkpoint startup composition | `b55c8a9` | `docs/fable-native-checkpoint-startup-composition-v1-handoff.md` |
 | fail-closed native TP4 checkpoint-load smoke | `1770563` | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` |
+| resident tensor ID to authenticated device spans | `a49210f` | `docs/fable-resident-tensor-device-binding-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
