@@ -3,10 +3,10 @@
 Date: 2026-07-30
 
 Current host implementation baseline:
-`da6d89fe0c7997653807080bcfbebc6a00356395`
+`7267b505fd4b83c9b421e5050277bf806a1e4867`
 
 The complete local gate most recently ran at
-`68425cef2486048bf76fb1493046a818669f1925`, whose review-inbox
+`7267b505fd4b83c9b421e5050277bf806a1e4867`, whose review-inbox
 infrastructure is that exact commit and whose latest model-execution
 behavioral implementation remains
 `a49210fe384012066d80087f61668d5d8a8e2a78`. The
@@ -51,7 +51,7 @@ basenames across the full review inbox, retains every per-artifact rejection,
 reports absent and unmatched files, exits unsuccessfully when any matched
 artifact is invalid, and never copies or promotes reviewer-owned bytes. On
 the current untracked inbox it reports 19 matching artifacts: 8 ready, 11
-rejected, and 83 configured results absent. This transient inbox inventory is
+rejected, and 84 configured results absent. This transient inbox inventory is
 diagnostic only and does not change the eight machine-accepted results.
 The next cn4 window is prepared by
 `docs/cn4-environment-capture-v1.md`, which specifies a Rust-owned,
@@ -746,6 +746,7 @@ verdicts:
 | bounded direct-tier R0/R1/W0/W1 scheduler CPU proof | `6cdbeae` | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` |
 | corrected direct-tier admission/service arbitration CPU proof | `e188fc7` | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` |
 | consolidated direct-tier read-class fairness CPU proof | `b602a9c` | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` |
+| bounded direct-tier checksum authority CPU proof | `7267b50` | `docs/fable-direct-tier-checksum-authority-cpu-v1-handoff.md` |
 | Linux direct-tier feature and fault probe design | `a3771e3` | `docs/fable-direct-tier-linux-probe-v1-handoff.md` |
 | cn4 read-only environment capture design | `d961d96` | `docs/fable-cn4-environment-capture-v1-handoff.md` |
 | matched runtime control and comparison design | `660a070` | `docs/fable-matched-runtime-control-v1-handoff.md` |
