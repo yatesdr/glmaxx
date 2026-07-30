@@ -254,6 +254,14 @@ corrects source/native-output identity, laboratory plan and arena binding,
 persistent-owner ordering before adoption, per-repetition generation
 isolation, and the process-fatal no-forged-cleanup boundary. R2 remains an
 unreviewed design and contains no implementation or hardware evidence.
+The upstream M3 gate is now specified independently in
+`docs/tp4-layer6-replay-v1.md`. It requires real decode/prefill boundary
+fixtures, complete layer-6 TP4/DCP4 execution and cache-write comparison,
+layer-7 generation-safe winner reuse without indexer work, separate
+native-plane and source-control references, offline downstream
+full-vocabulary sensitivity evidence, and matched eager/captured controls.
+It is an unreviewed design only; no fixture, CPU replay, CUDA run, layer
+result, quality result, or speed claim exists.
 The checkpoint-load CPU core is pinned in
 `docs/checkpoint-load-cpu-core-proof-v1.md`. Candidate `6561492` implements
 the exact plan, tensor-layout, prepared-receipt, prepared-set, adoption, and
