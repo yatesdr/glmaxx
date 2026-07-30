@@ -46,7 +46,7 @@ impl StepSampling {
         }
     }
 
-    fn validate(self) -> Result<(), StepInputError> {
+    pub fn validate(self) -> Result<(), StepInputError> {
         let temperature = f32::from_bits(self.temperature_bits);
         let top_p = f32::from_bits(self.top_p_bits);
         if !temperature.is_finite()

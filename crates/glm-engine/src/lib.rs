@@ -42,6 +42,6 @@ pub use weight::{
     ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
 };
 pub use worker::{
-    MockWorkerFault, RankExecutionError, RankExecutor, RankStepAck, StepHandle, StepOutcome,
-    Tp4WorkerPool, WorkerError,
+    MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankStepAck, StepHandle,
+    StepOutcome, Tp4WorkerPool, WorkerError,
 };

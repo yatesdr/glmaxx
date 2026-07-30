@@ -4,22 +4,25 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    fmt, thread,
+    fmt,
+    sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
 
 use glm_cache::{
-    PageTableConfig, PageTableStats, PrefixPageAttachment, SequencePageError, SequencePageTable,
+    PageTableConfig, PageTableDelta, PageTableDeltaError, PageTableStats, PrefixPageAttachment,
+    SequencePageError, SequencePageTable,
 };
 use glm_engine::{
     CollectiveKind, CollectiveSchedule, CommittedTokens, GraphProfile, MAX_ACTIVE_SEQUENCES,
-    MAX_MTP_DEPTH, StepMode, Tp4WorkerPool, WorkerError,
+    MAX_MTP_DEPTH, SequenceStepInput, StepInput, StepInputError, StepMode, StepSampling,
+    StepSamplingKind, Tp4WorkerPool, WorkerError,
 };
-#[cfg(test)]
-use glm_scheduler::SamplingCollective;
 use glm_scheduler::{
     BatchCompletion, BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog,
-    ScheduledBatch, Scheduler, SchedulerConfig, SchedulerError, StepPlanCompiler, TenantConfig,
+    SamplingCollective, ScheduledBatch, Scheduler, SchedulerConfig, SchedulerError,
+    StepPlanCompiler, TenantConfig,
 };
 use glm_tokenizer::EOS_TOKEN_IDS;
 
@@ -148,11 +151,13 @@ pub struct ServingCoordinator {
     prefix_leases: BTreeMap<u64, RestoredPrefix>,
     pending_admissions: BTreeMap<u64, PendingAdmission>,
     request_tokens: BTreeMap<u64, Box<[u32]>>,
+    request_sampling: BTreeMap<u64, StepSampling>,
 }
 
 struct PendingAdmission {
     spec: RequestSpec,
     tokens: Box<[u32]>,
+    sampling: StepSampling,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,6 +172,7 @@ struct RequestReleasePlan {
     prefix: Option<PrefixReleasePlan>,
     active_pages: SequencePageTable,
     sequence_table_generation: u64,
+    rank_synchronized: bool,
 }
 
 struct SuccessfulStepPublication {
@@ -240,12 +246,14 @@ impl ServingCoordinator {
         {
             return Err(ServingError::Config);
         }
+        let active_pages = SequencePageTable::new(config.page_table)?;
+        workers.initialize_page_table(Arc::new(active_pages.clone()), 1)?;
         Ok(Self {
             scheduler: Scheduler::new(scheduler_config, profile, tenants)?,
             compiler: StepPlanCompiler::new(config.epoch, routes)?,
             workers,
             sequence_table_generation: 1,
-            active_pages: SequencePageTable::new(config.page_table)?,
+            active_pages,
             event_capacity: config.event_capacity,
             maximum_retained_prompt_bytes: config.maximum_retained_prompt_bytes,
             retained_prompt_bytes: 0,
@@ -255,6 +263,7 @@ impl ServingCoordinator {
             prefix_leases: BTreeMap::new(),
             pending_admissions: BTreeMap::new(),
             request_tokens: BTreeMap::new(),
+            request_sampling: BTreeMap::new(),
         })
     }
 
@@ -282,6 +291,7 @@ impl ServingCoordinator {
             request.cached_prompt_tokens,
             &[],
             request.cached_prompt_tokens,
+            default_step_sampling(request.spec),
         )
     }
 
@@ -291,12 +301,18 @@ impl ServingCoordinator {
         cached_prompt_tokens: u32,
         prefix_pages: &[PrefixPageAttachment],
         private_cached_tokens: u32,
+        sampling: StepSampling,
     ) -> Result<(), ServingError> {
         validate_context_limit(spec)?;
+        sampling.validate()?;
+        if sampling.kind != sampling_kind(spec.sampling) {
+            return Err(ServingError::Request);
+        }
         self.require_event_space(1)?;
         if self.pending_admissions.contains_key(&spec.id)
             || self.prefix_leases.contains_key(&spec.id)
             || self.request_tokens.contains_key(&spec.id)
+            || self.request_sampling.contains_key(&spec.id)
         {
             return Err(ServingError::Backpressure);
         }
@@ -314,10 +330,19 @@ impl ServingCoordinator {
         let mut active_pages = self.active_pages.clone();
         active_pages.admit_with_prefix(spec.id, spec.mtp_depth != 0, prefix_pages)?;
         active_pages.append_committed(spec.id, u64::from(private_cached_tokens))?;
-        self.scheduler
-            .admit_with_prefix(spec, cached_prompt_tokens)?;
+        let delta = Arc::new(PageTableDelta::between(
+            &self.active_pages,
+            &active_pages,
+            self.sequence_table_generation,
+            next_generation,
+        )?);
+        let mut scheduler = self.scheduler.clone();
+        scheduler.admit_with_prefix(spec, cached_prompt_tokens)?;
+        self.workers.apply_page_delta(delta)?;
+        self.scheduler = scheduler;
         self.active_pages = active_pages;
         self.sequence_table_generation = next_generation;
+        self.request_sampling.insert(spec.id, sampling);
         self.events.push_back(RequestEvent::Admitted {
             request_id: spec.id,
             cached_prompt_tokens,
@@ -326,7 +351,16 @@ impl ServingCoordinator {
     }
 
     pub fn admit_tokens(&mut self, spec: RequestSpec, tokens: &[u32]) -> Result<(), ServingError> {
-        match self.begin_admit_tokens(spec, tokens)? {
+        self.admit_tokens_with_sampling(spec, default_step_sampling(spec), tokens)
+    }
+
+    pub fn admit_tokens_with_sampling(
+        &mut self,
+        spec: RequestSpec,
+        sampling: StepSampling,
+        tokens: &[u32],
+    ) -> Result<(), ServingError> {
+        match self.begin_admit_tokens_with_sampling(spec, sampling, tokens)? {
             AdmissionStatus::Admitted { .. } => return Ok(()),
             AdmissionStatus::Pending => {}
         }
@@ -343,7 +377,20 @@ impl ServingCoordinator {
         spec: RequestSpec,
         tokens: &[u32],
     ) -> Result<AdmissionStatus, ServingError> {
+        self.begin_admit_tokens_with_sampling(spec, default_step_sampling(spec), tokens)
+    }
+
+    pub fn begin_admit_tokens_with_sampling(
+        &mut self,
+        spec: RequestSpec,
+        sampling: StepSampling,
+        tokens: &[u32],
+    ) -> Result<AdmissionStatus, ServingError> {
         validate_context_limit(spec)?;
+        sampling.validate()?;
+        if sampling.kind != sampling_kind(spec.sampling) {
+            return Err(ServingError::Request);
+        }
         if usize::try_from(spec.prompt_tokens).ok() != Some(tokens.len()) {
             return Err(ServingError::Request);
         }
@@ -351,6 +398,7 @@ impl ServingCoordinator {
             || self.scheduler.request_state(spec.id).is_some()
             || self.prefix_leases.contains_key(&spec.id)
             || self.request_tokens.contains_key(&spec.id)
+            || self.request_sampling.contains_key(&spec.id)
             || self.pending_admissions.len() >= self.event_capacity
         {
             return Err(ServingError::Backpressure);
@@ -377,6 +425,7 @@ impl ServingCoordinator {
                     PendingAdmission {
                         spec,
                         tokens: tokens.to_vec().into_boxed_slice(),
+                        sampling,
                     },
                 );
                 Ok(AdmissionStatus::Pending)
@@ -386,6 +435,7 @@ impl ServingCoordinator {
                 tokens.to_vec().into_boxed_slice(),
                 restored,
                 prior_retained_prompt_bytes,
+                sampling,
             ),
         }
     }
@@ -428,6 +478,7 @@ impl ServingCoordinator {
                     pending.tokens,
                     restored,
                     retained_prompt_bytes,
+                    pending.sampling,
                 )
             }
         }
@@ -439,6 +490,7 @@ impl ServingCoordinator {
         tokens: Box<[u32]>,
         mut restored: RestoredPrefix,
         retained_prompt_bytes: u64,
+        sampling: StepSampling,
     ) -> Result<AdmissionStatus, ServingError> {
         if let Err(error) = restored.validate() {
             self.prefix_cache
@@ -461,8 +513,13 @@ impl ServingCoordinator {
             restored = RestoredPrefix::empty();
         }
         let matched_tokens = restored.matched_tokens;
-        let result =
-            self.admit_active_sequence(spec, matched_tokens, restored.page_attachments(), 0);
+        let result = self.admit_active_sequence(
+            spec,
+            matched_tokens,
+            restored.page_attachments(),
+            0,
+            sampling,
+        );
         if let Err(error) = result {
             self.prefix_cache
                 .as_mut()
@@ -535,21 +592,6 @@ impl ServingCoordinator {
             Some(entry) => entry,
             None => return self.fail_selected_step(&batch, ServingError::Graph),
         };
-        let compiled = match self
-            .compiler
-            .compile(&batch, &entry, self.sequence_table_generation)
-        {
-            Ok(compiled) => compiled,
-            Err(error) => {
-                return self.fail_selected_step(&batch, ServingError::Compile(error));
-            }
-        };
-        let plan = compiled.plan;
-        let collective_count = match u16::try_from(compiled.schedule.operations().len()) {
-            Ok(count) => count,
-            Err(_) => return self.fail_selected_step(&batch, ServingError::Overflow),
-        };
-        let collectives = observe_collectives(&compiled.schedule);
         let starting_progress = batch
             .rows
             .iter()
@@ -568,8 +610,51 @@ impl ServingCoordinator {
             Ok(active_pages) => active_pages,
             Err(error) => return self.fail_selected_step(&batch, error),
         };
+        let reservation_generation = match self.next_sequence_generation() {
+            Ok(generation) => generation,
+            Err(error) => return self.fail_selected_step(&batch, error),
+        };
+        let reservation_delta = match PageTableDelta::between(
+            &self.active_pages,
+            &active_pages,
+            self.sequence_table_generation,
+            reservation_generation,
+        ) {
+            Ok(delta) => Arc::new(delta),
+            Err(error) => return self.fail_selected_step(&batch, error.into()),
+        };
+        let compiled = match self
+            .compiler
+            .compile(&batch, &entry, reservation_generation)
+        {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return self.fail_selected_step(&batch, ServingError::Compile(error));
+            }
+        };
+        let plan = compiled.plan;
+        let input = match self.build_step_input(
+            &batch,
+            &starting_progress,
+            &plan,
+            &compiled.schedule,
+            &reservation_delta,
+        ) {
+            Ok(input) => Arc::new(input),
+            Err(error) => return self.fail_selected_step(&batch, error),
+        };
+        let collective_count = match u16::try_from(compiled.schedule.operations().len()) {
+            Ok(count) => count,
+            Err(_) => return self.fail_selected_step(&batch, ServingError::Overflow),
+        };
+        let collectives = observe_collectives(&compiled.schedule);
         let worker_start = Instant::now();
-        let handle = match self.workers.try_submit(plan, compiled.schedule) {
+        let handle = match self.workers.try_submit_bound(
+            plan,
+            compiled.schedule,
+            input,
+            Arc::clone(&reservation_delta),
+        ) {
             Ok(handle) => handle,
             Err(error) => {
                 return self.fail_selected_step(&batch, ServingError::Worker(error));
@@ -578,7 +663,8 @@ impl ServingCoordinator {
         let outcome = match handle.receive() {
             Ok(outcome) => outcome,
             Err(error) => {
-                return self.fail_selected_step(&batch, ServingError::Worker(error));
+                return self
+                    .fail_selected_step_after_worker_fatal(&batch, ServingError::Worker(error));
             }
         };
         let worker_round_trip = worker_start.elapsed();
@@ -611,28 +697,83 @@ impl ServingCoordinator {
                         })
             }
         };
+        let reserved_pages = active_pages.clone();
         if !output_fits_requests {
+            if let Err(error) =
+                self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+            {
+                return self.fail_selected_step_after_worker_fatal(&batch, error);
+            }
             return self.fail_selected_step(&batch, ServingError::Output);
         }
         if let Err(error) = Self::commit_active_step(&mut active_pages, &batch, output_rows) {
+            if let Err(rollback) =
+                self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+            {
+                return self.fail_selected_step_after_worker_fatal(&batch, rollback);
+            }
             return self.fail_selected_step(&batch, error);
         }
-        let publication = match self.plan_successful_step_publication(
+        let mut publication = match self.plan_successful_step_publication(
             &batch,
             &starting_progress,
             output_rows,
             active_pages,
         ) {
             Ok(publication) => publication,
-            Err(error) => return self.fail_selected_step(&batch, error),
+            Err(error) => {
+                if let Err(rollback) =
+                    self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+                {
+                    return self.fail_selected_step_after_worker_fatal(&batch, rollback);
+                }
+                return self.fail_selected_step(&batch, error);
+            }
         };
-        if let Err(error) = self
-            .scheduler
-            .complete_batch_with_results(true, &completions)
-        {
+        let mut committed_scheduler = self.scheduler.clone();
+        if let Err(error) = committed_scheduler.complete_batch_with_results(true, &completions) {
+            if let Err(rollback) =
+                self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+            {
+                return self.fail_selected_step_after_worker_fatal(&batch, rollback);
+            }
             return self.fail_selected_step(&batch, ServingError::Scheduler(error));
         }
-        self.commit_request_releases(publication.releases);
+        if matches!(batch.kind, BatchKind::Prefill) {
+            publication.releases.sequence_table_generation = reservation_generation;
+        } else {
+            let commit_generation = match reservation_generation.checked_add(1) {
+                Some(generation) => generation,
+                None => {
+                    return self
+                        .fail_selected_step_after_worker_fatal(&batch, ServingError::Overflow);
+                }
+            };
+            let commit_delta = match PageTableDelta::between(
+                &reserved_pages,
+                &publication.releases.active_pages,
+                reservation_generation,
+                commit_generation,
+            ) {
+                Ok(delta) => Arc::new(delta),
+                Err(error) => {
+                    if let Err(rollback) =
+                        self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+                    {
+                        return self.fail_selected_step_after_worker_fatal(&batch, rollback);
+                    }
+                    return self.fail_selected_step(&batch, error.into());
+                }
+            };
+            if let Err(error) = self.workers.apply_page_delta(commit_delta) {
+                return self
+                    .fail_selected_step_after_worker_fatal(&batch, ServingError::Worker(error));
+            }
+            publication.releases.sequence_table_generation = commit_generation;
+        }
+        self.scheduler = committed_scheduler;
+        publication.releases.rank_synchronized = true;
+        self.commit_request_releases(publication.releases)?;
         self.events.extend(
             publication.events.entries[..publication.events.len]
                 .iter()
@@ -818,7 +959,7 @@ impl ServingCoordinator {
                 .map(|request_id| (request_id, RequestReleaseMode::Prefix)),
             self.active_pages.clone(),
         )?;
-        self.commit_request_releases(releases);
+        self.commit_request_releases(releases)?;
         for request_id in cancelled {
             self.events
                 .push_back(RequestEvent::Cancelled { request_id });
@@ -843,12 +984,58 @@ impl ServingCoordinator {
         self.scheduler.complete_batch(false)?;
         let releases = releases?;
         event_space?;
-        self.commit_request_releases(releases);
+        self.commit_request_releases(releases)?;
         self.events
             .extend(batch.rows.iter().map(|row| RequestEvent::Failed {
                 request_id: row.request_id,
             }));
         Err(error)
+    }
+
+    fn fail_selected_step_after_worker_fatal<T>(
+        &mut self,
+        batch: &ScheduledBatch,
+        error: ServingError,
+    ) -> Result<T, ServingError> {
+        let releases = self.plan_request_releases(
+            batch
+                .rows
+                .iter()
+                .map(|row| (row.request_id, RequestReleaseMode::Prefix)),
+            self.active_pages.clone(),
+        );
+        let event_space = self.require_event_space(batch.rows.len());
+        self.scheduler.complete_batch(false)?;
+        let mut releases = releases?;
+        event_space?;
+        // Rank state is no longer usable, so host cleanup must not attempt a
+        // second command that could mask the original fatal worker error.
+        releases.rank_synchronized = true;
+        self.commit_request_releases(releases)?;
+        self.events
+            .extend(batch.rows.iter().map(|row| RequestEvent::Failed {
+                request_id: row.request_id,
+            }));
+        Err(error)
+    }
+
+    fn rollback_rank_reservation(
+        &mut self,
+        reserved_pages: &SequencePageTable,
+        reservation_generation: u64,
+    ) -> Result<(), ServingError> {
+        let rollback_generation = reservation_generation
+            .checked_add(1)
+            .ok_or(ServingError::Overflow)?;
+        let delta = Arc::new(PageTableDelta::between(
+            reserved_pages,
+            &self.active_pages,
+            reservation_generation,
+            rollback_generation,
+        )?);
+        self.workers.apply_page_delta(delta)?;
+        self.sequence_table_generation = rollback_generation;
+        Ok(())
     }
 
     fn require_event_space(&self, needed: usize) -> Result<(), ServingError> {
@@ -921,16 +1108,35 @@ impl ServingCoordinator {
                 active_pages.remove_sequence(request_id)?;
             }
         }
+        let has_page_removal = requests
+            .values()
+            .any(|mode| *mode == RequestReleaseMode::Prefix);
         Ok(RequestReleasePlan {
             requests,
             retained_prompt_bytes,
             prefix,
             active_pages,
-            sequence_table_generation: self.next_sequence_generation()?,
+            sequence_table_generation: if has_page_removal {
+                self.next_sequence_generation()?
+            } else {
+                self.sequence_table_generation
+            },
+            rank_synchronized: false,
         })
     }
 
-    fn commit_request_releases(&mut self, plan: RequestReleasePlan) {
+    fn commit_request_releases(&mut self, plan: RequestReleasePlan) -> Result<(), ServingError> {
+        if !plan.rank_synchronized
+            && plan.sequence_table_generation != self.sequence_table_generation
+        {
+            let delta = Arc::new(PageTableDelta::between(
+                &self.active_pages,
+                &plan.active_pages,
+                self.sequence_table_generation,
+                plan.sequence_table_generation,
+            )?);
+            self.workers.apply_page_delta(delta)?;
+        }
         self.active_pages = plan.active_pages;
         self.sequence_table_generation = plan.sequence_table_generation;
         if let Some(prefix) = plan.prefix {
@@ -942,10 +1148,12 @@ impl ServingCoordinator {
         for (request_id, mode) in plan.requests {
             if mode == RequestReleaseMode::Prefix {
                 self.prefix_leases.remove(&request_id);
+                self.request_sampling.remove(&request_id);
             }
             self.request_tokens.remove(&request_id);
         }
         self.retained_prompt_bytes = plan.retained_prompt_bytes;
+        Ok(())
     }
 
     fn reserve_active_step(
@@ -1004,6 +1212,73 @@ impl ServingCoordinator {
         Ok(())
     }
 
+    fn build_step_input(
+        &self,
+        batch: &ScheduledBatch,
+        starting_progress: &[(u64, RequestProgress)],
+        plan: &glm_engine::StepPlan,
+        schedule: &CollectiveSchedule,
+        delta: &PageTableDelta,
+    ) -> Result<StepInput, ServingError> {
+        if batch.rows.len() != starting_progress.len() {
+            return Err(ServingError::Request);
+        }
+        let mut rows = Vec::with_capacity(batch.rows.len());
+        let mut prompt_token_ids = Vec::new();
+        for (row, &(request_id, progress)) in batch.rows.iter().zip(starting_progress) {
+            if row.request_id != request_id {
+                return Err(ServingError::Request);
+            }
+            let prompt_payload_offset =
+                u32::try_from(prompt_token_ids.len()).map_err(|_| ServingError::Overflow)?;
+            if row.prompt_tokens != 0 {
+                let start =
+                    usize::try_from(progress.prompt_done).map_err(|_| ServingError::Overflow)?;
+                let count =
+                    usize::try_from(row.prompt_tokens).map_err(|_| ServingError::Overflow)?;
+                let end = start.checked_add(count).ok_or(ServingError::Overflow)?;
+                if let Some(tokens) = self.request_tokens.get(&request_id) {
+                    prompt_token_ids
+                        .extend_from_slice(tokens.get(start..end).ok_or(ServingError::Request)?);
+                } else {
+                    #[cfg(test)]
+                    prompt_token_ids.resize(
+                        prompt_token_ids
+                            .len()
+                            .checked_add(count)
+                            .ok_or(ServingError::Overflow)?,
+                        0,
+                    );
+                    #[cfg(not(test))]
+                    return Err(ServingError::Request);
+                }
+            }
+            let context_tokens_before = progress
+                .prompt_done
+                .checked_add(progress.generated)
+                .ok_or(ServingError::Overflow)?;
+            let effective_mtp_depth = match batch.kind {
+                BatchKind::Prefill | BatchKind::Decode => 0,
+                BatchKind::Verify { depth } => depth,
+            };
+            rows.push(SequenceStepInput {
+                request_id,
+                context_tokens_before,
+                generated_tokens_before: progress.generated,
+                maximum_new_tokens: progress.maximum_new_tokens,
+                prompt_payload_offset,
+                prompt_tokens_this_step: row.prompt_tokens,
+                configured_mtp_depth: progress.mtp_depth,
+                effective_mtp_depth,
+                sampling: *self
+                    .request_sampling
+                    .get(&request_id)
+                    .ok_or(ServingError::Request)?,
+            });
+        }
+        StepInput::new(plan, schedule, delta, rows, prompt_token_ids).map_err(Into::into)
+    }
+
     fn retained_prompt_bytes_after_release(&self, token_count: usize) -> Result<u64, ServingError> {
         self.retained_prompt_bytes
             .checked_sub(prompt_bytes(token_count)?)
@@ -1016,6 +1291,36 @@ fn prompt_bytes(token_count: usize) -> Result<u64, ServingError> {
         .ok()
         .and_then(|count| count.checked_mul(u64::from(u32::BITS / 8)))
         .ok_or(ServingError::Overflow)
+}
+
+const fn sampling_kind(collective: SamplingCollective) -> StepSamplingKind {
+    match collective {
+        SamplingCollective::Greedy => StepSamplingKind::Greedy,
+        SamplingCollective::TopK => StepSamplingKind::TopK,
+        SamplingCollective::Mass => StepSamplingKind::Mass,
+    }
+}
+
+fn default_step_sampling(spec: RequestSpec) -> StepSampling {
+    match spec.sampling {
+        SamplingCollective::Greedy => StepSampling::greedy(spec.id),
+        SamplingCollective::TopK => StepSampling {
+            kind: StepSamplingKind::TopK,
+            temperature_bits: 1.0_f32.to_bits(),
+            top_p_bits: 1.0_f32.to_bits(),
+            top_k: 256,
+            seed: spec.id,
+            rng_counter_before: 0,
+        },
+        SamplingCollective::Mass => StepSampling {
+            kind: StepSamplingKind::Mass,
+            temperature_bits: 1.0_f32.to_bits(),
+            top_p_bits: 1.0_f32.to_bits(),
+            top_k: 0,
+            seed: spec.id,
+            rng_counter_before: 0,
+        },
+    }
 }
 
 fn validate_context_limit(spec: RequestSpec) -> Result<(), ServingError> {
@@ -1093,6 +1398,8 @@ pub enum ServingError {
     Worker(WorkerError),
     PageTable,
     Pages(SequencePageError),
+    Delta(PageTableDeltaError),
+    StepInput(StepInputError),
 }
 
 impl fmt::Display for ServingError {
@@ -1133,12 +1440,24 @@ impl From<SequencePageError> for ServingError {
     }
 }
 
+impl From<PageTableDeltaError> for ServingError {
+    fn from(value: PageTableDeltaError) -> Self {
+        Self::Delta(value)
+    }
+}
+
+impl From<StepInputError> for ServingError {
+    fn from(value: StepInputError) -> Self {
+        Self::StepInput(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         fs,
         sync::{
-            Arc, Barrier,
+            Arc,
             atomic::{AtomicUsize, Ordering},
         },
         time::{SystemTime, UNIX_EPOCH},
@@ -1149,9 +1468,8 @@ mod tests {
         PrefixNamespace, ResidencyConfig, TierPiece,
     };
     use glm_engine::{
-        AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, CommittedTokens,
-        GraphEntry, GraphKey, MockWorkerFault, RankExecutionError, RankExecutor, StepMode,
-        StepOutput, StepPlan, StepPlanRequest, TP_RANK_MASK,
+        AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
+        MockWorkerFault, RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan,
     };
 
     use super::*;
@@ -1272,50 +1590,17 @@ mod tests {
             std::iter::once((request_id, RequestReleaseMode::Prefix)),
             serving.active_pages.clone(),
         )?;
-        serving.commit_request_releases(plan);
+        serving.commit_request_releases(plan)?;
         Ok(())
-    }
-
-    fn worker_reservation_step() -> (StepPlan, CollectiveSchedule) {
-        let schedule = CollectiveSchedule::new(vec![CollectiveOp {
-            ordinal: 0,
-            kind: CollectiveKind::TpReduce,
-            route_id: 1,
-            payload_bytes: 16,
-            participant_mask: TP_RANK_MASK,
-        }])
-        .unwrap();
-        let plan = StepPlan::build(
-            StepPlanRequest {
-                epoch: 1,
-                step_id: 99,
-                mode: StepMode::Decode,
-                active_sequences: 1,
-                sequence_bucket: 1,
-                scheduled_prompt_tokens: 0,
-                query_rows: 1,
-                verifier_row_bucket: 1,
-                mtp_depth: 0,
-                graph_id: 1,
-                tp_route_id: 1,
-                dcp_route_id: 1,
-                attention_transport: AttentionTransport::DecodeQueryLse,
-                sampling_route_id: 1,
-                sequence_table_generation: 1,
-            },
-            &schedule,
-        )
-        .unwrap();
-        (plan, schedule)
-    }
-
-    struct BlockingReservationRankExecutor {
-        entered: Arc<Barrier>,
-        release: Arc<Barrier>,
     }
 
     struct CountingRankExecutor {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct BoundInputRankExecutor {
+        calls: Arc<AtomicUsize>,
+        expected_seed: u64,
     }
 
     impl RankExecutor for CountingRankExecutor {
@@ -1337,17 +1622,45 @@ mod tests {
                 StepMode::Mixed | StepMode::CacheOnly => Err(RankExecutionError::Invariant),
             }
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
-    impl RankExecutor for BlockingReservationRankExecutor {
+    impl RankExecutor for BoundInputRankExecutor {
         fn execute(
+            &mut self,
+            _rank: u8,
+            _plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            Err(RankExecutionError::Invariant)
+        }
+
+        fn execute_bound(
             &mut self,
             _rank: u8,
             plan: &StepPlan,
             _schedule: &CollectiveSchedule,
+            input: &StepInput,
         ) -> Result<StepOutput, RankExecutionError> {
-            self.entered.wait();
-            self.release.wait();
+            let row = input.rows().first().ok_or(RankExecutionError::Invariant)?;
+            if row.sampling.seed != self.expected_seed
+                || row.context_tokens_before != 64
+                || row.generated_tokens_before != 0
+                || row.prompt_tokens_this_step != 0
+                || !input.prompt_token_ids().is_empty()
+            {
+                return Err(RankExecutionError::Invariant);
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
             let token = CommittedTokens::target(1).map_err(|_| RankExecutionError::Invariant)?;
             StepOutput::new(&vec![token; usize::from(plan.active_sequences)])
                 .map_err(|_| RankExecutionError::Invariant)
@@ -1418,7 +1731,35 @@ mod tests {
         assert_eq!(decode.collectives.sampling_route_id, 6);
         assert_eq!(serving.active_committed_tokens(91), None);
         assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
-        assert_eq!(serving.sequence_table_generation, 4);
+        assert_eq!(serving.sequence_table_generation, 5);
+    }
+
+    #[test]
+    fn serving_delivers_exact_sampling_and_context_to_all_four_bound_executors() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let expected_seed = 0xdead_beef_cafe_babe;
+        let executors = std::array::from_fn(|_| {
+            Box::new(BoundInputRankExecutor {
+                calls: Arc::clone(&calls),
+                expected_seed,
+            }) as Box<dyn RankExecutor>
+        });
+        let mut serving = coordinator_with_workers(Tp4WorkerPool::spawn(2, executors).unwrap());
+        let spec = RequestSpec {
+            id: 98,
+            tenant: 1,
+            prompt_tokens: 64,
+            maximum_new_tokens: 1,
+            mtp_depth: 0,
+            sampling: SamplingCollective::Greedy,
+        };
+        serving
+            .admit_active_sequence(spec, 64, &[], 64, StepSampling::greedy(expected_seed))
+            .unwrap();
+        let _ = serving.drain_events();
+        assert!(serving.tick().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(serving.active_committed_tokens(98), None);
     }
 
     #[test]
@@ -1648,7 +1989,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_failure_fails_selected_rows_without_stranding_inflight() {
+    fn corrupt_generation_fails_closed_without_forging_rank_cleanup() {
         let mut serving = coordinator(None);
         serving
             .admit_prevalidated(ServingRequest {
@@ -1668,65 +2009,14 @@ mod tests {
 
         assert!(matches!(
             serving.tick_observed(),
-            Err(ServingError::Compile(glm_scheduler::CompileError::Batch))
+            Err(ServingError::Delta(PageTableDeltaError::Generation))
         ));
         assert_eq!(
             serving.request_progress(92).unwrap().state,
             RequestState::Failed
         );
-        assert_eq!(
-            serving.drain_events(),
-            vec![RequestEvent::Failed { request_id: 92 }]
-        );
-        assert!(!serving.tick().unwrap());
-    }
-
-    #[test]
-    fn submit_failure_fails_selected_rows_without_stranding_inflight() {
-        let entered = Arc::new(Barrier::new(5));
-        let release = Arc::new(Barrier::new(5));
-        let executors = std::array::from_fn(|_| {
-            Box::new(BlockingReservationRankExecutor {
-                entered: Arc::clone(&entered),
-                release: Arc::clone(&release),
-            }) as Box<dyn RankExecutor>
-        });
-        let workers = Tp4WorkerPool::spawn(1, executors).unwrap();
-        let (plan, schedule) = worker_reservation_step();
-        let held_slot = workers.try_submit(plan, schedule).unwrap();
-        entered.wait();
-        let mut serving = coordinator_with_workers(workers);
-        serving
-            .admit_prevalidated(ServingRequest {
-                spec: RequestSpec {
-                    id: 93,
-                    tenant: 1,
-                    prompt_tokens: 64,
-                    maximum_new_tokens: 1,
-                    mtp_depth: 0,
-                    sampling: SamplingCollective::Greedy,
-                },
-                cached_prompt_tokens: 0,
-            })
-            .unwrap();
-        let _ = serving.drain_events();
-
-        assert!(matches!(
-            serving.tick_observed(),
-            Err(ServingError::Worker(WorkerError::Saturated))
-        ));
-        assert_eq!(
-            serving.request_progress(93).unwrap().state,
-            RequestState::Failed
-        );
-        assert_eq!(
-            serving.drain_events(),
-            vec![RequestEvent::Failed { request_id: 93 }]
-        );
-        assert_eq!(serving.active_committed_tokens(93), None);
-        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
-        release.wait();
-        held_slot.receive().unwrap();
+        assert!(serving.drain_events().is_empty());
+        assert_eq!(serving.active_committed_tokens(92), Some(0));
         assert!(!serving.tick().unwrap());
     }
 
@@ -1752,6 +2042,16 @@ mod tests {
             StepOutput::new(&vec![sequence; usize::from(plan.active_sequences)])
                 .map_err(|_| RankExecutionError::Invariant)
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     impl RankExecutor for AcceptedDraftEosRankExecutor {
@@ -1772,6 +2072,16 @@ mod tests {
             .map_err(|_| RankExecutionError::Invariant)?;
             StepOutput::new(&vec![sequence; usize::from(plan.active_sequences)])
                 .map_err(|_| RankExecutionError::Invariant)
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
         }
     }
 

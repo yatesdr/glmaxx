@@ -9,11 +9,12 @@ use std::{
     time::Duration,
 };
 
+use glm_cache::{PageTableDelta, PageTableDeltaError, PageTableMirror, SequencePageTable};
 use sha2::{Digest, Sha256};
 
 use crate::{
     CollectiveSchedule, CommittedTokens, GLM_52_OUTPUT_VOCABULARY, OutputError, PlanError,
-    StepMode, StepOutput, StepPlan,
+    StepInput, StepInputError, StepMode, StepOutput, StepPlan,
 };
 
 const CPU_TOKEN_DOMAIN: &[u8] = b"glmaxx.cpu-worker-token.v1\0";
@@ -31,6 +32,16 @@ pub trait RankExecutor: Send + 'static {
         rank: u8,
         plan: &StepPlan,
         schedule: &CollectiveSchedule,
+    ) -> Result<StepOutput, RankExecutionError>;
+
+    /// Executes a fully bound row payload. The worker has already verified
+    /// and applied the page delta to its persistent rank mirror.
+    fn execute_bound(
+        &mut self,
+        rank: u8,
+        plan: &StepPlan,
+        schedule: &CollectiveSchedule,
+        input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError>;
 }
 
@@ -71,6 +82,29 @@ impl RankExecutor for CpuRankExecutor {
         }
         Ok(output)
     }
+
+    fn execute_bound(
+        &mut self,
+        rank: u8,
+        plan: &StepPlan,
+        schedule: &CollectiveSchedule,
+        input: &StepInput,
+    ) -> Result<StepOutput, RankExecutionError> {
+        let mut output = cpu_bound_output(plan, schedule, input)?;
+        if self.fault
+            == Some(MockWorkerFault::DivergentOutput {
+                rank,
+                step_id: plan.step_id,
+            })
+        {
+            let mut sequences = output.sequences().to_vec();
+            let first = sequences.first_mut().ok_or(RankExecutionError::Invariant)?;
+            let divergent = (first.token_ids()[0] + 1) % GLM_52_OUTPUT_VOCABULARY;
+            *first = CommittedTokens::target(divergent)?;
+            output = StepOutput::new(&sequences)?;
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,6 +113,9 @@ pub struct RankStepAck {
     pub step_id: u64,
     pub plan_hash: [u8; 32],
     pub schedule_hash: [u8; 32],
+    pub input_hash: [u8; 32],
+    pub page_table_global_digest: [u8; 32],
+    pub page_table_local_digest: [u8; 32],
     pub output_digest: [u8; 32],
 }
 
@@ -128,6 +165,7 @@ impl Drop for OutstandingPermit {
 struct DispatchCommand {
     plan: StepPlan,
     schedule: CollectiveSchedule,
+    binding: Option<StepBinding>,
     response: SyncSender<Result<StepOutcome, WorkerError>>,
     permit: OutstandingPermit,
 }
@@ -136,11 +174,53 @@ struct DispatchCommand {
 struct RankCommand {
     plan: StepPlan,
     schedule: CollectiveSchedule,
+    binding: Option<StepBinding>,
     response: SyncSender<Result<RankResult, WorkerError>>,
 }
 
+#[derive(Clone)]
+struct StepBinding {
+    input: Arc<StepInput>,
+    delta: Arc<PageTableDelta>,
+}
+
+enum PoolCommand {
+    Initialize {
+        table: Arc<SequencePageTable>,
+        generation: u64,
+        response: SyncSender<Result<(), WorkerError>>,
+    },
+    ApplyDelta {
+        delta: Arc<PageTableDelta>,
+        response: SyncSender<Result<[PageDeltaAck; 4], WorkerError>>,
+    },
+    Execute(DispatchCommand),
+}
+
+#[derive(Clone)]
+enum RankCommandEnvelope {
+    Initialize {
+        table: Arc<SequencePageTable>,
+        generation: u64,
+        response: SyncSender<Result<u8, WorkerError>>,
+    },
+    ApplyDelta {
+        delta: Arc<PageTableDelta>,
+        response: SyncSender<Result<PageDeltaAck, WorkerError>>,
+    },
+    Execute(RankCommand),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageDeltaAck {
+    pub rank: u8,
+    pub generation: u64,
+    pub global_digest: [u8; 32],
+    pub local_digest: [u8; 32],
+}
+
 pub struct Tp4WorkerPool {
-    sender: Option<SyncSender<DispatchCommand>>,
+    sender: Option<SyncSender<PoolCommand>>,
     dispatcher: Option<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
     maximum_outstanding: usize,
@@ -201,22 +281,44 @@ impl Tp4WorkerPool {
         })
     }
 
+    #[cfg(test)]
     pub fn try_submit(
         &self,
         plan: StepPlan,
         schedule: CollectiveSchedule,
     ) -> Result<StepHandle, WorkerError> {
         plan.verify(&schedule)?;
+        self.try_submit_inner(plan, schedule, None)
+    }
+
+    pub fn try_submit_bound(
+        &self,
+        plan: StepPlan,
+        schedule: CollectiveSchedule,
+        input: Arc<StepInput>,
+        delta: Arc<PageTableDelta>,
+    ) -> Result<StepHandle, WorkerError> {
+        input.verify(&plan, &schedule, &delta)?;
+        self.try_submit_inner(plan, schedule, Some(StepBinding { input, delta }))
+    }
+
+    fn try_submit_inner(
+        &self,
+        plan: StepPlan,
+        schedule: CollectiveSchedule,
+        binding: Option<StepBinding>,
+    ) -> Result<StepHandle, WorkerError> {
         self.reserve_slot()?;
         let (response, receiver) = mpsc::sync_channel(1);
-        let command = DispatchCommand {
+        let command = PoolCommand::Execute(DispatchCommand {
             plan,
             schedule,
+            binding,
             response,
             permit: OutstandingPermit {
                 outstanding: Arc::clone(&self.outstanding),
             },
-        };
+        });
         let Some(sender) = &self.sender else {
             return Err(WorkerError::Closed);
         };
@@ -227,6 +329,44 @@ impl Tp4WorkerPool {
             });
         }
         Ok(StepHandle { receiver })
+    }
+
+    pub fn initialize_page_table(
+        &self,
+        table: Arc<SequencePageTable>,
+        generation: u64,
+    ) -> Result<(), WorkerError> {
+        if self.outstanding() != 0 {
+            return Err(WorkerError::Saturated);
+        }
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or(WorkerError::Closed)?
+            .send(PoolCommand::Initialize {
+                table,
+                generation,
+                response,
+            })
+            .map_err(|_| WorkerError::Closed)?;
+        receiver.recv().map_err(|_| WorkerError::Closed)?
+    }
+
+    pub fn apply_page_delta(
+        &self,
+        delta: Arc<PageTableDelta>,
+    ) -> Result<[PageDeltaAck; 4], WorkerError> {
+        if self.outstanding() != 0 {
+            return Err(WorkerError::Saturated);
+        }
+        delta.verify()?;
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or(WorkerError::Closed)?
+            .send(PoolCommand::ApplyDelta { delta, response })
+            .map_err(|_| WorkerError::Closed)?;
+        receiver.recv().map_err(|_| WorkerError::Closed)?
     }
 
     #[must_use]
@@ -254,16 +394,17 @@ impl Drop for Tp4WorkerPool {
 }
 
 fn dispatch_loop(
-    receiver: Receiver<DispatchCommand>,
+    receiver: Receiver<PoolCommand>,
     executors: [Box<dyn RankExecutor>; 4],
     startup: SyncSender<Result<(), WorkerError>>,
     rank_spawn_fault: Option<u8>,
 ) {
-    let mut rank_senders: Vec<SyncSender<RankCommand>> = Vec::with_capacity(usize::from(TP_RANKS));
+    let mut rank_senders: Vec<SyncSender<RankCommandEnvelope>> =
+        Vec::with_capacity(usize::from(TP_RANKS));
     let mut rank_workers: Vec<JoinHandle<()>> = Vec::with_capacity(usize::from(TP_RANKS));
     let (ready_sender, ready_receiver) = mpsc::sync_channel(usize::from(TP_RANKS));
     for (rank, executor) in (0..TP_RANKS).zip(executors) {
-        let (sender, rank_receiver) = mpsc::sync_channel::<RankCommand>(1);
+        let (sender, rank_receiver) = mpsc::sync_channel::<RankCommandEnvelope>(1);
         let builder = thread::Builder::new().name(format!("glmaxx-rank-{rank}"));
         let ready = ready_sender.clone();
         let worker = if rank_spawn_fault == Some(rank) {
@@ -334,29 +475,63 @@ fn dispatch_loop(
     }
 
     let mut last_step_id = 0_u64;
+    let mut initialized = false;
     while let Ok(command) = receiver.recv() {
-        let DispatchCommand {
-            plan,
-            schedule,
-            response,
-            permit,
-        } = command;
-        let result = if plan.step_id <= last_step_id {
-            Err(WorkerError::StepOrder)
-        } else {
-            last_step_id = plan.step_id;
-            dispatch_one(&rank_senders, &plan, &schedule)
+        let (failed, terminal) = match command {
+            PoolCommand::Initialize {
+                table,
+                generation,
+                response,
+            } => {
+                let result = if initialized {
+                    Err(WorkerError::PageTableInitialized)
+                } else {
+                    initialize_rank_page_tables(&rank_senders, table, generation)
+                };
+                initialized |= result.is_ok();
+                let failed = result.is_err();
+                let _ = response.send(result);
+                (failed, failed)
+            }
+            PoolCommand::ApplyDelta { delta, response } => {
+                let result = if initialized {
+                    apply_rank_page_delta(&rank_senders, delta)
+                } else {
+                    Err(WorkerError::PageTableUninitialized)
+                };
+                let failed = result.is_err();
+                let _ = response.send(result);
+                (failed, failed)
+            }
+            PoolCommand::Execute(command) => {
+                let DispatchCommand {
+                    plan,
+                    schedule,
+                    binding,
+                    response,
+                    permit,
+                } = command;
+                let bound_without_initialization = binding.is_some() && !initialized;
+                let result = if plan.step_id <= last_step_id {
+                    Err(WorkerError::StepOrder)
+                } else if bound_without_initialization {
+                    Err(WorkerError::PageTableUninitialized)
+                } else {
+                    last_step_id = plan.step_id;
+                    dispatch_one(&rank_senders, &plan, &schedule, binding)
+                };
+                // Quota belongs to the queued/running TP4 operation, not its
+                // response handle.
+                drop(permit);
+                let failed = result.is_err();
+                let _ = response.send(result);
+                (failed, failed)
+            }
         };
-        // Quota belongs to the queued/running TP4 operation, not its response
-        // handle. Release only after every rank and consensus check finish,
-        // including when the caller abandoned the response.
-        drop(permit);
-        let failed = result.is_err();
-        let _ = response.send(result);
-        if failed {
-            // A rank/backend/consensus failure is process-fatal for this
-            // executor generation. Continuing could let ranks enter different
-            // collective ordinals after one rank already abandoned the step.
+        if terminal {
+            debug_assert!(failed);
+            // Any rank, mirror, backend, or consensus failure is fatal for
+            // this worker generation.
             break;
         }
     }
@@ -364,7 +539,7 @@ fn dispatch_loop(
 }
 
 fn shutdown_rank_workers(
-    rank_senders: Vec<SyncSender<RankCommand>>,
+    rank_senders: Vec<SyncSender<RankCommandEnvelope>>,
     rank_workers: Vec<JoinHandle<()>>,
 ) -> bool {
     drop(rank_senders);
@@ -375,19 +550,103 @@ fn shutdown_rank_workers(
     panicked
 }
 
+fn initialize_rank_page_tables(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    table: Arc<SequencePageTable>,
+    generation: u64,
+) -> Result<(), WorkerError> {
+    let (ack_sender, ack_receiver) = mpsc::sync_channel(usize::from(TP_RANKS));
+    for sender in rank_senders {
+        sender
+            .send(RankCommandEnvelope::Initialize {
+                table: Arc::clone(&table),
+                generation,
+                response: ack_sender.clone(),
+            })
+            .map_err(|_| WorkerError::Closed)?;
+    }
+    drop(ack_sender);
+    let mut rank_mask = 0_u8;
+    for _ in 0..TP_RANKS {
+        let rank = ack_receiver.recv().map_err(|_| WorkerError::Closed)??;
+        let bit = 1_u8
+            .checked_shl(u32::from(rank))
+            .ok_or(WorkerError::RankSet)?;
+        if rank >= TP_RANKS || rank_mask & bit != 0 {
+            return Err(WorkerError::RankSet);
+        }
+        rank_mask |= bit;
+    }
+    if rank_mask != (1_u8 << TP_RANKS) - 1 {
+        return Err(WorkerError::RankSet);
+    }
+    Ok(())
+}
+
+fn apply_rank_page_delta(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    delta: Arc<PageTableDelta>,
+) -> Result<[PageDeltaAck; 4], WorkerError> {
+    delta.verify()?;
+    let (ack_sender, ack_receiver) = mpsc::sync_channel(usize::from(TP_RANKS));
+    for sender in rank_senders {
+        sender
+            .send(RankCommandEnvelope::ApplyDelta {
+                delta: Arc::clone(&delta),
+                response: ack_sender.clone(),
+            })
+            .map_err(|_| WorkerError::Closed)?;
+    }
+    drop(ack_sender);
+    let mut acknowledgements = Vec::with_capacity(usize::from(TP_RANKS));
+    for _ in 0..TP_RANKS {
+        acknowledgements.push(ack_receiver.recv().map_err(|_| WorkerError::Closed)??);
+    }
+    acknowledgements.sort_by_key(|ack| ack.rank);
+    for (rank, ack) in acknowledgements.iter().enumerate() {
+        if usize::from(ack.rank) != rank
+            || ack.generation != delta.generation_after()
+            || ack.global_digest != delta.global_digest()
+            || ack.local_digest != delta.rank_local_digest(ack.rank)?
+        {
+            return Err(WorkerError::Consensus);
+        }
+    }
+    acknowledgements
+        .try_into()
+        .map_err(|_| WorkerError::RankSet)
+}
+
+fn apply_page_delta_on_rank(
+    rank: u8,
+    page_table: Option<&mut PageTableMirror>,
+    delta: &PageTableDelta,
+) -> Result<PageDeltaAck, WorkerError> {
+    let page_table = page_table.ok_or(WorkerError::PageTableUninitialized)?;
+    page_table.apply(delta)?;
+    Ok(PageDeltaAck {
+        rank,
+        generation: page_table.generation(),
+        global_digest: delta.global_digest(),
+        local_digest: delta.rank_local_digest(rank)?,
+    })
+}
+
 fn dispatch_one(
-    rank_senders: &[SyncSender<RankCommand>],
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
     plan: &StepPlan,
     schedule: &CollectiveSchedule,
+    binding: Option<StepBinding>,
 ) -> Result<StepOutcome, WorkerError> {
     let (ack_sender, ack_receiver) = mpsc::sync_channel(usize::from(TP_RANKS));
     for sender in rank_senders {
         sender
-            .send(RankCommand {
+            .send(RankCommandEnvelope::Execute(RankCommand {
                 plan: *plan,
                 schedule: schedule.clone(),
+                binding: binding.clone(),
                 response: ack_sender.clone(),
-            })
+            }))
             .map_err(|_| WorkerError::Closed)?;
     }
     drop(ack_sender);
@@ -403,11 +662,24 @@ fn dispatch_one(
     {
         return Err(WorkerError::RankSet);
     }
+    if let Some(binding) = &binding {
+        for result in &acknowledgements {
+            if result.ack.input_hash != binding.input.canonical_hash()
+                || result.ack.page_table_global_digest != binding.delta.global_digest()
+                || result.ack.page_table_local_digest
+                    != binding.delta.rank_local_digest(result.ack.rank)?
+            {
+                return Err(WorkerError::Consensus);
+            }
+        }
+    }
     let first = &acknowledgements[0];
     if acknowledgements.iter().any(|result| {
         result.ack.step_id != first.ack.step_id
             || result.ack.plan_hash != first.ack.plan_hash
             || result.ack.schedule_hash != first.ack.schedule_hash
+            || result.ack.input_hash != first.ack.input_hash
+            || result.ack.page_table_global_digest != first.ack.page_table_global_digest
             || result.ack.output_digest != first.ack.output_digest
             || result.output != first.output
     }) {
@@ -432,16 +704,65 @@ fn dispatch_one(
     })
 }
 
-fn rank_loop(rank: u8, receiver: Receiver<RankCommand>, mut executor: Box<dyn RankExecutor>) {
+fn rank_loop(
+    rank: u8,
+    receiver: Receiver<RankCommandEnvelope>,
+    mut executor: Box<dyn RankExecutor>,
+) {
     let mut last_step_id = 0_u64;
+    let mut page_table = None;
     while let Ok(command) = receiver.recv() {
-        let result = if command.plan.step_id <= last_step_id {
-            Err(WorkerError::StepOrder)
-        } else {
-            last_step_id = command.plan.step_id;
-            execute_rank(rank, &command.plan, &command.schedule, executor.as_mut())
-        };
-        let _ = command.response.send(result);
+        match command {
+            RankCommandEnvelope::Initialize {
+                table,
+                generation,
+                response,
+            } => {
+                let result = if page_table.is_some() {
+                    Err(WorkerError::PageTableInitialized)
+                } else {
+                    PageTableMirror::from_table(&table, generation)
+                        .map(|mirror| {
+                            page_table = Some(mirror);
+                            rank
+                        })
+                        .map_err(WorkerError::PageDelta)
+                };
+                let failed = result.is_err();
+                let _ = response.send(result);
+                if failed {
+                    break;
+                }
+            }
+            RankCommandEnvelope::ApplyDelta { delta, response } => {
+                let result = apply_page_delta_on_rank(rank, page_table.as_mut(), &delta);
+                let failed = result.is_err();
+                let _ = response.send(result);
+                if failed {
+                    break;
+                }
+            }
+            RankCommandEnvelope::Execute(command) => {
+                let result = if command.plan.step_id <= last_step_id {
+                    Err(WorkerError::StepOrder)
+                } else {
+                    last_step_id = command.plan.step_id;
+                    execute_rank(
+                        rank,
+                        &command.plan,
+                        &command.schedule,
+                        command.binding.as_ref(),
+                        page_table.as_mut(),
+                        executor.as_mut(),
+                    )
+                };
+                let failed = result.is_err();
+                let _ = command.response.send(result);
+                if failed {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -449,12 +770,30 @@ fn execute_rank(
     rank: u8,
     plan: &StepPlan,
     schedule: &CollectiveSchedule,
+    binding: Option<&StepBinding>,
+    page_table: Option<&mut PageTableMirror>,
     executor: &mut dyn RankExecutor,
 ) -> Result<RankResult, WorkerError> {
     plan.verify(schedule)?;
-    let output = executor
-        .execute(rank, plan, schedule)
-        .map_err(|error| WorkerError::RankExecution { rank, error })?;
+    let (input_hash, page_table_global_digest, page_table_local_digest) =
+        if let Some(binding) = binding {
+            binding.input.verify(plan, schedule, &binding.delta)?;
+            let page_table = page_table.ok_or(WorkerError::PageTableUninitialized)?;
+            page_table.apply(&binding.delta)?;
+            (
+                binding.input.canonical_hash(),
+                binding.delta.global_digest(),
+                binding.delta.rank_local_digest(rank)?,
+            )
+        } else {
+            ([0; 32], [0; 32], [0; 32])
+        };
+    let output = if let Some(binding) = binding {
+        executor.execute_bound(rank, plan, schedule, &binding.input)
+    } else {
+        executor.execute(rank, plan, schedule)
+    }
+    .map_err(|error| WorkerError::RankExecution { rank, error })?;
     output
         .validate(plan)
         .map_err(|error| WorkerError::RankOutput { rank, error })?;
@@ -465,6 +804,9 @@ fn execute_rank(
             step_id: plan.step_id,
             plan_hash: plan.plan_hash,
             schedule_hash: schedule.hash(),
+            input_hash,
+            page_table_global_digest,
+            page_table_local_digest,
             output_digest,
         },
         output,
@@ -500,6 +842,39 @@ fn cpu_output(
     StepOutput::new(&sequences).map_err(Into::into)
 }
 
+fn cpu_bound_output(
+    plan: &StepPlan,
+    schedule: &CollectiveSchedule,
+    input: &StepInput,
+) -> Result<StepOutput, RankExecutionError> {
+    if matches!(plan.mode, StepMode::Prefill | StepMode::CacheOnly) {
+        return Ok(StepOutput::empty());
+    }
+    let sequences = input
+        .rows()
+        .iter()
+        .enumerate()
+        .map(|(row, input_row)| {
+            let mut hasher = Sha256::new();
+            hasher.update(CPU_TOKEN_DOMAIN);
+            hasher.update(plan.plan_hash);
+            hasher.update(schedule.hash());
+            hasher.update(input.canonical_hash());
+            hasher.update(input_row.request_id.to_le_bytes());
+            hasher.update(
+                u16::try_from(row)
+                    .expect("validated StepInput row count fits u16")
+                    .to_le_bytes(),
+            );
+            let digest: [u8; 32] = hasher.finalize().into();
+            let token_id = u32::from_le_bytes(digest[..4].try_into().expect("bounded"))
+                % GLM_52_OUTPUT_VOCABULARY;
+            CommittedTokens::target(token_id)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    StepOutput::new(&sequences).map_err(Into::into)
+}
+
 #[derive(Debug)]
 pub enum WorkerError {
     Config,
@@ -511,6 +886,10 @@ pub enum WorkerError {
     Consensus,
     RankExecution { rank: u8, error: RankExecutionError },
     RankOutput { rank: u8, error: OutputError },
+    StepInput(StepInputError),
+    PageDelta(PageTableDeltaError),
+    PageTableUninitialized,
+    PageTableInitialized,
     Plan(PlanError),
     Thread(std::io::Error),
     RankStartup,
@@ -531,6 +910,18 @@ impl From<PlanError> for WorkerError {
     }
 }
 
+impl From<StepInputError> for WorkerError {
+    fn from(value: StepInputError) -> Self {
+        Self::StepInput(value)
+    }
+}
+
+impl From<PageTableDeltaError> for WorkerError {
+    fn from(value: PageTableDeltaError) -> Self {
+        Self::PageDelta(value)
+    }
+}
+
 impl From<OutputError> for RankExecutionError {
     fn from(_: OutputError) -> Self {
         Self::Invariant
@@ -548,20 +939,39 @@ mod tests {
         time::Instant,
     };
 
+    use glm_cache::{PageTableConfig, PageTableDelta, SequencePageTable};
+
     use crate::{
-        AttentionTransport, CollectiveKind, CollectiveOp, StepMode, StepPlanRequest, TP_RANK_MASK,
+        AttentionTransport, CollectiveKind, CollectiveOp, SequenceStepInput, StepMode,
+        StepPlanRequest, StepSampling, TP_RANK_MASK,
     };
 
     use super::*;
 
     fn step(step_id: u64) -> (StepPlan, CollectiveSchedule) {
-        let schedule = CollectiveSchedule::new(vec![CollectiveOp {
-            ordinal: 0,
-            kind: CollectiveKind::TpReduce,
-            route_id: 1,
-            payload_bytes: 16,
-            participant_mask: TP_RANK_MASK,
-        }])
+        step_at_generation(step_id, 1)
+    }
+
+    fn step_at_generation(
+        step_id: u64,
+        sequence_table_generation: u64,
+    ) -> (StepPlan, CollectiveSchedule) {
+        let schedule = CollectiveSchedule::new(vec![
+            CollectiveOp {
+                ordinal: 0,
+                kind: CollectiveKind::TpReduce,
+                route_id: 1,
+                payload_bytes: 16,
+                participant_mask: TP_RANK_MASK,
+            },
+            CollectiveOp {
+                ordinal: 1,
+                kind: CollectiveKind::LogitsArgmax,
+                route_id: 1,
+                payload_bytes: 8,
+                participant_mask: TP_RANK_MASK,
+            },
+        ])
         .unwrap();
         let plan = StepPlan::build(
             StepPlanRequest {
@@ -579,12 +989,23 @@ mod tests {
                 dcp_route_id: 1,
                 attention_transport: AttentionTransport::DecodeQueryLse,
                 sampling_route_id: 1,
-                sequence_table_generation: 1,
+                sequence_table_generation,
             },
             &schedule,
         )
         .unwrap();
         (plan, schedule)
+    }
+
+    fn active_table() -> SequencePageTable {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 8,
+            draft_pages_per_rank: 8,
+        })
+        .unwrap();
+        table.admit_with_prefix(7, false, &[]).unwrap();
+        table.append_committed(7, 64).unwrap();
+        table
     }
 
     struct StatefulRankExecutor {
@@ -615,6 +1036,16 @@ mod tests {
         ) -> Result<StepOutput, RankExecutionError> {
             Ok(StepOutput::empty())
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     impl RankExecutor for FirstStepBlockingRankExecutor {
@@ -631,6 +1062,16 @@ mod tests {
             }
             cpu_output(plan, schedule)
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     impl RankExecutor for DropCountingRankExecutor {
@@ -641,6 +1082,16 @@ mod tests {
             schedule: &CollectiveSchedule,
         ) -> Result<StepOutput, RankExecutionError> {
             cpu_output(plan, schedule)
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
         }
     }
 
@@ -671,6 +1122,16 @@ mod tests {
             }
             cpu_output(plan, schedule)
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     #[test]
@@ -683,6 +1144,111 @@ mod tests {
         assert_eq!(outcome.step_id, 1);
         assert_eq!(outcome.rank_acks.map(|ack| ack.rank), [0, 1, 2, 3]);
         assert_eq!(pool.outstanding(), 0);
+    }
+
+    #[test]
+    fn bound_step_applies_one_delta_to_every_persistent_rank_mirror() {
+        let pool = Tp4WorkerPool::spawn_cpu(1, None).unwrap();
+        let before = active_table();
+        pool.initialize_page_table(Arc::new(before.clone()), 4)
+            .unwrap();
+
+        let mut reserved = before.clone();
+        reserved.begin_tentative(7, 1).unwrap();
+        let reservation_delta =
+            Arc::new(PageTableDelta::between(&before, &reserved, 4, 5).unwrap());
+        let (plan, schedule) = step_at_generation(1, 5);
+        let input = Arc::new(
+            StepInput::new(
+                &plan,
+                &schedule,
+                &reservation_delta,
+                vec![SequenceStepInput {
+                    request_id: 7,
+                    context_tokens_before: 64,
+                    generated_tokens_before: 0,
+                    maximum_new_tokens: 1,
+                    prompt_payload_offset: 0,
+                    prompt_tokens_this_step: 0,
+                    configured_mtp_depth: 0,
+                    effective_mtp_depth: 0,
+                    sampling: StepSampling::greedy(99),
+                }],
+                vec![],
+            )
+            .unwrap(),
+        );
+        let input_hash = input.canonical_hash();
+        let outcome = pool
+            .try_submit_bound(
+                plan,
+                schedule,
+                Arc::clone(&input),
+                Arc::clone(&reservation_delta),
+            )
+            .unwrap()
+            .receive()
+            .unwrap();
+        for ack in outcome.rank_acks {
+            assert_eq!(ack.input_hash, input_hash);
+            assert_eq!(
+                ack.page_table_global_digest,
+                reservation_delta.global_digest()
+            );
+            assert_eq!(
+                ack.page_table_local_digest,
+                reservation_delta.rank_local_digest(ack.rank).unwrap()
+            );
+        }
+
+        let mut committed = reserved.clone();
+        committed.commit_tentative(7, 1).unwrap();
+        let commit_delta = Arc::new(PageTableDelta::between(&reserved, &committed, 5, 6).unwrap());
+        let acknowledgements = pool.apply_page_delta(Arc::clone(&commit_delta)).unwrap();
+        for ack in acknowledgements {
+            assert_eq!(ack.generation, 6);
+            assert_eq!(ack.global_digest, commit_delta.global_digest());
+            assert_eq!(
+                ack.local_digest,
+                commit_delta.rank_local_digest(ack.rank).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn bound_step_requires_one_exact_initial_mirror_generation() {
+        let pool = Tp4WorkerPool::spawn_cpu(1, None).unwrap();
+        let before = active_table();
+        let mut reserved = before.clone();
+        reserved.begin_tentative(7, 1).unwrap();
+        let delta = Arc::new(PageTableDelta::between(&before, &reserved, 4, 5).unwrap());
+        let (plan, schedule) = step_at_generation(1, 5);
+        let input = Arc::new(
+            StepInput::new(
+                &plan,
+                &schedule,
+                &delta,
+                vec![SequenceStepInput {
+                    request_id: 7,
+                    context_tokens_before: 64,
+                    generated_tokens_before: 0,
+                    maximum_new_tokens: 1,
+                    prompt_payload_offset: 0,
+                    prompt_tokens_this_step: 0,
+                    configured_mtp_depth: 0,
+                    effective_mtp_depth: 0,
+                    sampling: StepSampling::greedy(1),
+                }],
+                vec![],
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            pool.try_submit_bound(plan, schedule, input, delta)
+                .unwrap()
+                .receive(),
+            Err(WorkerError::PageTableUninitialized)
+        ));
     }
 
     #[test]
@@ -703,6 +1269,10 @@ mod tests {
 
         drop(handle);
         let outstanding_after_abandonment = pool.outstanding();
+        assert!(matches!(
+            pool.initialize_page_table(Arc::new(active_table()), 1),
+            Err(WorkerError::Saturated)
+        ));
         let (replacement_plan, replacement_schedule) = step(2);
         let replacement = pool.try_submit(replacement_plan, replacement_schedule);
         let replacement_was_saturated = matches!(&replacement, Err(WorkerError::Saturated));

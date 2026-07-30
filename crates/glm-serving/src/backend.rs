@@ -12,7 +12,7 @@ use std::{
 };
 
 use glm_cache::MODEL_POSITIONS;
-use glm_engine::{StartupCoordinator, StartupState};
+use glm_engine::{StartupCoordinator, StartupState, StepSampling};
 use glm_scheduler::{RequestSpec, SamplingCollective};
 use glm_tokenizer::{DecodeDelta, IncrementalDecoder, PinnedTokenizer, StreamFinish};
 
@@ -85,6 +85,7 @@ enum BackendCommand {
         tenant: u32,
         maximum_output_tokens: u32,
         mtp_depth: u8,
+        sampling: StepSampling,
         request_started_at: Instant,
         enqueued_at: Instant,
         tokens: Box<[u32]>,
@@ -177,10 +178,10 @@ struct RuntimeControl<'a> {
 /// Bounded production adapter between the HTTP API and the single-owner
 /// continuous-batching coordinator.
 ///
-/// The adapter is deliberately fail-closed to greedy sampling until the
-/// reviewed `StepInput` sampling/RNG ABI is implemented by rank execution.
-/// Accepting probabilistic parameters earlier would silently discard quality
-/// inputs at the coordinator boundary.
+/// The adapter is deliberately fail-closed to greedy sampling. Exact
+/// `StepInput` sampling/RNG state now reaches rank execution, but
+/// probabilistic admission remains disabled until `StepOutput` returns and
+/// the coordinator atomically commits the reviewed post-step RNG counter.
 pub struct CoordinatorApiBackend {
     health: ApiHealth,
     fatal: Arc<AtomicBool>,
@@ -381,6 +382,7 @@ impl ApiBackend for CoordinatorApiBackend {
             tenant,
             maximum_output_tokens: request.maximum_output_tokens,
             mtp_depth: request.mtp_depth,
+            sampling: StepSampling::greedy(request.sampling.seed.unwrap_or(request_id)),
             request_started_at,
             enqueued_at: Instant::now(),
             tokens,
@@ -829,6 +831,7 @@ fn process_command(
             tenant,
             maximum_output_tokens,
             mtp_depth,
+            sampling,
             request_started_at,
             enqueued_at,
             tokens,
@@ -874,7 +877,7 @@ fn process_command(
                 mtp_depth,
                 sampling: SamplingCollective::Greedy,
             };
-            match coordinator.begin_admit_tokens(spec, &tokens) {
+            match coordinator.begin_admit_tokens_with_sampling(spec, sampling, &tokens) {
                 Ok(AdmissionStatus::Pending) => {
                     pending_admissions.insert(request_id);
                 }
@@ -1300,7 +1303,7 @@ mod tests {
     };
     use glm_engine::{
         AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
-        GraphProfile, RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan,
+        GraphProfile, RankExecutionError, RankExecutor, StepInput, StepMode, StepOutput, StepPlan,
         Tp4WorkerPool,
     };
     use glm_scheduler::{RouteCatalog, SchedulerConfig, TenantConfig};
@@ -1568,6 +1571,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             Err(RankExecutionError::Backend(-1))
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     struct FirstStepBlockingExecutor {
@@ -1597,6 +1610,16 @@ mod tests {
                 _ => Err(RankExecutionError::Backend(-2)),
             }
         }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
+        }
     }
 
     struct DropCountingExecutor {
@@ -1611,6 +1634,16 @@ mod tests {
             _schedule: &CollectiveSchedule,
         ) -> Result<StepOutput, RankExecutionError> {
             Err(RankExecutionError::Backend(-1))
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            _input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.execute(rank, plan, schedule)
         }
     }
 
@@ -1711,6 +1744,7 @@ mod tests {
                 tenant: 1,
                 maximum_output_tokens: 1,
                 mtp_depth: 0,
+                sampling: StepSampling::greedy(50),
                 request_started_at: Instant::now(),
                 enqueued_at: Instant::now(),
                 tokens: tokens.clone().into_boxed_slice(),
@@ -1838,6 +1872,7 @@ mod tests {
                 tenant: 1,
                 maximum_output_tokens: 1,
                 mtp_depth: 0,
+                sampling: StepSampling::greedy(60),
                 request_started_at: Instant::now(),
                 enqueued_at: Instant::now(),
                 tokens: vec![17].into_boxed_slice(),
@@ -1888,7 +1923,7 @@ mod tests {
         assert!(coordinator.request_progress(60).is_some());
         assert!(matches!(completion.try_recv(), Err(TryRecvError::Empty)));
 
-        coordinator.sequence_table_generation = 1;
+        coordinator.sequence_table_generation = 2;
         process_command(
             BackendCommand::Cancel {
                 request_id: 60,
