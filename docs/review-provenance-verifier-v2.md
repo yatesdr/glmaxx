@@ -44,6 +44,33 @@ Withheld reviews remain inspectable even if their prose omits one or more
 hash literals. Their JSON reports whether the candidate was mentioned and
 how many pinned hashes were present, but no withheld result opens a gate.
 
+## Staged acceptance lint
+
+Fable writes operator-owned review artifacts under `docs/reviews/`, while
+older handoffs often require a root result path. Copying a malformed review
+to the required path just to discover a missing hash or prose-wrapped token
+creates avoidable coordination churn.
+
+The staging-only command checks the proposed bytes in place:
+
+```text
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  review-acceptance-lint HANDOFF STAGED_REVIEW
+```
+
+It verifies the pinned candidate blobs, requires the exact candidate and
+every input SHA-256 in the staged review, and requires the requested token
+exactly once on a bare line. It intentionally permits the staging path to
+differ from the handoff's required result path.
+
+A successful result uses schema
+`glmaxx.review-staged-acceptance-proof.v1` and verdict
+`STAGED_CONTENT_PASS_NOT_RECORDED`. It means only that an exact byte copy to
+the required path would satisfy the content checks. It does not modify the
+staged review, create the required result, increment any acceptance count,
+or open a gate. `review-proof-all` remains the only repository-wide
+acceptance inventory.
+
 ## Output
 
 `glmaxx.review-provenance-proof.v2` and
@@ -91,6 +118,9 @@ The unit proof covers:
 - strict commit, SHA-256, and token shapes;
 - withheld versus accepted token classification;
 - unexpected and duplicate tokens;
+- rejection of a prose-wrapped token by the staging-only acceptance lint;
+- staging-path content validation without relaxing the required-path rule
+  used by recorded results;
 - rejection when a handoff is supplied as its own review;
 - rejection of token-plus-hash text that does not separately attest the
   candidate commit; and

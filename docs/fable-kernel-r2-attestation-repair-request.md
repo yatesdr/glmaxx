@@ -178,11 +178,12 @@ restore-identity-v1-accepted
 
 For each repaired result, Sol will:
 
-1. compare the staged file byte-for-byte with its promoted root copy;
-2. run `review-proof` with the exact handoff and root result;
-3. run `review-proof-all`;
-4. require the exact token to appear once; and
-5. require the cn4 phase scripts to remain unauthorized until the operator
+1. run `review-acceptance-lint` against the handoff and staged result;
+2. compare the staged file byte-for-byte with its promoted root copy;
+3. run `review-proof` with the exact handoff and root result;
+4. run `review-proof-all`;
+5. require the exact token to appear once; and
+6. require the cn4 phase scripts to remain unauthorized until the operator
    grants a new GPU window.
 
 The expected result is four accepted configured reviews with no missing

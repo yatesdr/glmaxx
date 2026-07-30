@@ -119,16 +119,17 @@ kernel, and engine work stays here.
 
 ## Current status
 
-The current local gate passes 227 Rust tests plus formatting, Clippy with
+The current local gate passes 397 Rust tests plus formatting, Clippy with
 warnings denied, CUDA FFI type checks, and deterministic proof regeneration.
-It also verifies all 29 candidate-based Fable handoffs against their exact
-committed inputs and can classify an explicit review artifact by exact
-acceptance-token presence only after the review attests the exact candidate,
-every pinned input hash, and any required result path. Declared Fable results
-are ingested automatically as soon as their files exist. The external-tokenizer
-fixture remains pinned from the prior proof; the latest run skipped that
-external check because
-`GLMAXX_TOKENIZER_DIR` was not set. The CPU/reference workspace includes
+It verifies 111 candidate-based Fable handoffs against their exact committed
+inputs. Eight of 93 configured review results are present and
+machine-accepted; zero present results are withheld. Recorded acceptance
+requires the exact candidate, every pinned input hash, one bare acceptance
+token, and the handoff's exact required result path. A staging-only lint
+checks Fable bytes before promotion without incrementing acceptance counts.
+The external-tokenizer fixture remains pinned from the prior proof; the
+latest run skipped that external check because `GLMAXX_TOKENIZER_DIR` was
+not set. The CPU/reference workspace includes
 direct NVFP4 packing, EXL3/Trellis reconstruction, strict checkpoint ingest,
 bounded file-backed four-rank verification, typed production-manifest
 validation, source-pinned complete target and recurrent-MTP execution

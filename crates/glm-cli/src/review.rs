@@ -94,6 +94,76 @@ pub fn verify_review_handoff(
     handoff: &Path,
     review: Option<&Path>,
 ) -> Result<ReviewProof, ReviewProofError> {
+    verify_review_handoff_with_policy(
+        repository,
+        handoff,
+        review,
+        true,
+        "glmaxx.review-provenance-proof.v2",
+        "PASS",
+    )
+}
+
+/// Verifies that an operator-owned staged review contains everything needed
+/// for acceptance after an exact byte-for-byte copy to the handoff's required
+/// result path.
+///
+/// This deliberately does not relax `review-proof` or `review-proof-all`.
+/// The returned schema and verdict state that the staged artifact is not a
+/// recorded acceptance, and repository-wide acceptance counts remain driven
+/// only by the exact required result path.
+pub fn verify_staged_review_acceptance(
+    repository: &Path,
+    handoff: &Path,
+    review: &Path,
+) -> Result<ReviewProof, ReviewProofError> {
+    let proof = verify_review_handoff_with_policy(
+        repository,
+        handoff,
+        Some(review),
+        false,
+        "glmaxx.review-staged-acceptance-proof.v1",
+        "STAGED_CONTENT_PASS_NOT_RECORDED",
+    )?;
+    if proof.required_result_path.is_none() {
+        return Err(ReviewProofError::Format(
+            "staged acceptance lint requires a handoff result path".to_owned(),
+        ));
+    }
+    let requested_token = proof.requested_acceptance_token.as_deref().ok_or_else(|| {
+        ReviewProofError::Format(
+            "staged acceptance lint requires a requested acceptance token".to_owned(),
+        )
+    })?;
+    let artifact = proof.review.as_ref().ok_or_else(|| {
+        ReviewProofError::Format("staged acceptance lint requires a review artifact".to_owned())
+    })?;
+    require_staged_acceptance(artifact, requested_token)?;
+    Ok(proof)
+}
+
+fn require_staged_acceptance(
+    artifact: &ReviewArtifactProof,
+    requested_token: &str,
+) -> Result<(), ReviewProofError> {
+    if artifact.token_state == ReviewTokenState::Accepted {
+        Ok(())
+    } else {
+        Err(ReviewProofError::AcceptanceTokenMissing {
+            path: artifact.path.clone(),
+            token: requested_token.to_owned(),
+        })
+    }
+}
+
+fn verify_review_handoff_with_policy(
+    repository: &Path,
+    handoff: &Path,
+    review: Option<&Path>,
+    enforce_required_result_path: bool,
+    schema: &'static str,
+    verdict: &'static str,
+) -> Result<ReviewProof, ReviewProofError> {
     let root = repository_root(repository)?;
     let head = git_text(&root, &["rev-parse", "HEAD"])?;
     let handoff_path = repository_file(&root, handoff)?;
@@ -125,14 +195,14 @@ pub fn verify_review_handoff(
     }
 
     let review = review
-        .map(|path| verify_review_artifact(&root, path, &parsed))
+        .map(|path| verify_review_artifact(&root, path, &parsed, enforce_required_result_path))
         .transpose()?;
     if let Some(artifact) = review.as_ref() {
         ensure_distinct_review_path(&handoff_relative, &artifact.path)?;
     }
 
     Ok(ReviewProof {
-        schema: "glmaxx.review-provenance-proof.v2",
+        schema,
         repository_head: head,
         handoff_path: handoff_relative,
         handoff_sha256: sha256_hex(&handoff_bytes),
@@ -142,7 +212,7 @@ pub fn verify_review_handoff(
         handoff_bare_acceptance_lines: parsed.bare_acceptance_lines,
         inputs: input_proofs,
         review,
-        verdict: "PASS",
+        verdict,
     })
 }
 
@@ -240,12 +310,19 @@ fn verify_review_artifact(
     root: &Path,
     path: &Path,
     handoff: &ParsedHandoff,
+    enforce_required_result_path: bool,
 ) -> Result<ReviewArtifactProof, ReviewProofError> {
     let path = repository_file(root, path)?;
     let relative = relative_string(root, &path)?;
     let bytes = fs::read(&path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| ReviewProofError::Utf8(relative.clone()))?;
-    build_review_artifact_proof(relative, &bytes, text, handoff)
+    build_review_artifact_proof(
+        relative,
+        &bytes,
+        text,
+        handoff,
+        enforce_required_result_path,
+    )
 }
 
 fn build_review_artifact_proof(
@@ -253,6 +330,7 @@ fn build_review_artifact_proof(
     bytes: &[u8],
     text: &str,
     handoff: &ParsedHandoff,
+    enforce_required_result_path: bool,
 ) -> Result<ReviewArtifactProof, ReviewProofError> {
     let (token_state, exact_token_lines) = classify_review_token(
         &relative,
@@ -266,9 +344,11 @@ fn build_review_artifact_proof(
         .filter(|input| contains_exact_hex_word(text, &input.expected_sha256))
         .count();
     if token_state == ReviewTokenState::Accepted {
-        if let Some(expected) = handoff.required_result_path.as_deref()
-            && relative != expected
-        {
+        let mismatched_result_path = enforce_required_result_path
+            .then_some(handoff.required_result_path.as_deref())
+            .flatten()
+            .filter(|expected| relative.as_str() != *expected);
+        if let Some(expected) = mismatched_result_path {
             return Err(ReviewProofError::ReviewPathMismatch {
                 expected: expected.to_owned(),
                 actual: relative,
@@ -702,6 +782,10 @@ pub enum ReviewProofError {
         path: String,
         item: String,
     },
+    AcceptanceTokenMissing {
+        path: String,
+        token: String,
+    },
     ReviewIsHandoff(String),
 }
 
@@ -737,6 +821,11 @@ impl fmt::Display for ReviewProofError {
             Self::MissingReviewAttestation { path, item } => {
                 write!(formatter, "accepted review {path} does not attest {item}")
             }
+            Self::AcceptanceTokenMissing { path, token } => write!(
+                formatter,
+                "staged review {path} does not contain the requested acceptance token \
+                 exactly once on a bare line: {token}"
+            ),
             Self::ReviewIsHandoff(path) => {
                 write!(formatter, "review artifact is the handoff itself: {path}")
             }
@@ -926,10 +1015,55 @@ mod tests {
             verify_review_artifact_text_for_test("wrong-review.md", &accepted, &handoff),
             Err(ReviewProofError::ReviewPathMismatch { .. })
         ));
+        let staged = build_review_artifact_proof(
+            "docs/reviews/example-review.md".to_owned(),
+            accepted.as_bytes(),
+            &accepted,
+            &handoff,
+            false,
+        )
+        .unwrap();
+        assert_eq!(staged.token_state, ReviewTokenState::Accepted);
         assert!(matches!(
             ensure_distinct_review_path("handoff.md", "handoff.md"),
             Err(ReviewProofError::ReviewIsHandoff(_))
         ));
+    }
+
+    #[test]
+    fn staged_acceptance_requires_one_bare_requested_token() {
+        let handoff = parse_handoff(&modern_handoff()).unwrap();
+        let wrapped = format!(
+            "{}\n{}\nToken: `example-v1-accepted`\n",
+            handoff.candidate_commit, HASH
+        );
+        let withheld = build_review_artifact_proof(
+            "docs/reviews/example-review.md".to_owned(),
+            wrapped.as_bytes(),
+            &wrapped,
+            &handoff,
+            false,
+        )
+        .unwrap();
+        assert_eq!(withheld.token_state, ReviewTokenState::Withheld);
+        assert!(matches!(
+            require_staged_acceptance(&withheld, "example-v1-accepted"),
+            Err(ReviewProofError::AcceptanceTokenMissing { .. })
+        ));
+
+        let accepted = format!(
+            "{}\n{}\nexample-v1-accepted\n",
+            handoff.candidate_commit, HASH
+        );
+        let ready = build_review_artifact_proof(
+            "docs/reviews/example-review.md".to_owned(),
+            accepted.as_bytes(),
+            &accepted,
+            &handoff,
+            false,
+        )
+        .unwrap();
+        assert!(require_staged_acceptance(&ready, "example-v1-accepted").is_ok());
     }
 
     fn verify_review_artifact_text_for_test(
@@ -937,6 +1071,6 @@ mod tests {
         text: &str,
         handoff: &ParsedHandoff,
     ) -> Result<ReviewArtifactProof, ReviewProofError> {
-        build_review_artifact_proof(relative.to_owned(), text.as_bytes(), text, handoff)
+        build_review_artifact_proof(relative.to_owned(), text.as_bytes(), text, handoff, true)
     }
 }
