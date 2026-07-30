@@ -98,6 +98,12 @@ enum BackendCommand {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CancellationState {
+    Requested,
+    Dispatched,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeStartupFault {
     BeforeReady,
 }
@@ -162,6 +168,7 @@ struct RuntimeControl<'a> {
     fatal: &'a AtomicBool,
     shutdown: &'a AtomicBool,
     owners: &'a Mutex<BTreeMap<u64, u32>>,
+    cancellations: &'a Mutex<BTreeMap<u64, CancellationState>>,
     counters: &'a ServingMetrics,
     startup: SyncSender<()>,
     startup_fault: Option<RuntimeStartupFault>,
@@ -183,6 +190,7 @@ pub struct CoordinatorApiBackend {
     tokenizer: Arc<dyn RuntimeTokenizer>,
     completion_event_capacity: usize,
     owners: Arc<Mutex<BTreeMap<u64, u32>>>,
+    cancellations: Arc<Mutex<BTreeMap<u64, CancellationState>>>,
     counters: Arc<ServingMetrics>,
     runtime_thread: Option<JoinHandle<()>>,
 }
@@ -231,10 +239,12 @@ impl CoordinatorApiBackend {
         let fatal = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let owners = Arc::new(Mutex::new(BTreeMap::new()));
+        let cancellations = Arc::new(Mutex::new(BTreeMap::new()));
         let counters = Arc::new(ServingMetrics::new());
         let runtime_fatal = Arc::clone(&fatal);
         let runtime_shutdown = Arc::clone(&shutdown);
         let runtime_owners = Arc::clone(&owners);
+        let runtime_cancellations = Arc::clone(&cancellations);
         let runtime_counters = Arc::clone(&counters);
         let runtime_thread = thread::Builder::new()
             .name("glmaxx-serving-runtime".to_owned())
@@ -248,6 +258,7 @@ impl CoordinatorApiBackend {
                             fatal: &runtime_fatal,
                             shutdown: &runtime_shutdown,
                             owners: &runtime_owners,
+                            cancellations: &runtime_cancellations,
                             counters: &runtime_counters,
                             startup: startup_sender,
                             startup_fault,
@@ -259,6 +270,9 @@ impl CoordinatorApiBackend {
                 }
                 if let Ok(mut owners) = runtime_owners.lock() {
                     owners.clear();
+                }
+                if let Ok(mut cancellations) = runtime_cancellations.lock() {
+                    cancellations.clear();
                 }
             })
             .map_err(CoordinatorBackendError::Thread)?;
@@ -275,6 +289,7 @@ impl CoordinatorApiBackend {
             tokenizer,
             completion_event_capacity: config.completion_event_capacity,
             owners,
+            cancellations,
             counters,
             runtime_thread: Some(runtime_thread),
         })
@@ -436,20 +451,12 @@ impl ApiBackend for CoordinatorApiBackend {
                 "the serving runtime stopped before cancellation",
             ));
         }
-        match self
-            .command_sender
-            .try_send(BackendCommand::Cancel { request_id, tenant })
-        {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(self.reject(
-                "ENGINE_OVERLOADED",
-                "the bounded serving command queue is full",
-            )),
-            Err(TrySendError::Disconnected(_)) => {
-                self.fatal.store(true, Ordering::Release);
-                Err(self.reject("ENGINE_NOT_HEALTHY", "the serving runtime is disconnected"))
-            }
-        }
+        self.cancellations
+            .lock()
+            .map_err(|_| self.reject("ENGINE_STATE_FAILED", "cancellation registry is poisoned"))?
+            .entry(request_id)
+            .or_insert(CancellationState::Requested);
+        Ok(())
     }
 }
 
@@ -472,6 +479,7 @@ fn runtime_loop(
         fatal,
         shutdown,
         owners,
+        cancellations,
         counters,
         startup,
         startup_fault,
@@ -522,6 +530,30 @@ fn runtime_loop(
                     );
                     return;
                 }
+            }
+        }
+
+        match process_cancellation_requests(
+            &mut coordinator,
+            &mut active,
+            &mut pending_admissions,
+            owners,
+            cancellations,
+            counters,
+            config.maximum_commands_per_tick,
+        ) {
+            Ok(cancel_progressed) => progressed |= cancel_progressed,
+            Err(error) => {
+                fatal.store(true, Ordering::Release);
+                fail_all(
+                    &mut active,
+                    &commands,
+                    owners,
+                    counters,
+                    error.code,
+                    &error.message,
+                );
+                return;
             }
         }
 
@@ -673,6 +705,81 @@ fn runtime_loop(
         "BACKEND_SHUTDOWN",
         "the serving runtime is shutting down",
     );
+}
+
+fn process_cancellation_requests(
+    coordinator: &mut ServingCoordinator,
+    active: &mut BTreeMap<u64, ActiveRequest>,
+    pending_admissions: &mut BTreeSet<u64>,
+    owners: &Mutex<BTreeMap<u64, u32>>,
+    cancellations: &Mutex<BTreeMap<u64, CancellationState>>,
+    counters: &ServingMetrics,
+    maximum_cancellations: usize,
+) -> Result<bool, ApiBackendError> {
+    let mut progressed = false;
+    for _ in 0..maximum_cancellations {
+        let next = {
+            let owners = owners.lock().map_err(|_| ApiBackendError {
+                code: "ENGINE_STATE_FAILED",
+                message: "request registry is poisoned".to_owned(),
+            })?;
+            let mut cancellations = cancellations.lock().map_err(|_| ApiBackendError {
+                code: "ENGINE_STATE_FAILED",
+                message: "cancellation registry is poisoned".to_owned(),
+            })?;
+            let requested = cancellations.iter().find_map(|(&request_id, &state)| {
+                (state == CancellationState::Requested)
+                    .then(|| {
+                        active
+                            .get(&request_id)
+                            .map(|request| (request_id, request.tenant))
+                    })
+                    .flatten()
+            });
+            if let Some((request_id, tenant)) = requested {
+                if owners.get(&request_id) != Some(&tenant) {
+                    return Err(ApiBackendError {
+                        code: "ENGINE_STATE_FAILED",
+                        message: "cancellation ownership disagrees with active request".to_owned(),
+                    });
+                }
+                Some(Some((request_id, tenant)))
+            } else if let Some(request_id) = cancellations
+                .keys()
+                .find(|request_id| !owners.contains_key(request_id))
+                .copied()
+            {
+                cancellations.remove(&request_id);
+                Some(None)
+            } else {
+                None
+            }
+        };
+        let Some(next) = next else {
+            break;
+        };
+        let Some((request_id, tenant)) = next else {
+            progressed = true;
+            continue;
+        };
+        process_command(
+            BackendCommand::Cancel { request_id, tenant },
+            coordinator,
+            active,
+            pending_admissions,
+            owners,
+            counters,
+        )?;
+        let mut cancellations = cancellations.lock().map_err(|_| ApiBackendError {
+            code: "ENGINE_STATE_FAILED",
+            message: "cancellation registry is poisoned".to_owned(),
+        })?;
+        if let Some(state) = cancellations.get_mut(&request_id) {
+            *state = CancellationState::Dispatched;
+        }
+        progressed = true;
+    }
+    Ok(progressed)
 }
 
 fn poll_pending_admission(
@@ -1183,7 +1290,7 @@ fn remove_owner(owners: &Mutex<BTreeMap<u64, u32>>, request_id: u64) {
 mod tests {
     use std::{
         fs,
-        sync::atomic::AtomicUsize,
+        sync::{Barrier, atomic::AtomicUsize},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1192,8 +1299,9 @@ mod tests {
         PrefixNamespace, ResidencyConfig, TierPiece,
     };
     use glm_engine::{
-        AttentionTransport, CollectiveSchedule, GraphEntry, GraphKey, GraphProfile,
-        RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan, Tp4WorkerPool,
+        AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
+        GraphProfile, RankExecutionError, RankExecutor, StepMode, StepOutput, StepPlan,
+        Tp4WorkerPool,
     };
     use glm_scheduler::{RouteCatalog, SchedulerConfig, TenantConfig};
 
@@ -1455,6 +1563,35 @@ mod tests {
             self.entered.store(true, Ordering::Release);
             std::thread::sleep(Duration::from_millis(100));
             Err(RankExecutionError::Backend(-1))
+        }
+    }
+
+    struct FirstStepBlockingExecutor {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        blocked: bool,
+    }
+
+    impl RankExecutor for FirstStepBlockingExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if !self.blocked {
+                self.blocked = true;
+                self.entered.wait();
+                self.release.wait();
+            }
+            match plan.mode {
+                StepMode::Prefill => Ok(StepOutput::empty()),
+                StepMode::Decode => StepOutput::new(&[
+                    CommittedTokens::target(1).map_err(|_| RankExecutionError::Backend(-2))?
+                ])
+                .map_err(|_| RankExecutionError::Backend(-2)),
+                _ => Err(RankExecutionError::Backend(-2)),
+            }
         }
     }
 
@@ -1888,6 +2025,79 @@ mod tests {
                 ..
             })
         ));
+        drop(backend);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_survives_a_saturated_submission_queue() {
+        let root = temporary_store();
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Barrier::new(5));
+        let executors = std::array::from_fn(|_| {
+            Box::new(FirstStepBlockingExecutor {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+                blocked: false,
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
+        let backend = backend_with(
+            coordinator_with_workers(&root, workers),
+            CoordinatorBackendConfig {
+                command_capacity: 1,
+                completion_event_capacity: 16,
+                maximum_commands_per_tick: 1,
+                idle_poll_interval: Duration::from_millis(1),
+            },
+        );
+        let first = backend.submit_chat(1, validated(1, None)).unwrap();
+        entered.wait();
+        let queued = backend.submit_chat(2, validated(100, None)).unwrap();
+
+        backend.cancel(2, queued.request_id).unwrap();
+        backend.cancel(2, queued.request_id).unwrap();
+        assert_eq!(
+            backend
+                .cancellations
+                .lock()
+                .unwrap()
+                .get(&queued.request_id),
+            Some(&CancellationState::Requested)
+        );
+        assert_eq!(backend.cancellations.lock().unwrap().len(), 1);
+        release.wait();
+
+        assert!(matches!(
+            terminal_event(&queued),
+            ApiCompletionEvent::Failed(ApiBackendError {
+                code: "REQUEST_CANCELLED",
+                ..
+            })
+        ));
+        assert!(matches!(
+            terminal_event(&first),
+            ApiCompletionEvent::Finished {
+                finish_reason,
+                usage: ApiUsage {
+                    completion_tokens: 1,
+                    ..
+                },
+            } if finish_reason == "length"
+        ));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !backend.cancellations.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "delivered cancellation was not pruned"
+            );
+            thread::yield_now();
+        }
+        assert!(
+            backend
+                .metrics()
+                .contains("glmaxx_backend_active_requests 0\n")
+        );
         drop(backend);
         fs::remove_dir_all(root).unwrap();
     }
