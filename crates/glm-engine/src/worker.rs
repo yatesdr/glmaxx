@@ -12,6 +12,8 @@ use std::{
 use glm_cache::{PageTableDelta, PageTableDeltaError, PageTableMirror, SequencePageTable};
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "cuda-ffi")]
+use crate::RankCheckpointLoadError;
 use crate::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule, CommittedTokens,
     GLM_52_OUTPUT_VOCABULARY, LoadPlanError, OutputError, PlanError, PreparedRankReceipt,
@@ -1841,8 +1843,19 @@ pub enum WorkerError {
     StepOrder,
     RankSet,
     Consensus,
-    RankExecution { rank: u8, error: RankExecutionError },
-    RankOutput { rank: u8, error: OutputError },
+    RankExecution {
+        rank: u8,
+        error: RankExecutionError,
+    },
+    #[cfg(feature = "cuda-ffi")]
+    RankCheckpointLoad {
+        rank: u8,
+        error: RankCheckpointLoadError,
+    },
+    RankOutput {
+        rank: u8,
+        error: OutputError,
+    },
     StepInput(StepInputError),
     PageDelta(PageTableDeltaError),
     PageTableUninitialized,

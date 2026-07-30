@@ -1,14 +1,16 @@
-//! CPU-testable execution contracts for the fixed GLM-5.2 TP4 engine.
+//! Execution contracts for the fixed GLM-5.2 TP4 engine.
 //!
-//! This crate deliberately contains no CUDA work. It defines the immutable
-//! plan, graph-admission, and memory-accounting contracts that the coordinator
-//! must prove before any of the four device workers may enter a step.
+//! The default build is CPU-testable and defines the immutable plan,
+//! graph-admission, and memory-accounting contracts. The optional `cuda-ffi`
+//! feature adds the narrow, thread-affine SM120 checkpoint owner.
 
 mod checkpoint_cuda;
 mod checkpoint_load;
 mod graph;
 mod input;
 mod memory;
+#[cfg(feature = "cuda-ffi")]
+mod native_worker;
 mod output;
 mod startup;
 mod step;
@@ -42,6 +44,8 @@ pub use memory::{
     ProfileBudgetTerms, ProfileClass, RankMemoryInput, RankMemoryPlan, SystemMemoryPlan,
     plan_system_memory,
 };
+#[cfg(feature = "cuda-ffi")]
+pub use native_worker::NativeCheckpointRankExecutor;
 pub use output::{
     CommittedTokens, GLM_52_OUTPUT_VOCABULARY, MAX_COMMITTED_TOKENS_PER_SEQUENCE, OutputError,
     StepOutput,
