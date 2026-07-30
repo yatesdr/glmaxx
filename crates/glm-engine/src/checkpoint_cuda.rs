@@ -15,20 +15,75 @@ const READBACK_MISMATCH: u32 = 0x4c4f_4144;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CudaArenaVerificationEvidence {
-    pub rank: u8,
-    pub plan_sha256: [u8; 32],
-    pub owner_allocation_generation: u64,
-    pub weight_bytes: u64,
-    pub metadata_bytes: u64,
-    pub readback_chunk_bytes: u32,
-    pub readback_chunks: u64,
-    pub expected_weight_sha256: [u8; 32],
-    pub observed_weight_sha256: [u8; 32],
-    pub expected_metadata_sha256: [u8; 32],
-    pub observed_metadata_sha256: [u8; 32],
+    rank: u8,
+    plan_sha256: [u8; 32],
+    owner_allocation_generation: u64,
+    weight_bytes: u64,
+    metadata_bytes: u64,
+    readback_chunk_bytes: u32,
+    readback_chunks: u64,
+    expected_weight_sha256: [u8; 32],
+    observed_weight_sha256: [u8; 32],
+    expected_metadata_sha256: [u8; 32],
+    observed_metadata_sha256: [u8; 32],
 }
 
 impl CudaArenaVerificationEvidence {
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        self.rank
+    }
+
+    #[must_use]
+    pub const fn plan_sha256(self) -> [u8; 32] {
+        self.plan_sha256
+    }
+
+    #[must_use]
+    pub const fn owner_allocation_generation(self) -> u64 {
+        self.owner_allocation_generation
+    }
+
+    #[must_use]
+    pub const fn weight_bytes(self) -> u64 {
+        self.weight_bytes
+    }
+
+    #[must_use]
+    pub const fn metadata_bytes(self) -> u64 {
+        self.metadata_bytes
+    }
+
+    #[must_use]
+    pub const fn readback_chunk_bytes(self) -> u32 {
+        self.readback_chunk_bytes
+    }
+
+    #[must_use]
+    pub const fn readback_chunks(self) -> u64 {
+        self.readback_chunks
+    }
+
+    #[must_use]
+    pub const fn expected_weight_sha256(self) -> [u8; 32] {
+        self.expected_weight_sha256
+    }
+
+    #[must_use]
+    pub const fn observed_weight_sha256(self) -> [u8; 32] {
+        self.observed_weight_sha256
+    }
+
+    #[must_use]
+    pub const fn expected_metadata_sha256(self) -> [u8; 32] {
+        self.expected_metadata_sha256
+    }
+
+    #[must_use]
+    pub const fn observed_metadata_sha256(self) -> [u8; 32] {
+        self.observed_metadata_sha256
+    }
+
     #[must_use]
     pub fn evidence_sha256(self) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -122,7 +177,13 @@ impl<B: RankLoadBackend> CudaArenaResources<B> {
 
 impl<B: RankLoadBackend> Drop for CudaArenaResources<B> {
     fn drop(&mut self) {
-        let _ = self.cleanup();
+        if self.cleanup().is_err() {
+            // An implicit teardown has no caller that can elevate the CUDA
+            // error to the process-wide fatal route. Continuing could either
+            // hide a native resource failure or free memory still referenced
+            // by DMA, so this path is deliberately unrecoverable.
+            std::process::abort();
+        }
     }
 }
 

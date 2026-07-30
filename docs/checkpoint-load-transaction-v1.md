@@ -1,9 +1,10 @@
 # Checkpoint load transaction v1
 
-Date: 2026-07-29
+Date: 2026-07-30
 
-Status: corrected r2 design candidate; implementation token withheld pending
-adversarial review
+Status: corrected r3 contract candidate; CUDA arena CPU proof implemented,
+native CUDA qualification and integrated checkpoint load pending adversarial
+review
 
 GPU claim: none
 
@@ -93,13 +94,22 @@ arena-layout SHA-256
 The plan SHA-256 is over a fixed-order binary encoding, not JSON text. The
 plan rejects zero identities, duplicate/missing ranks, arithmetic overflow,
 an arena interval overlap, a tensor absent from the fixed GLM-5.2 operation
-manifest, and any descriptor-to-arena interval mismatch.
+manifest, a rank-entry tensor count different from the common header count,
+and any descriptor-to-arena interval mismatch.
 
 Every tensor layout entry binds its tensor ID, role, codec, primary,
 auxiliary, and codec-metadata destination offsets and lengths. The complete
 layout is fixed before streaming begins. A rank cannot infer a different
 layout, codec route, alignment, or protection decision from local device
 pressure.
+
+Plane lengths and alignment are derived from the process-common compiled
+GLM-5.2 contract and immutable weight policy. In particular, EXL3 projection
+bytes come from the policy-fixed capacity plan. Every rank-file descriptor is
+validated against those lengths; rank files never define or resize the
+physical plan. A contiguous TP slice is legal only when the global extent is
+exactly divisible by four, and validation requires
+`rank_logical_extent * 4 == global_logical_extent`.
 
 The codec capability table is process-common and hash-bound. A profile
 containing EXL3 source payloads is rejected before allocation while the EXL3
@@ -271,6 +281,15 @@ projection. They remain mandatory in the rank manifest, descriptor,
 rank-entry hashes, and physical arena tables. Projection never substitutes
 for validation of the full rank-specific record.
 
+`source_shape` is derivable in v1 and is therefore not repeated in the
+semantic entry: it equals `global_logical_shape` for replicated and contiguous
+TP sources and is empty for the pinned EXL3 component source. Any future source
+kind for which that rule is false requires a catalog version change.
+
+All canonical encodings in this contract are serialized field by field.
+Implementations must not overlay a native `repr(C)` struct; several u64 fields
+in `TensorArenaEntry.v1` are intentionally unaligned in the byte record.
+
 ## Quarantined arena ownership
 
 Each persistent rank thread allocates its planned weight and metadata arenas
@@ -288,11 +307,19 @@ Allocated -> Staging -> Prepared -> Adopted
 There is no reverse transition and no public conversion from `Allocated`,
 `Staging`, or `Prepared` to the executor's `WeightArenaHandle`.
 `QuarantinedRankArena::drop` synchronizes any outstanding copies and frees
-the generation. Aborting one rank aborts all four.
+the generation. Its pinned ring slots, events, device allocations, and load
+stream are released only after every recorded slot event has completed or the
+owning load stream has synchronized, including on an early error, panic, or
+process-wide abort. If synchronization itself fails, the implementation must
+leak the pinned ring and every possibly referenced native resource and
+terminate the process; it must never free memory that DMA may still reference.
+Aborting one rank aborts all four.
 
-Every destination interval is initialized exactly once from its matching
-descriptor plane. File padding is verified by the reader but is not copied
-into HBM. Codec metadata is copied into the immutable metadata arena.
+Both complete device arenas are asynchronously zero-filled before staging.
+Every declared destination interval is then overwritten exactly once from its
+matching descriptor plane, so alignment gaps and unused tails have canonical
+zero contents. File padding is verified by the reader but is not copied into
+HBM. Codec metadata is copied into the immutable metadata arena.
 
 ## Streaming and asynchronous-copy lifetime
 
@@ -315,11 +342,39 @@ reused before their events complete. Reader and sink buffers, CUDA events,
 and load streams are fixed before staging; the per-chunk path allocates
 nothing.
 
-The reader hashes the bytes it read. `Prepared` additionally requires all
-copy events to complete and every asynchronous CUDA error to be observed.
-Whether a device-side digest or another end-to-end HBM-content check is also
-required is an explicit adversarial-review question; copy submission alone
-is not described as cryptographic device-memory proof.
+The reader hashes the bytes it read. After all copy events complete and the
+load stream synchronizes, the first `FULL_SHA256` load reads both entire
+device arenas back through one fixed 8 MiB pinned slot. Each D2H chunk records
+and synchronizes its event before ordinary host code reads the slot. The
+loader hashes the full observed arenas, including zero gaps and tails, and
+compares them with host-computed full-arena hashes from the planned zero-fill
+and exact upload stream. A mismatch or any D2H/event error poisons the
+generation and prevents adoption.
+
+The bounded read-back subrecord is `CudaArenaVerificationEvidence.v1`.
+Integers are little-endian and reserved bytes are zero:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 1 | rank |
+| 1 | 7 | reserved |
+| 8 | 32 | plan SHA-256 |
+| 40 | 8 | owner allocation generation |
+| 48 | 8 | device weight-arena bytes |
+| 56 | 8 | device metadata-arena bytes |
+| 64 | 4 | read-back chunk bytes, exactly `8,388,608` |
+| 68 | 4 | reserved |
+| 72 | 8 | total D2H chunk count across both arenas |
+| 80 | 32 | host-expected weight-arena SHA-256 |
+| 112 | 32 | observed weight-arena SHA-256 |
+| 144 | 32 | host-expected metadata-arena SHA-256 |
+| 176 | 32 | observed metadata-arena SHA-256 |
+
+Its digest is
+`SHA256("glmaxx.cuda-arena-readback.v1\0" || 208-byte subrecord)`.
+The expected and observed hashes must be equal before the subrecord may enter
+preparation evidence. A separately reviewed device-digest kernel may replace
+the D2H pass later, but copy completion alone is never sufficient evidence.
 
 ## Full verification and preparation
 
@@ -339,10 +394,11 @@ a prior successful run cannot substitute for the first full proof.
 
 After a rank's payload returns success, its sink drains every event, validates
 exact primary/auxiliary/metadata byte totals, seals the allocations against
-further writes, and produces a `PreparedRankReceipt.v1`. The receipt binds the
-rank-set plan hash, rank, device identity, file UUID, payload hash, arena
-layout hash, allocation sizes, verification mode, verified bytes, uploaded
-bytes, and a monotonically increasing owner-thread generation.
+further writes, completes the mandatory arena read-back, and produces a
+`PreparedRankReceipt.v1`. The receipt binds the rank-set plan hash, rank,
+device identity, file UUID, payload hash, arena layout hash, allocation sizes,
+verification mode, verified bytes, uploaded bytes, and a monotonically
+increasing owner-thread generation.
 
 The receipt is exactly 256 bytes:
 
@@ -369,6 +425,50 @@ The receipt is exactly 256 bytes:
 
 `prepared_rank_sha256` hashes the domain
 `"glmaxx.prepared-rank-receipt.v1\0"` followed by the record bytes.
+
+The receipt's `verification_evidence_sha256` is not an arbitrary digest. It
+hashes a fixed 256-byte `RankLoadVerificationEvidence.v1` record:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | magic `G5LVE1\0\0` |
+| 8 | 2 | version `1` |
+| 10 | 2 | record bytes `256` |
+| 12 | 1 | rank |
+| 13 | 1 | verification mode |
+| 14 | 2 | reserved |
+| 16 | 32 | plan SHA-256 |
+| 48 | 32 | CUDA-device identity SHA-256 |
+| 80 | 8 | owner allocation generation |
+| 88 | 8 | verified file-payload bytes |
+| 96 | 4 | tensor count |
+| 100 | 4 | reserved |
+| 104 | 8 | uploaded metadata bytes |
+| 112 | 8 | uploaded primary bytes |
+| 120 | 8 | uploaded auxiliary bytes |
+| 128 | 8 | total uploaded bytes |
+| 136 | 8 | maximum reader scratch bytes |
+| 144 | 8 | pinned-ring bytes |
+| 152 | 8 | storage-read nanoseconds |
+| 160 | 8 | ordinary-host-to-pinned copy nanoseconds |
+| 168 | 8 | H2D submission nanoseconds |
+| 176 | 8 | H2D drain/synchronization nanoseconds |
+| 184 | 8 | full-arena read-back nanoseconds |
+| 192 | 32 | `CudaArenaVerificationEvidence.v1` digest |
+| 224 | 32 | canonical software/runtime provenance SHA-256 |
+
+Timing values come from the same monotonic clock and may be zero at clock
+resolution; byte counts and scratch terms must validate exactly against the
+plan and upload summary. The software/runtime provenance digest binds the
+pinned Rust toolchain, CUDA toolkit/runtime, driver, native library hash, and
+kernel ABI in canonical evidence JSON. The receipt field is:
+
+```text
+verification_evidence_sha256 = SHA256(
+    "glmaxx.rank-load-verification-evidence.v1\0"
+    || 256-byte RankLoadVerificationEvidence.v1
+)
+```
 
 Any late reader, hash, sink, CUDA, byte-count, seal, or receipt failure drops
 every quarantined arena. A prepared rank remains non-executable while another
