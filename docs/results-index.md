@@ -126,6 +126,12 @@ correction makes due accepted-W0 service precede admission and allows at most
 one publication admission between service decisions. The focused regression
 requires exact `admit A -> read -> service A -> admit B -> service B`
 ordering with excess shared resources.
+The consolidated scheduler proof is pinned in
+`docs/direct-tier-scheduler-cpu-proof-v1-r3.md`. It supersedes r2 after a
+second self-adversarial pass found that oversized reads could make a byte
+bound unsatisfiable and strict R0 priority could starve R1 restores. R3
+requires every read to fit all relevant bounds and gives R0 bounded,
+projected-byte preference rather than indefinite priority.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant

@@ -2,7 +2,11 @@
 
 Date: 2026-07-30
 
-Status: corrective CPU scheduling-policy implementation review requested
+Status: superseded by the consolidated r3 correction; do not review and do
+not issue the r2 token
+
+Superseding proof:
+`docs/direct-tier-scheduler-cpu-proof-v1-r3.md`
 
 Review candidate commit:
 `e188fc7fcd31c7ca35a48750ff2933267dd40111`
