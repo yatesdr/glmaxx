@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`da46a30a5df430e35d4a9d23aa6a449923494660`
+`1eb8e1c2f6c98a2d20b8e4f168b8e88aadeb97ac`
 
-The complete local gate most recently ran against the TP4 step-quota
-implementation `e52ce5bc886a212e5e609037ea894957399f2bff`; its provenance
+The complete local gate most recently ran against the TP4 rank-startup
+implementation `bc5d7d2d56f85383bd8b4fd9b6c25ecc845b2519`; its provenance
 record was then committed at
-`da46a30a5df430e35d4a9d23aa6a449923494660`. The target
+`1eb8e1c2f6c98a2d20b8e4f168b8e88aadeb97ac`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -35,6 +35,9 @@ queues only sockets whose blocking-I/O bounds were installed.
 The retained TP4 worker quota now remains owned by queued/running physical
 steps through all four rank results and consensus after response timeout or
 abandonment.
+The retained pool constructor now waits for exact readiness receipts from
+all four rank threads and synchronously joins/destroys partial startup state
+instead of publishing a disconnected pool.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -42,11 +45,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at TP4 step-quota implementation `e52ce5b` passed:
+The latest local run at TP4 rank-startup implementation `bc5d7d2` passed:
 
-- `scripts/local-checks.sh`: 262 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 263 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 56 then-present candidate-based review-handoff hash proofs;
+  and all 57 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -407,6 +410,7 @@ verdicts:
 | restore quota owned through physical operation completion | `95683d8` | `docs/fable-restore-operation-quota-v1-handoff.md` |
 | retained HTTP parser bounds and streaming request ownership | `a7b1cc9` | `docs/fable-retained-http-request-ownership-v1-handoff.md` |
 | TP4 quota owned through four-rank operation completion | `da46a30` | `docs/fable-tp4-step-operation-quota-v1-handoff.md` |
+| synchronous exact four-rank startup and partial cleanup | `1eb8e1c` | `docs/fable-tp4-rank-startup-handshake-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
