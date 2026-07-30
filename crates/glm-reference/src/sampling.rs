@@ -119,7 +119,11 @@ pub fn distributed_greedy(shards: &[LogitShard]) -> Result<u32, SamplingError> {
             best = Some(local);
         }
     }
-    Ok(best.ok_or(SamplingError::Empty)?.token)
+    let best = best.ok_or(SamplingError::Empty)?;
+    if !best.logit.is_finite() {
+        return Err(SamplingError::Logit);
+    }
+    Ok(best.token)
 }
 
 /// Exact top-k then top-p sampling without a full-vocabulary logits gather.
@@ -480,6 +484,19 @@ mod tests {
         logits[7] = 9.0;
         logits[24] = 9.0;
         assert_eq!(distributed_greedy(&shards(&logits)).unwrap(), 7);
+    }
+
+    #[test]
+    fn greedy_rejects_an_all_masked_row_but_accepts_masked_ranks() {
+        let mut logits = vec![f32::NEG_INFINITY; 32];
+        logits[17] = -3.0;
+        assert_eq!(distributed_greedy(&shards(&logits)).unwrap(), 17);
+
+        logits[17] = f32::NEG_INFINITY;
+        assert_eq!(
+            distributed_greedy(&shards(&logits)),
+            Err(SamplingError::Logit)
+        );
     }
 
     #[test]
