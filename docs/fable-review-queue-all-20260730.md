@@ -108,6 +108,7 @@ result path; follow the output instructions in that handoff.
 | 86 | `docs/fable-native-checkpoint-startup-composition-v1-handoff.md` | `b55c8a9169c72a311c59d30e5389618eef3f0d7b` | `docs/reviews/fable-native-checkpoint-startup-composition-v1.md` | `native-checkpoint-startup-composition-v1-accepted` |
 | 87 | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` | `1770563713722685db26b0d3378f32e4ecf92519` | `docs/reviews/fable-native-checkpoint-load-smoke-v1.md` | `native-checkpoint-load-smoke-v1-accepted` |
 | 88 | `docs/fable-resident-tensor-device-binding-v1-handoff.md` | `a49210fe384012066d80087f61668d5d8a8e2a78` | `docs/reviews/fable-resident-tensor-device-binding-v1.md` | `resident-tensor-device-binding-v1-accepted` |
+| 89 | `docs/fable-target-program-projection-discriminator-v1-handoff.md` | `39fbee5bf220467104535d86c00b49effe96c3a8` | `docs/reviews/fable-target-program-projection-discriminator-v1.md` | `target-program-projection-discriminator-v1-accepted` |
 
 ## Verification command
 
@@ -118,5 +119,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 88 current handoffs and two
+The expected queue count for this document is 89 current handoffs and two
 explicitly skipped historical umbrella handoffs.
