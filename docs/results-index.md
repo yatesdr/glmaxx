@@ -3,12 +3,12 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`eceee043cedab38b30f4f64cd5871eede0a254e5`
+`95683d8d5ea1c31f1f9299ac5956dea99ef3ca63`
 
-The complete local gate most recently ran against the rank-residency content
-identity implementation `e04a474937be8f4ed660618eb852549eeed6e7b6`; its provenance
+The complete local gate most recently ran against the restore-operation quota
+implementation `7cf1ef4cb75af774a183f98657b23862c5fea97c`; its provenance
 record was then committed at
-`eceee043cedab38b30f4f64cd5871eede0a254e5`. The target
+`95683d8d5ea1c31f1f9299ac5956dea99ef3ca63`. The target
 CUDA/kernel and strict production-manifest baseline remains `4bf7bb5`; the
 later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -26,7 +26,8 @@ upgrade matrix in the prefix index, file writer, and journal replay.
 The latest corrections also reject overlapping or out-of-bounds live
 catalog extents during startup, resume allocation after physical EOF, and
 enforce the same retain/upgrade/collision matrix directly at every
-rank-residency registration boundary.
+rank-residency registration boundary. Restore quota now remains owned by
+queued/running physical work after response timeout or abandonment.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -34,11 +35,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at rank-residency implementation `e04a474` passed:
+The latest local run at restore-quota implementation `7cf1ef4` passed:
 
-- `scripts/local-checks.sh`: 258 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 259 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 53 then-present candidate-based review-handoff hash proofs;
+  and all 54 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -396,6 +397,7 @@ verdicts:
 | validated torn-tail repair before resumed append | `8fb3adf` | `docs/fable-torn-journal-resume-v1-handoff.md` |
 | live catalog bounds/overlap validation and physical-EOF append | `de2d43a` | `docs/fable-durable-catalog-extent-integrity-v1-handoff.md` |
 | direct rank-residency dedup/MTP/content identity | `eceee04` | `docs/fable-rank-residency-content-identity-v1-handoff.md` |
+| restore quota owned through physical operation completion | `95683d8` | `docs/fable-restore-operation-quota-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
