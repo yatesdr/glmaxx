@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 
-Status: CPU implementation candidate; adversarial review required before
-worker/serving promotion
+Status: CPU worker/serving integration candidate; adversarial review required
+before device promotion
 
 GPU evidence: none
 
@@ -225,18 +225,36 @@ After adversarial review, the CPU gate must prove:
 `glm-engine::StepInput` implements the canonical row/prompt/sampling hash,
 checked 1,048,576-token arithmetic, configured-versus-effective MTP
 distinction, schedule-to-sampling validation, and exact
-`PageTableDelta.v1` binding. The CPU regressions cover deterministic
-multi-row prompt hashing, an MTP6 request clamped to an MTP0 tail step,
-MTP5 verification, all three sampling forms, invalid floats/filters,
-schedule mismatch, context/output bounds, hash tampering, and a different
-delta digest.
+`PageTableDelta.v1` binding. `ServingCoordinator` now retains the exact
+sampling tuple, prompt tokens, and context progress and constructs this
+object for every selected batch.
 
-It is not yet dispatched by `Tp4WorkerPool` or constructed by
-`ServingCoordinator`. `CACHE_ONLY` remains outside this object because the
-reviewed `StepPlan` contract requires generation zero for that mode while a
-real page delta necessarily advances a nonzero generation. Rank-mirror
-initial synchronization, admission/removal deltas, post-output commit
-deltas, device upload receipts, RNG-counter output/commit, and fixed-capacity
-hot-path storage remain required before promotion.
+`Tp4WorkerPool` initializes one persistent `PageTableMirror` on each rank
+thread. Admission and terminal removal advance all four mirrors before host
+publication. A compute command shares one `Arc<StepInput>` and
+`Arc<PageTableDelta>` with every rank; the rank independently verifies the
+plan, schedule, input, and delta, atomically applies the reservation, and
+acknowledges input hash, global delta digest, and its expected local digest.
+Decode and verify apply a second acknowledged commit/rollback/removal delta
+before scheduler and host publication. A post-execution host preflight error
+advances an explicit rollback delta; a worker/consensus failure closes the
+worker generation and cannot be disguised as a rank cleanup receipt.
+
+The production backend materializes and retains exact greedy seeds. It
+remains fail-closed on probabilistic requests because `StepOutput` does not
+yet return the reviewed final RNG counter.
+
+The CPU regressions cover deterministic multi-row prompt hashing, an MTP6
+request clamped to an MTP0 tail step, MTP5 verification, all three sampling
+forms, invalid floats/filters, schedule mismatch, context/output bounds,
+hash/delta tampering, persistent four-rank mirror receipts, reservation plus
+commit generations, uninitialized/stale rejection, rollback after late
+publication failure, and exact serving-to-rank sampling/context delivery.
+
+`CACHE_ONLY` remains outside this object because the reviewed `StepPlan`
+contract requires generation zero for that mode while a real page delta
+necessarily advances a nonzero generation. Device upload receipts,
+physical-ID reuse quarantine, RNG-counter output/commit, and fixed-capacity
+hot-path storage remain required before device promotion.
 
 No CUDA launch or serving claim follows from this CPU implementation.

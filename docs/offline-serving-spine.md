@@ -133,23 +133,30 @@ rank-local slot identities; the future CUDA rank executor must map them to
 preallocated target, indexer, draft, and draft-indexer arenas without changing
 these ownership or transaction rules.
 
-The current serving transaction remains a clone-on-step CPU oracle.
-Fixed-capacity undo, coordinator-to-rank delta delivery, device
-acknowledgments, physical-ID quarantine, and cache-only removal updates remain
-required before a CUDA executor consumes these IDs.
+The authoritative host table still uses clone-on-step rollback. Canonical
+delta delivery and CPU rank acknowledgments are now integrated, but
+fixed-capacity undo, device upload acknowledgments, physical-ID quarantine,
+and cache-only cleanup remain required before a CUDA executor consumes these
+IDs.
 
 The underlying committed-page append at `271d1f4` is now page-granular, and
 all 64 tail occupancies at tentative depths one through seven are exhausted.
 The same milestone adds a standalone canonical `PageTableDelta` with complete
 changed suffixes, global and rank-local digests, owner/arena validation, and
-an atomic independent mirror. `StepInput.v1` at `d1f9825` now binds that
+an atomic independent mirror. `StepInput.v1` at `d1f9825` binds that
 delta's successor generation and global digest to exact request rows, prompt
 IDs, configured/effective MTP posture, sampling parameters, seeds, and RNG
-counters. It also validates the schedule's logits collective and rejects
-reservations beyond remaining output capacity. The coordinator has not yet
-constructed this object or delivered deltas to rank workers, so fixed-capacity
-undo, rank acknowledgments, post-output commit deltas, quarantine, RNG output
-commit, and cache-only cleanup remain open.
+counters. Integration `e1d51ce` now constructs the object for every serving
+step and maintains one persistent bounded CPU mirror on each rank thread.
+Admission/removal deltas are acknowledged before host publication; compute
+acknowledgments bind the input hash plus global and expected rank-local delta
+digests; decode/verify apply a second commit/rollback/removal delta; and late
+publication failures issue an explicit successor rollback before retryable
+cleanup. The public non-test worker API has no plan-only submit route.
+
+This is still a host-metadata proof. Fixed-capacity undo storage, CUDA upload
+receipts and stream dependencies, physical-ID quarantine, probabilistic RNG
+output commit, and the cache-only contract conflict remain open.
 
 ## Reproducible proof
 

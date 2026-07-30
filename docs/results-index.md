@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`d1f98257ebf83d03c5e5e56ab2d2c1ce5404ac35`
+`e1d51ce57da7db163b82697a568ab2751602d832`
 
 The complete local gate most recently ran against active-prefix record
 binding implementation
@@ -71,8 +71,10 @@ delta carries sorted changed suffixes/removals, global and rank-local digests,
 and reconstructs atomically in an arena-bounded independent CPU mirror.
 Immutable `StepInput.v1` now binds the delta successor/digest to exact
 row-ordered prompt IDs, configured/effective MTP posture, sampling float bits,
-seed, RNG counter, context, and generation limits. It is not yet constructed
-by serving or delivered to rank workers.
+seed, RNG counter, context, and generation limits. Serving now constructs and
+delivers it with one reservation delta to four persistent rank mirrors.
+Admission/removal and post-output commit/rollback deltas receive exact
+global/rank-local receipts before host publication.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -80,13 +82,17 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at immutable step-input implementation `d1f9825`
+The latest local run at integrated rank-mirror implementation `e1d51ce`
 passed:
 
-- `scripts/local-checks.sh`: 282 Rust tests, workspace formatting, Clippy with
-  warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 67 candidate-based review-handoff hash proofs with 0/48 configured
-  result artifacts;
+- `scripts/local-checks.sh` passes 284 Rust tests with zero failures,
+  workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
+  deterministic proof regeneration, and all 68 candidate-based review-handoff
+  hash proofs with 0/49 configured result artifacts;
+- new worker/serving regressions prove persistent four-rank mirror
+  initialization, exact reservation and commit receipts, uninitialized/stale
+  rejection, input-derived CPU output, exact serving-to-rank sampling/context
+  delivery, and generation alignment after late publication rollback;
 - new engine regressions cover exact prompt/delta hashing, configured MTP6
   tail fallback to effective MTP0, top-k route binding, output/context bounds,
   all three canonical sampling classes, and invalid float/filter rejection;

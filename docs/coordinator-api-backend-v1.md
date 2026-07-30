@@ -139,8 +139,10 @@ The workspace proof remains `scripts/local-checks.sh`.
 
 ## Not closed by this milestone
 
-- `StepInput`, page-table delta, and transactional KV reservation are pending
-  adversarial review and implementation.
+- `StepInput`, page-table reservation/commit deltas, persistent rank mirrors,
+  and four-rank host receipts are implemented as CPU candidates and await
+  adversarial review. Device upload receipts, fixed hot-path storage, and
+  physical-ID quarantine remain pending.
 - No padding-logit mask or distributed sampling kernel is connected.
 - The retained HTTP/1.1 worker transport is functional, not the final
   nonblocking throughput route.

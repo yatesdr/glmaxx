@@ -69,9 +69,10 @@ request/step metrics. Host histograms cover
 tokenization, queueing, prefix resolution, TTFT, ITL, graph selection,
 scheduler padding, MTP acceptance, and collective bytes. Device and cache-tier
 telemetry remain explicitly unqualified; see
-[serving observability v1](serving-observability-v1.md). The adapter fails
-closed on probabilistic requests until the pending `StepInput` sampling/RNG
-ABI is reviewed and implemented.
+[serving observability v1](serving-observability-v1.md). Exact greedy seed
+state now enters the immutable four-rank `StepInput`. The adapter remains
+fail-closed on probabilistic requests until rank output returns and the
+coordinator atomically commits the reviewed final RNG counter.
 
 Rank execution must still apply the padding mask before every distributed
 sampling route. No current CLI command starts this server, and no current

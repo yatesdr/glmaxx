@@ -2,9 +2,9 @@
 
 Date: 2026-07-29
 
-Status: CPU coordinator subset implemented at `f480ef1`; rank-visible delta,
-fixed-capacity hot path, and device integration remain pending review and
-implementation
+Status: CPU coordinator/rank-mirror integration implemented through
+`e1d51ce`; fixed-capacity hot path and device integration remain pending
+review and implementation
 
 GPU claim: none
 
@@ -24,9 +24,10 @@ The retained CPU implementation now makes the table mandatory, binds exact
 restored attachments at admission, reserves every selected row before worker
 submission, commits rank-consensus output counts, and removes terminal rows
 before releasing prefix pins. Its proof is
-`docs/serving-active-page-transaction-proof-v1.md`. It is still a
-clone-on-step metadata oracle and does not yet construct a rank-visible
-`PageTableDelta`.
+`docs/serving-active-page-transaction-proof-v1.md`. The authoritative table
+still uses clone-on-step rollback, but `e1d51ce` now constructs and
+acknowledges rank-visible `PageTableDelta` records for admission, reservation,
+commit/rollback, and removal.
 
 ## Admission transaction
 
@@ -88,7 +89,8 @@ DCP owners. It produces:
 The serving subset at `f480ef1` proves the prior committed position, exact
 logical reservation, bounded owner-local physical allocation, and all-row
 atomicity. The separate `271d1f4` CPU delta supplies explicit changed spans
-and canonical generation digests, but has not yet joined that serving path.
+and canonical generation digests. Integration `e1d51ce` joins it to every
+serving admission and step.
 
 ## Rank page-table delta
 
@@ -109,11 +111,13 @@ removed sequence IDs           0..64
 canonical global digest        SHA-256
 ```
 
-The retained CPU implementation at `271d1f4` now constructs this global
+The retained CPU implementation at `271d1f4` constructs this global
 shape with sorted updates/removals, complete changed suffixes, a global
 digest, rank-local digests, arena-bound validation, and an atomic independent
-mirror. It is not yet carried by the serving coordinator or rank workers, so
-no upload or acknowledgment claim follows.
+mirror. Integration `e1d51ce` initializes one persistent mirror on each rank
+thread, shares the same delta across all four, and checks generation, global
+digest, and each expected rank-local digest before publication. This is a CPU
+receipt only; no CUDA upload or stream-dependency claim follows.
 
 Each sequence update carries its request ID, committed position, MTP posture,
 and complete ordered `(page ordinal, owner rank, target local page ID,
@@ -127,12 +131,10 @@ entries plus the rank-invariant sequence metadata, but acknowledges the
 global digest after its stream dependency makes the upload visible. The graph
 launch depends on that acknowledgment.
 
-The reservation generation and global delta digest become part of canonical
-step execution input. This requires adding an explicit
-`page_table_delta_digest` field to the pending `StepInput.v1` candidate, or a
-reviewed equivalent binding; the current candidate cannot be promoted
-unchanged. A missing, excess, stale, or wrong-owner span is fatal before any
-collective.
+The reservation generation and global delta digest are part of canonical
+`StepInput.v1`. Every rank independently verifies that binding before
+applying the delta and entering the executor. A missing, excess, stale, or
+wrong-owner span is fatal before any collective.
 
 ## Commit and rollback
 
