@@ -824,8 +824,8 @@ fn gpu_checkpoint_load_smoke(
     let startup_and_load_elapsed_nanoseconds = load_started.elapsed().as_nanos();
 
     let plan_sha256 = loaded.plan().plan_sha256();
-    let plan_header = loaded.plan().header;
-    let plan_ranks = loaded.plan().ranks;
+    let plan_header = loaded.plan().header();
+    let plan_ranks = loaded.plan().ranks();
     let load_outcome = loaded.load_outcome().clone();
     let device_identity_sha256 = loaded.device_identity_sha256();
     let shutdown_started = Instant::now();

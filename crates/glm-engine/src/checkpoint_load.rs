@@ -123,9 +123,9 @@ impl TensorArenaEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RankSetLoadPlan {
-    pub header: RankSetLoadPlanHeader,
-    pub ranks: [RankLoadEntry; RANK_SET_SIZE],
-    pub tensors: [Arc<[TensorArenaEntry]>; RANK_SET_SIZE],
+    pub(crate) header: RankSetLoadPlanHeader,
+    pub(crate) ranks: [RankLoadEntry; RANK_SET_SIZE],
+    pub(crate) tensors: [Arc<[TensorArenaEntry]>; RANK_SET_SIZE],
     plan_sha256: [u8; 32],
 }
 
@@ -190,6 +190,21 @@ impl RankSetLoadPlan {
     #[must_use]
     pub fn rank(&self, rank: u8) -> Option<&RankLoadEntry> {
         self.ranks.get(usize::from(rank))
+    }
+
+    #[must_use]
+    pub const fn header(&self) -> RankSetLoadPlanHeader {
+        self.header
+    }
+
+    #[must_use]
+    pub const fn ranks(&self) -> [RankLoadEntry; RANK_SET_SIZE] {
+        self.ranks
+    }
+
+    #[must_use]
+    pub fn tensor_layout(&self, rank: u8) -> Option<&[TensorArenaEntry]> {
+        self.tensors.get(usize::from(rank)).map(AsRef::as_ref)
     }
 
     #[must_use]
