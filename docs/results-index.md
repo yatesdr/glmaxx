@@ -482,6 +482,7 @@ verdicts:
 | active-prefix record and capability binding | `92568f6` | `docs/fable-active-prefix-record-binding-v1-handoff.md` |
 | serving active-page admission, step, and cleanup transaction | `326158a` | `docs/fable-serving-active-page-transaction-v1-handoff.md` |
 | canonical page-table delta and page-granular mutation | `a1d4cb4` | `docs/fable-page-table-delta-v1-handoff.md` |
+| page-reuse quarantine and in-place tentative commit | `832bf97` | `docs/fable-page-reuse-quarantine-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
