@@ -3,10 +3,10 @@
 Date: 2026-07-30
 
 Current host implementation baseline:
-`a49210fe384012066d80087f61668d5d8a8e2a78`
+`a2cb01bfa4cd291579974a6e50e0e3c4adb70d4b`
 
-The complete local gate most recently ran at review-handoff commit
-`e3ce668232cebb1d9e278249f96a62b8823372c8`, whose latest behavioral
+The complete local gate most recently ran at
+`a2cb01bfa4cd291579974a6e50e0e3c4adb70d4b`, whose latest behavioral
 implementation is
 `a49210fe384012066d80087f61668d5d8a8e2a78`. The
 target CUDA/kernel and strict production-manifest baseline remains
@@ -203,19 +203,39 @@ required before the target program can be compiled. No CUDA execution or
 model-kernel claim is made. Independent review is requested by
 `docs/fable-resident-tensor-device-binding-v1-handoff.md`.
 
+The routed-projection discriminator design is pinned at `39fbee5`. It assigns
+distinct gate, up, down, and combined-gate/up identities, preserves split
+capacity-EXL3 storage without repacking, permits only the reviewed combined
+NVFP4 geometry, binds the choice into the target-program hash, and fails
+closed on split/combined mixtures or rank divergence. Independent review is
+requested by
+`docs/fable-target-program-projection-discriminator-v1-handoff.md`; no target
+program implementation follows before acceptance.
+
+The corrected rank-executor design is pinned at `a0f2bee`. Its r2 amendment
+moves collective-resource creation before graph capture, accounts and measures
+collective/graph internal HBM and bounded pinned-host memory, restores the
+strict post-startup escrow check, freezes an exact owner-thread-affine C ABI
+with status/exception/abort rules, and closes the tier-command, route-latch,
+deadline, backpressure, unwind, and pending-MTP ownership gaps from the first
+review. The C and C++ header layout checks pass locally. Independent re-review
+is requested by `docs/fable-sm120-rank-executor-v1-r2-handoff.md`; this is not
+a CUDA implementation or launch result.
+
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
 permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run at `e3ce668`
+The latest complete local run at `a2cb01b`
 passed:
 
 - `scripts/local-checks.sh` passes 341 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 88 candidate-based review-handoff
-  hash proofs with 0/69 configured result artifacts;
+  deterministic proof regeneration, the rank-executor ABI header as C and
+  C++17, and all 90 candidate-based review-handoff hash proofs with 0/71
+  configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
@@ -564,7 +584,8 @@ verdicts:
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | recurrent MTP0–6 execution design | `fd80e16` | `docs/fable-mtp-layer-execution-v1-handoff.md` |
-| Rust-owned SM120 rank executor design | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
+| Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
+| corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
 | bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
@@ -613,6 +634,7 @@ verdicts:
 | one-call native checkpoint startup composition | `b55c8a9` | `docs/fable-native-checkpoint-startup-composition-v1-handoff.md` |
 | fail-closed native TP4 checkpoint-load smoke | `1770563` | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` |
 | resident tensor ID to authenticated device spans | `a49210f` | `docs/fable-resident-tensor-device-binding-v1-handoff.md` |
+| routed projection discriminator for split EXL3/combined NVFP4 | `39fbee5` | `docs/fable-target-program-projection-discriminator-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
