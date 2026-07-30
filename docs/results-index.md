@@ -2,12 +2,12 @@
 
 Date: 2026-07-30
 
-Current CPU implementation baseline:
-`c3314686bb371d11c6a563d8397cf1903d24a454`
+Current host implementation baseline:
+`1770563713722685db26b0d3378f32e4ecf92519`
 
-The complete local gate most recently ran against rank-set load-coordinator
+The complete local gate most recently ran against native checkpoint-load smoke
 implementation
-`c3314686bb371d11c6a563d8397cf1903d24a454`. The
+`1770563713722685db26b0d3378f32e4ecf92519`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -157,20 +157,51 @@ exact candidate passes 318 tests and the complete local gate. Physical
 thread cleanup, CUDA, full rank files, and checkpoint execution remain
 absent.
 
+The TP4 checkpoint-load transaction successor is pinned in
+`docs/checkpoint-load-transaction-v1.md`. Candidate `e30017b` executes one
+exclusive prepare, acknowledge, adopt, and finalize transaction across four
+persistent rank workers, applies one common abort route on failure, and binds
+all receipts to the plan, attempt, rank, and owner generation. Independent
+review is requested by
+`docs/fable-tp4-checkpoint-load-protocol-v1-handoff.md`.
+
+The native rank adapter and one-call startup composition are pinned in
+`docs/native-checkpoint-rank-adapter-proof-v1.md` and
+`docs/native-checkpoint-startup-composition-v1.md`. Candidates `944d176` and
+`83b8eff` put CUDA context, stream, allocation, bounded pinned-ring upload,
+full device readback, and cleanup operations on the owning persistent rank
+threads and expose only worker-observed identity to consensus. Independent
+reviews are requested by
+`docs/fable-native-checkpoint-rank-adapter-v1-handoff.md` and
+`docs/fable-native-checkpoint-startup-composition-v1-handoff.md`.
+
+The fail-closed load-only SM120 command is pinned in
+`docs/native-checkpoint-load-smoke-proof-v1.md`. Candidate `1770563` binds a
+complete measured profile budget, a reconstructed typed system-memory plan,
+the operation manifest, compiled weight policy, linked native codec
+capability, physical rank arenas, live per-device HBM, running executable,
+and full rank payloads into one four-rank load. It adds normal all-rank
+teardown with four exact cleanup acknowledgements and emits `summary.json`
+only after all rank threads join. The exact host candidate passes 340 Rust
+tests and all 87 review-handoff provenance checks. No `nvcc`, CUDA context,
+cn4 access, checkpoint load, or model kernel was used; independent review is
+requested by
+`docs/fable-native-checkpoint-load-smoke-v1-handoff.md`.
+
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
 permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run against rank-set load-coordinator implementation
-`c331468`
+The latest complete local run against native checkpoint-load smoke
+implementation `1770563`
 passed:
 
-- `scripts/local-checks.sh` passes 318 Rust tests with zero failures,
+- `scripts/local-checks.sh` passes 340 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 80 candidate-based review-handoff
-  hash proofs with 0/61 configured result artifacts;
+  deterministic proof regeneration, and all 87 candidate-based review-handoff
+  hash proofs with 0/68 configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
@@ -563,6 +594,10 @@ verdicts:
 | page-reuse quarantine and in-place tentative commit | `832bf97` | `docs/fable-page-reuse-quarantine-v1-handoff.md` |
 | fixed-capacity page transaction design | `e1dd8d8` | `docs/fable-fixed-page-transaction-v1-handoff.md` |
 | sustained serving load and fault qualification design | `1dbab21` | `docs/fable-sustained-serving-load-fault-v1-handoff.md` |
+| atomic TP4 checkpoint load protocol | `d647535` | `docs/fable-tp4-checkpoint-load-protocol-v1-handoff.md` |
+| persistent native checkpoint rank adapter | `b62325a` | `docs/fable-native-checkpoint-rank-adapter-v1-handoff.md` |
+| one-call native checkpoint startup composition | `b55c8a9` | `docs/fable-native-checkpoint-startup-composition-v1-handoff.md` |
+| fail-closed native TP4 checkpoint-load smoke | `1770563` | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
