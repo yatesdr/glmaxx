@@ -309,6 +309,7 @@ name = "glm-engine"
 version = "0.1.0"
 dependencies = [
  "glm-cache",
+ "glm-cuda",
  "glm-format",
  "serde",
  "serde_json",

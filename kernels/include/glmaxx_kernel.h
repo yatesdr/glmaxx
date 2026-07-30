@@ -227,6 +227,8 @@ int32_t glmaxx_device_bind(int32_t device_index,
                            uint64_t* total_memory_bytes);
 int32_t glmaxx_device_alloc(uint64_t bytes, uint64_t* pointer);
 int32_t glmaxx_device_free(uint64_t pointer);
+int32_t glmaxx_pinned_alloc(uint64_t bytes, uint64_t* pointer);
+int32_t glmaxx_pinned_free(uint64_t pointer);
 int32_t glmaxx_stream_create(uint64_t* stream);
 int32_t glmaxx_stream_destroy(uint64_t stream);
 int32_t glmaxx_stream_query(uint64_t stream, int32_t* complete);
@@ -237,6 +239,8 @@ int32_t glmaxx_memcpy_d2d(uint64_t destination, uint64_t source,
                           uint64_t bytes, uint64_t stream);
 int32_t glmaxx_memcpy_d2h(void* destination, uint64_t source,
                           uint64_t bytes, uint64_t stream);
+int32_t glmaxx_memset_zero(uint64_t destination, uint64_t bytes,
+                           uint64_t stream);
 
 #if defined(__cplusplus)
 }

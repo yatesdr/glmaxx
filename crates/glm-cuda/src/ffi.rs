@@ -1,4 +1,7 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, c_char, c_void};
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::thread::ThreadId;
 use std::time::Instant;
 
@@ -8,7 +11,7 @@ use crate::abi::active_experts_for_grouped;
 use crate::{
     CudaDriver, EXL3_KERNEL_ABI, Exl3Descriptor, Exl3KernelProjection, Fc1Descriptor,
     Fc2Descriptor, HIDDEN, KernelError, KernelPath, LOCAL_INTERMEDIATE, LaunchGeometry,
-    exl3_trellis_bytes, exl3_workspace_bytes, fc2_grouped_sfa_capacity_bytes,
+    RankLoadBackend, exl3_trellis_bytes, exl3_workspace_bytes, fc2_grouped_sfa_capacity_bytes,
     fc2_grouped_workspace_bytes, fc2_workspace_bytes, grouped_sfa_capacity_bytes, grouped_sfa_plan,
     grouped_workspace_bytes, validate_descriptor, validate_exl3_descriptor, workspace_bytes,
 };
@@ -117,6 +120,8 @@ unsafe extern "C" {
     ) -> i32;
     fn glmaxx_device_alloc(bytes: u64, pointer: *mut u64) -> i32;
     fn glmaxx_device_free(pointer: u64) -> i32;
+    fn glmaxx_pinned_alloc(bytes: u64, pointer: *mut u64) -> i32;
+    fn glmaxx_pinned_free(pointer: u64) -> i32;
     fn glmaxx_stream_create(stream: *mut u64) -> i32;
     fn glmaxx_stream_destroy(stream: u64) -> i32;
     fn glmaxx_stream_query(stream: u64, complete: *mut i32) -> i32;
@@ -124,6 +129,7 @@ unsafe extern "C" {
     fn glmaxx_memcpy_h2d(destination: u64, source: *const c_void, bytes: u64, stream: u64) -> i32;
     fn glmaxx_memcpy_d2d(destination: u64, source: u64, bytes: u64, stream: u64) -> i32;
     fn glmaxx_memcpy_d2h(destination: *mut c_void, source: u64, bytes: u64, stream: u64) -> i32;
+    fn glmaxx_memset_zero(destination: u64, bytes: u64, stream: u64) -> i32;
 }
 
 pub struct NativeKernelDriver;
@@ -205,12 +211,277 @@ impl NativeRankContext {
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })
     }
 
+    pub fn checkpoint_load_backend(&self) -> Result<NativeRankLoadBackend, KernelError> {
+        self.require_owner()?;
+        Ok(NativeRankLoadBackend {
+            owner: self.owner,
+            device_allocations: BTreeMap::new(),
+            pinned_allocations: BTreeMap::new(),
+            streams: BTreeSet::new(),
+            events: BTreeSet::new(),
+            _thread_affine: PhantomData,
+        })
+    }
+
     fn require_owner(&self) -> Result<(), KernelError> {
         if std::thread::current().id() == self.owner {
             Ok(())
         } else {
             Err(KernelError::Topology)
         }
+    }
+}
+
+pub struct NativeRankLoadBackend {
+    owner: ThreadId,
+    device_allocations: BTreeMap<u64, u64>,
+    pinned_allocations: BTreeMap<u64, u64>,
+    streams: BTreeSet<u64>,
+    events: BTreeSet<u64>,
+    _thread_affine: PhantomData<Rc<()>>,
+}
+
+impl NativeRankLoadBackend {
+    fn require_owner(&self) -> Result<(), KernelError> {
+        if std::thread::current().id() == self.owner {
+            Ok(())
+        } else {
+            Err(KernelError::Topology)
+        }
+    }
+
+    fn contains_device_range(&self, pointer: u64, bytes: u64) -> bool {
+        self.device_allocations.iter().any(|(&base, &capacity)| {
+            pointer >= base
+                && pointer
+                    .checked_add(bytes)
+                    .zip(base.checked_add(capacity))
+                    .is_some_and(|(end, limit)| end <= limit)
+        })
+    }
+}
+
+impl RankLoadBackend for NativeRankLoadBackend {
+    fn allocate_device(&mut self, bytes: u64) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        if bytes == 0 {
+            return Err(KernelError::Shape);
+        }
+        let mut pointer = 0_u64;
+        // SAFETY: `pointer` is a valid out-parameter.
+        check(unsafe { glmaxx_device_alloc(bytes, std::ptr::from_mut(&mut pointer)) })?;
+        if pointer == 0 || self.device_allocations.contains_key(&pointer) {
+            return Err(KernelError::Null);
+        }
+        self.device_allocations.insert(pointer, bytes);
+        Ok(pointer)
+    }
+
+    fn free_device(&mut self, pointer: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.device_allocations.contains_key(&pointer) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the registry proves this backend owns the exact allocation.
+        check(unsafe { glmaxx_device_free(pointer) })?;
+        self.device_allocations.remove(&pointer);
+        Ok(())
+    }
+
+    fn allocate_pinned(&mut self, bytes: u64) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        if bytes == 0 {
+            return Err(KernelError::Shape);
+        }
+        let mut pointer = 0_u64;
+        // SAFETY: `pointer` is a valid out-parameter.
+        check(unsafe { glmaxx_pinned_alloc(bytes, std::ptr::from_mut(&mut pointer)) })?;
+        if pointer == 0 || self.pinned_allocations.contains_key(&pointer) {
+            return Err(KernelError::Null);
+        }
+        self.pinned_allocations.insert(pointer, bytes);
+        Ok(pointer)
+    }
+
+    fn free_pinned(&mut self, pointer: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.pinned_allocations.contains_key(&pointer) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the registry proves this backend owns the pinned allocation.
+        check(unsafe { glmaxx_pinned_free(pointer) })?;
+        self.pinned_allocations.remove(&pointer);
+        Ok(())
+    }
+
+    fn copy_to_pinned(&mut self, destination: u64, bytes: &[u8]) -> Result<(), KernelError> {
+        self.require_owner()?;
+        let capacity = self
+            .pinned_allocations
+            .get(&destination)
+            .copied()
+            .ok_or(KernelError::Null)?;
+        if u64::try_from(bytes.len()).map_err(|_| KernelError::Overflow)? > capacity {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: the registry proves `destination` covers the source length;
+        // the allocation remains owned until the event/stream completion path.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination as *mut u8, bytes.len());
+        }
+        Ok(())
+    }
+
+    fn copy_from_pinned(&mut self, source: u64, bytes: &mut [u8]) -> Result<(), KernelError> {
+        self.require_owner()?;
+        let capacity = self
+            .pinned_allocations
+            .get(&source)
+            .copied()
+            .ok_or(KernelError::Null)?;
+        if u64::try_from(bytes.len()).map_err(|_| KernelError::Overflow)? > capacity {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: the registry proves `source` covers the destination length
+        // and the read-back event has completed before this method is called.
+        unsafe {
+            std::ptr::copy_nonoverlapping(source as *const u8, bytes.as_mut_ptr(), bytes.len());
+        }
+        Ok(())
+    }
+
+    fn create_stream(&mut self) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        let mut stream = 0_u64;
+        // SAFETY: `stream` is a valid out-parameter.
+        check(unsafe { glmaxx_stream_create(std::ptr::from_mut(&mut stream)) })?;
+        if stream == 0 || !self.streams.insert(stream) {
+            return Err(KernelError::Null);
+        }
+        Ok(stream)
+    }
+
+    fn synchronize_stream(&mut self, stream: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.streams.contains(&stream) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the registry proves this backend owns the stream.
+        check(unsafe { glmaxx_stream_synchronize(stream) })
+    }
+
+    fn destroy_stream(&mut self, stream: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.streams.contains(&stream) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the engine synchronizes before destruction.
+        check(unsafe { glmaxx_stream_destroy(stream) })?;
+        self.streams.remove(&stream);
+        Ok(())
+    }
+
+    fn create_event(&mut self) -> Result<u64, KernelError> {
+        self.require_owner()?;
+        let mut event = 0_u64;
+        // SAFETY: `event` is a valid out-parameter.
+        check(unsafe { glmaxx_event_create(std::ptr::from_mut(&mut event)) })?;
+        if event == 0 || !self.events.insert(event) {
+            return Err(KernelError::Null);
+        }
+        Ok(event)
+    }
+
+    fn record_event(&mut self, event: u64, stream: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.events.contains(&event) || !self.streams.contains(&stream) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: both handles are live in this backend's registry.
+        check(unsafe { glmaxx_event_record(event, stream) })
+    }
+
+    fn synchronize_event(&mut self, event: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.events.contains(&event) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the registry proves this backend owns the event.
+        check(unsafe { glmaxx_event_synchronize(event) })
+    }
+
+    fn destroy_event(&mut self, event: u64) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if !self.events.contains(&event) {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: stream synchronization precedes event destruction.
+        check(unsafe { glmaxx_event_destroy(event) })?;
+        self.events.remove(&event);
+        Ok(())
+    }
+
+    fn memset_zero(
+        &mut self,
+        destination: u64,
+        bytes: u64,
+        stream: u64,
+    ) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if bytes == 0
+            || !self.contains_device_range(destination, bytes)
+            || !self.streams.contains(&stream)
+        {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: the checked destination range and stream are live.
+        check(unsafe { glmaxx_memset_zero(destination, bytes, stream) })
+    }
+
+    fn copy_h2d(
+        &mut self,
+        destination: u64,
+        source: u64,
+        bytes: u64,
+        stream: u64,
+    ) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if bytes == 0
+            || !self.contains_device_range(destination, bytes)
+            || self
+                .pinned_allocations
+                .get(&source)
+                .is_none_or(|&capacity| bytes > capacity)
+            || !self.streams.contains(&stream)
+        {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: both checked ranges and the stream remain live through the
+        // event/stream synchronization owned by the engine.
+        check(unsafe { glmaxx_memcpy_h2d(destination, source as *const c_void, bytes, stream) })
+    }
+
+    fn copy_d2h(
+        &mut self,
+        destination: u64,
+        source: u64,
+        bytes: u64,
+        stream: u64,
+    ) -> Result<(), KernelError> {
+        self.require_owner()?;
+        if bytes == 0
+            || !self.contains_device_range(source, bytes)
+            || self
+                .pinned_allocations
+                .get(&destination)
+                .is_none_or(|&capacity| bytes > capacity)
+            || !self.streams.contains(&stream)
+        {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: both checked ranges and the stream remain live through the
+        // recorded event synchronization.
+        check(unsafe { glmaxx_memcpy_d2h(destination as *mut c_void, source, bytes, stream) })
     }
 }
 

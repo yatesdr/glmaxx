@@ -1101,6 +1101,20 @@ pub struct WeightArenaExecutionPermit {
 }
 
 impl WeightArenaExecutionPermit {
+    #[cfg(test)]
+    pub(crate) const fn test_only(
+        rank: u8,
+        plan_sha256: [u8; 32],
+        owner_allocation_generation: u64,
+    ) -> Self {
+        Self {
+            rank,
+            plan_sha256,
+            owner_allocation_generation,
+            adopted_rank_set_sha256: [0x71; 32],
+        }
+    }
+
     #[must_use]
     pub const fn rank(&self) -> u8 {
         self.rank

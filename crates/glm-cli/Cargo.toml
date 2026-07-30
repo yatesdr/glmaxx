@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-cuda-ffi = ["glm-cuda/cuda-ffi"]
+cuda-ffi = ["glm-cuda/cuda-ffi", "glm-engine/cuda-ffi"]
 
 [dependencies]
 glm-cache = { path = "../glm-cache" }

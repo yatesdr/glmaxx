@@ -1,6 +1,7 @@
 //! Safe Rust boundary for the isolated SM120 CUDA kernel library.
 
 mod abi;
+mod load;
 mod ownership;
 
 pub use abi::{
@@ -12,6 +13,7 @@ pub use abi::{
     grouped_workspace_bytes, validate_descriptor, validate_exl3_descriptor,
     validate_fc2_descriptor, workspace_bytes,
 };
+pub use load::RankLoadBackend;
 pub use ownership::{CudaDriver, DeviceBuffer, Exl3LaunchTicket, Fc2LaunchTicket, LaunchTicket};
 
 // Parse and type-check the native boundary on CPU-only development hosts when
@@ -23,5 +25,6 @@ mod ffi;
 pub use ffi::{
     Exl3Replay, Fc1BenchmarkConfig, Fc1Timing, GraphReplay, GroupedFc1Timing, NativeDeviceIdentity,
     NativeExl3Fixture, NativeFc1Fixture, NativeFc2Fixture, NativeKernelDriver, NativeRankContext,
-    run_single_expert, validate_native_abi, validate_native_exl3_abi, validate_native_moe_abi,
+    NativeRankLoadBackend, run_single_expert, validate_native_abi, validate_native_exl3_abi,
+    validate_native_moe_abi,
 };

@@ -4,6 +4,7 @@
 //! plan, graph-admission, and memory-accounting contracts that the coordinator
 //! must prove before any of the four device workers may enter a step.
 
+mod checkpoint_cuda;
 mod checkpoint_load;
 mod graph;
 mod input;
@@ -14,6 +15,7 @@ mod step;
 mod weight;
 mod worker;
 
+pub use checkpoint_cuda::{CudaArenaVerificationEvidence, CudaQuarantinedArena, CudaWeightArena};
 pub use checkpoint_load::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, AdoptionCommand, LOAD_PLAN_HEADER_BYTES,
     LoadPlanError, LoadProfile, LoadVerificationMode, PREPARED_RANK_RECEIPT_BYTES,

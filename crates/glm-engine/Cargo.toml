@@ -5,8 +5,13 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = []
+cuda-ffi = ["glm-cuda/cuda-ffi"]
+
 [dependencies]
 glm-cache = { path = "../glm-cache" }
+glm-cuda = { path = "../glm-cuda" }
 glm-format = { path = "../glm-format" }
 serde.workspace = true
 serde_json.workspace = true

@@ -421,6 +421,27 @@ extern "C" int32_t glmaxx_device_free(uint64_t pointer) {
   return static_cast<int32_t>(cudaFree(reinterpret_cast<void*>(pointer)));
 }
 
+extern "C" int32_t glmaxx_pinned_alloc(uint64_t bytes, uint64_t* pointer) {
+  if (bytes == 0 || pointer == nullptr) {
+    return -1;
+  }
+  void* allocation = nullptr;
+  const cudaError_t status =
+      cudaHostAlloc(&allocation, bytes, cudaHostAllocDefault);
+  if (status == cudaSuccess) {
+    *pointer = reinterpret_cast<uint64_t>(allocation);
+  }
+  return static_cast<int32_t>(status);
+}
+
+extern "C" int32_t glmaxx_pinned_free(uint64_t pointer) {
+  if (pointer == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      cudaFreeHost(reinterpret_cast<void*>(pointer)));
+}
+
 extern "C" int32_t glmaxx_stream_create(uint64_t* stream) {
   if (stream == nullptr) {
     return -1;
@@ -483,6 +504,16 @@ extern "C" int32_t glmaxx_memcpy_d2h(void* destination, uint64_t source,
   return static_cast<int32_t>(cudaMemcpyAsync(
       destination, reinterpret_cast<const void*>(source), bytes,
       cudaMemcpyDeviceToHost, reinterpret_cast<cudaStream_t>(stream)));
+}
+
+extern "C" int32_t glmaxx_memset_zero(uint64_t destination, uint64_t bytes,
+                                       uint64_t stream) {
+  if (destination == 0 || bytes == 0 || stream == 0) {
+    return -1;
+  }
+  return static_cast<int32_t>(cudaMemsetAsync(
+      reinterpret_cast<void*>(destination), 0, bytes,
+      reinterpret_cast<cudaStream_t>(stream)));
 }
 
 extern "C" int32_t glmaxx_nvfp4_routed_fc1_launch(
