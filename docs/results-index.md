@@ -66,6 +66,10 @@ before rank submission, commits exact consensus counts, removes terminal
 rows before releasing pins, and bounds MTP depth by the remaining generation
 budget. A CPU boundary test accounts and releases all target and draft pages
 at 1,048,576 positions without claiming model KV payloads.
+Committed page mutation is now page-granular. A separate canonical page-table
+delta carries sorted changed suffixes/removals, global and rank-local digests,
+and reconstructs atomically in an arena-bounded independent CPU mirror. It is
+not yet delivered to rank workers.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -73,15 +77,16 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at active-page serving transaction implementation
-`f480ef1` passed:
+The latest local run at canonical page-table delta implementation
+`271d1f4` passed:
 
-- `scripts/local-checks.sh`: 273 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 278 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 65 then-present candidate-based review-handoff hash proofs;
-- the subsequently added active-page transaction handoff separately passes
-  `review-proof`; repository-wide verification now covers 66 handoffs and
-  0/47 configured result artifacts;
+  and all 66 candidate-based review-handoff hash proofs;
+- new cache regressions cover page-granular append equivalence, all 448
+  tail/depth reservations, canonical tentative/admission/removal delta
+  reconstruction, unchanged-prefix suffix omission, and fail-closed digest,
+  owner, arena, generation, and no-op checks;
 - serving regressions cover mandatory active-table admission, pre-worker
   capacity rejection, exact MTP0/MTP6-capable 1M-boundary accounting and
   cleanup, dynamic MTP tail selection, cancellation-before-peer cleanup, and

@@ -85,10 +85,10 @@ DCP owners. It produces:
 - the new sequence-table generation; and
 - a canonical reservation digest.
 
-The CPU subset proves the prior committed position, exact logical reservation,
-bounded owner-local physical allocation, and all-row atomicity. The explicit
-changed spans, reservation generation, and canonical digest are requirements
-for the next rank-delta implementation, not claims about `f480ef1`.
+The serving subset at `f480ef1` proves the prior committed position, exact
+logical reservation, bounded owner-local physical allocation, and all-row
+atomicity. The separate `271d1f4` CPU delta supplies explicit changed spans
+and canonical generation digests, but has not yet joined that serving path.
 
 ## Rank page-table delta
 
@@ -108,6 +108,12 @@ owner-local page entries       bounded by the active arena
 removed sequence IDs           0..64
 canonical global digest        SHA-256
 ```
+
+The retained CPU implementation at `271d1f4` now constructs this global
+shape with sorted updates/removals, complete changed suffixes, a global
+digest, rank-local digests, arena-bound validation, and an atomic independent
+mirror. It is not yet carried by the serving coordinator or rank workers, so
+no upload or acknowledgment claim follows.
 
 Each sequence update carries its request ID, committed position, MTP posture,
 and complete ordered `(page ordinal, owner rank, target local page ID,
@@ -172,8 +178,10 @@ token. It uses:
 - no heap allocation after graph/arena initialization; and
 - no device allocation in a serving step.
 
-The existing clone-on-error CPU oracle remains useful for proof but is not the
-serving hot-path implementation.
+Committed prefill mutation now uses page-granular arithmetic rather than a
+per-token loop. The existing clone-on-error CPU oracle and owned delta vectors
+remain useful for proof but are not the complete serving hot-path
+implementation.
 
 ## Generation and failure rules
 
@@ -217,8 +225,7 @@ Before a CUDA executor consumes the complete boundary, the remaining CPU ABI
 proof must cover:
 
 - fixed-capacity C1 and C64 undo records at MTP0 through MTP6;
-- page-granular prefill without a per-token loop;
 - every tail occupancy 0–63 through the serving coordinator;
-- the canonical rank delta and reservation digest;
+- serving/worker delivery of the canonical rank delta and reservation digest;
 - rank acknowledgment, removal quarantine, and `CACHE_ONLY` cleanup; and
 - generation/digest disagreement across four rank consumers.

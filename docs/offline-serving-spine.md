@@ -133,10 +133,18 @@ rank-local slot identities; the future CUDA rank executor must map them to
 preallocated target, indexer, draft, and draft-indexer arenas without changing
 these ownership or transaction rules.
 
-The current serving transaction remains a clone-on-step, per-token CPU
-oracle. Fixed-capacity undo, page-granular mutation, canonical rank deltas,
-device acknowledgments, physical-ID quarantine, and cache-only removal
-updates remain required before a CUDA executor consumes these IDs.
+The current serving transaction remains a clone-on-step CPU oracle.
+Fixed-capacity undo, coordinator-to-rank delta delivery, device
+acknowledgments, physical-ID quarantine, and cache-only removal updates remain
+required before a CUDA executor consumes these IDs.
+
+The underlying committed-page append at `271d1f4` is now page-granular, and
+all 64 tail occupancies at tentative depths one through seven are exhausted.
+The same milestone adds a standalone canonical `PageTableDelta` with complete
+changed suffixes, global and rank-local digests, owner/arena validation, and
+an atomic independent mirror. The coordinator has not yet delivered those
+deltas to rank workers, so fixed-capacity undo, rank acknowledgments,
+quarantine, and cache-only cleanup remain open.
 
 ## Reproducible proof
 
