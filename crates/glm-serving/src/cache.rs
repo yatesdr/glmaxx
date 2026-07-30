@@ -1,18 +1,27 @@
 use std::{collections::BTreeMap, fmt, path::Path, thread, time::Duration};
 
 use glm_cache::{
-    PrefixError, PrefixIndex, PrefixPageKey, Residency, ResidencyConfig, ResidencyError,
-    ResidencyManager, RestoreError, RestoreHandle, RestoreService, TierRecord, owner_rank,
+    PrefixError, PrefixIndex, PrefixPageAttachment, PrefixPageKey, Residency, ResidencyConfig,
+    ResidencyError, ResidencyManager, RestoreError, RestoreHandle, RestoreService, TierRecord,
+    owner_rank,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestoredPrefix {
     pub matched_tokens: u32,
-    pub page_keys: Vec<PrefixPageKey>,
-    pub page_has_draft: Vec<bool>,
+    page_keys: Vec<PrefixPageKey>,
+    page_attachments: Vec<PrefixPageAttachment>,
 }
 
 impl RestoredPrefix {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            matched_tokens: 0,
+            page_keys: Vec::new(),
+            page_attachments: Vec::new(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), PrefixRestoreError> {
         let page_tokens =
             u32::try_from(glm_cache::PAGE_TOKENS).map_err(|_| PrefixRestoreError::Overflow)?;
@@ -20,11 +29,26 @@ impl RestoredPrefix {
             .map_err(|_| PrefixRestoreError::Overflow)?;
         if !self.matched_tokens.is_multiple_of(page_tokens)
             || expected_pages != self.page_keys.len()
-            || self.page_has_draft.len() != self.page_keys.len()
+            || self.page_attachments.len() != self.page_keys.len()
+            || self
+                .page_keys
+                .iter()
+                .zip(&self.page_attachments)
+                .any(|(&key, attachment)| key != attachment.key())
         {
             return Err(PrefixRestoreError::Record);
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn page_keys(&self) -> &[PrefixPageKey] {
+        &self.page_keys
+    }
+
+    #[must_use]
+    pub fn page_attachments(&self) -> &[PrefixPageAttachment] {
+        &self.page_attachments
     }
 }
 
@@ -44,7 +68,7 @@ struct PendingPage {
     key: PrefixPageKey,
     ordinal: u64,
     rank: u8,
-    has_draft: bool,
+    attachment: PrefixPageAttachment,
     state: PendingPageState,
 }
 
@@ -180,7 +204,7 @@ impl PrefixRestoreCoordinator {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens: 0,
                 page_keys: Vec::new(),
-                page_has_draft: Vec::new(),
+                page_attachments: Vec::new(),
             }));
         };
         let matched_tokens =
@@ -193,11 +217,9 @@ impl PrefixRestoreCoordinator {
         for (ordinal, &key) in matched.page_keys.iter().enumerate() {
             let ordinal = u64::try_from(ordinal).map_err(|_| PrefixRestoreError::Overflow)?;
             let rank = owner_rank(ordinal);
-            let has_draft = self
-                .index
-                .record(key)
-                .ok_or(PrefixRestoreError::Record)?
-                .mtp;
+            let record = self.index.record(key).ok_or(PrefixRestoreError::Record)?;
+            let attachment = PrefixPageAttachment::from_tier_record(record)
+                .map_err(|_| PrefixRestoreError::Record)?;
             let manager = &mut self.ranks[usize::from(rank)];
             let state = match manager.location(key.0) {
                 Some(Residency::Hbm) => {
@@ -250,7 +272,7 @@ impl PrefixRestoreCoordinator {
                 key,
                 ordinal,
                 rank,
-                has_draft,
+                attachment,
                 state,
             });
         }
@@ -262,7 +284,7 @@ impl PrefixRestoreCoordinator {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens,
                 page_keys: pending.pages.iter().map(|page| page.key).collect(),
-                page_has_draft: pending.pages.iter().map(|page| page.has_draft).collect(),
+                page_attachments: pending.pages.iter().map(|page| page.attachment).collect(),
             }));
         }
         self.pending.insert(request_id, pending);
@@ -308,7 +330,7 @@ impl PrefixRestoreCoordinator {
             return Ok(PrefixRestoreStatus::Ready(RestoredPrefix {
                 matched_tokens: pending.matched_tokens,
                 page_keys: pending.pages.iter().map(|page| page.key).collect(),
-                page_has_draft: pending.pages.iter().map(|page| page.has_draft).collect(),
+                page_attachments: pending.pages.iter().map(|page| page.attachment).collect(),
             }));
         }
         self.pending.insert(request_id, pending);
@@ -588,7 +610,7 @@ mod tests {
             RestoredPrefix {
                 matched_tokens: 64,
                 page_keys: vec![key],
-                page_has_draft: Vec::new(),
+                page_attachments: Vec::new(),
             }
             .validate(),
             Err(PrefixRestoreError::Record)
@@ -597,7 +619,7 @@ mod tests {
             RestoredPrefix {
                 matched_tokens: 63,
                 page_keys: vec![key],
-                page_has_draft: vec![true],
+                page_attachments: Vec::new(),
             }
             .validate(),
             Err(PrefixRestoreError::Record)
@@ -705,8 +727,11 @@ mod tests {
                 }
             },
         };
-        assert_eq!(restored.page_keys, [key]);
-        assert_eq!(restored.page_has_draft, [true]);
+        assert_eq!(restored.page_keys(), [key]);
+        assert_eq!(
+            restored.page_attachments(),
+            [PrefixPageAttachment::from_tier_record(&upgrade).unwrap()]
+        );
         coordinator.release(&[key]).unwrap();
 
         assert!(matches!(
@@ -847,8 +872,13 @@ mod tests {
                 }
             },
         };
-        assert_eq!(restored.page_keys, keys);
-        assert_eq!(restored.page_has_draft, [true, true]);
+        assert_eq!(restored.page_keys(), keys);
+        assert!(
+            restored
+                .page_attachments()
+                .iter()
+                .all(|attachment| attachment.has_draft())
+        );
         coordinator.release(&keys).unwrap();
         drop(coordinator);
         fs::remove_dir_all(root).unwrap();
@@ -970,8 +1000,13 @@ mod tests {
             }
         };
         assert_eq!(restored.matched_tokens, 128);
-        assert_eq!(restored.page_keys, keys);
-        assert_eq!(restored.page_has_draft, [true, true]);
+        assert_eq!(restored.page_keys(), keys);
+        assert!(
+            restored
+                .page_attachments()
+                .iter()
+                .all(|attachment| attachment.has_draft())
+        );
         restored.validate().unwrap();
         assert_eq!(
             coordinator

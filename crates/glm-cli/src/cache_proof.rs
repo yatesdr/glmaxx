@@ -8,9 +8,9 @@ use std::{
 use glm_cache::{
     DRAFT_INDEXER_PAGE_BYTES, DRAFT_KV_PAGE_BYTES, DurablePageRequest, FileTierStore,
     NamespaceInputs, PAGE_TOKENS, PagePieceBytes, PageTableConfig, PrefixIndex, PrefixNamespace,
-    Residency, ResidencyConfig, ResidencyError, ResidencyManager, RestoreError, RestoreService,
-    SequencePageTable, StoreError, TierPiece, decode_draft_sidecar_payload,
-    encode_draft_sidecar_payload, owner_rank,
+    PrefixPageAttachment, Residency, ResidencyConfig, ResidencyError, ResidencyManager,
+    RestoreError, RestoreService, SequencePageTable, StoreError, TierPiece,
+    decode_draft_sidecar_payload, encode_draft_sidecar_payload, owner_rank,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -204,7 +204,7 @@ pub fn write_cache_lifecycle_proof(
         copy_on_write_tail_observed,
         speculative_rollback_observed,
         partial_speculative_commit_observed,
-    ) = prove_page_table_lifecycle(&keys)?;
+    ) = prove_page_table_lifecycle(&recovered)?;
 
     let corrupt_offset = recovered[0]
         .pieces
@@ -323,9 +323,12 @@ fn restore_page(
 }
 
 fn prove_page_table_lifecycle(
-    keys: &[glm_cache::PrefixPageKey],
+    records: &[glm_cache::TierRecord],
 ) -> Result<(bool, bool, bool), Box<dyn Error>> {
-    let prefix_pages: Vec<_> = keys.iter().copied().map(|key| (key, true)).collect();
+    let prefix_pages = records
+        .iter()
+        .map(PrefixPageAttachment::from_tier_record)
+        .collect::<Result<Vec<_>, _>>()?;
     let mut table = SequencePageTable::new(PageTableConfig {
         target_pages_per_rank: 4,
         draft_pages_per_rank: 4,

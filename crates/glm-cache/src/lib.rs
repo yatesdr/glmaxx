@@ -24,8 +24,8 @@ pub use residency::{
     RestoreError, RestoreHandle, RestoreRequest, RestoreResult, RestoreService,
 };
 pub use sequence::{
-    MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, SequencePageError,
-    SequencePageTable, SequencePageView,
+    MAXIMUM_CONTEXT_TOKENS, PageTableConfig, PageTableStats, PhysicalPageId, PrefixPageAttachment,
+    SequencePageError, SequencePageTable, SequencePageView,
 };
 pub use store::{
     DurablePageRequest, FileTierReader, FileTierStore, PagePieceBytes, RestoredPage, StoreError,

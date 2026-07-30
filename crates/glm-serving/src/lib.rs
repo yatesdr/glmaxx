@@ -261,10 +261,13 @@ impl ServingCoordinator {
         Ok(())
     }
 
-    /// Admission for a cache result already proved by an embedding caller.
-    /// Normal serving should use `admit_tokens`, which derives and restores
-    /// prefix pages inside this coordinator.
-    pub fn admit_prevalidated(&mut self, request: ServingRequest) -> Result<(), ServingError> {
+    /// Test/internal admission path without a prefix lease. Production callers
+    /// must use `admit_tokens`, which derives and restores exact prefix
+    /// attachments inside this coordinator.
+    pub(crate) fn admit_prevalidated(
+        &mut self,
+        request: ServingRequest,
+    ) -> Result<(), ServingError> {
         self.require_event_space(1)?;
         if self.pending_admissions.contains_key(&request.spec.id)
             || self.prefix_leases.contains_key(&request.spec.id)
@@ -401,20 +404,21 @@ impl ServingCoordinator {
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
-                .release(&restored.page_keys)?;
+                .release(restored.page_keys())?;
             self.retained_prompt_bytes = retained_prompt_bytes;
             return Err(error.into());
         }
-        if spec.mtp_depth != 0 && restored.page_has_draft.contains(&false) {
+        if spec.mtp_depth != 0
+            && restored
+                .page_attachments()
+                .iter()
+                .any(|attachment| !attachment.has_draft())
+        {
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
-                .release(&restored.page_keys)?;
-            restored = RestoredPrefix {
-                matched_tokens: 0,
-                page_keys: Vec::new(),
-                page_has_draft: Vec::new(),
-            };
+                .release(restored.page_keys())?;
+            restored = RestoredPrefix::empty();
         }
         let matched_tokens = restored.matched_tokens;
         let result = self.admit_prevalidated(ServingRequest {
@@ -425,7 +429,7 @@ impl ServingCoordinator {
             self.prefix_cache
                 .as_mut()
                 .ok_or(ServingError::CacheUnavailable)?
-                .release(&restored.page_keys)?;
+                .release(restored.page_keys())?;
             self.retained_prompt_bytes = retained_prompt_bytes;
             return Err(error);
         }
@@ -833,7 +837,7 @@ impl ServingCoordinator {
             .filter_map(|(request_id, _)| {
                 self.prefix_leases
                     .get(request_id)
-                    .map(|restored| restored.page_keys.as_slice())
+                    .map(RestoredPrefix::page_keys)
             })
             .collect();
         let prefix = if page_sets.is_empty() {
@@ -1738,7 +1742,7 @@ mod tests {
             .unwrap()
             .restore_longest(999, &tokens)
             .unwrap();
-        assert_eq!(repaired.page_keys, [key]);
+        assert_eq!(repaired.page_keys(), [key]);
         release_prefix(&mut serving, 77).unwrap();
         assert!(!serving.prefix_leases.contains_key(&77));
         assert!(serving.tick().unwrap());
@@ -2065,9 +2069,9 @@ mod tests {
             .unwrap()
             .restore_longest(901, &tokens_b)
             .unwrap();
-        assert_eq!(repaired_a_first.page_keys, [key_a]);
-        assert_eq!(repaired_a_second.page_keys, [key_a]);
-        assert_eq!(repaired_b.page_keys, [key_b]);
+        assert_eq!(repaired_a_first.page_keys(), [key_a]);
+        assert_eq!(repaired_a_second.page_keys(), [key_a]);
+        assert_eq!(repaired_b.page_keys(), [key_b]);
         release_prefix(&mut serving, 100).unwrap();
         release_prefix(&mut serving, 101).unwrap();
         release_prefix(&mut serving, 102).unwrap();

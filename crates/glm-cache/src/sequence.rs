@@ -3,7 +3,7 @@ use std::{
     fmt,
 };
 
-use crate::{PAGE_TOKENS, PageState, PrefixPageKey, owner_rank};
+use crate::{PAGE_TOKENS, PageState, PrefixPageKey, TierPiece, TierRecord, owner_rank};
 
 pub const MAXIMUM_CONTEXT_TOKENS: u64 = 1_048_576;
 
@@ -11,6 +11,80 @@ pub const MAXIMUM_CONTEXT_TOKENS: u64 = 1_048_576;
 pub struct PhysicalPageId {
     pub owner_rank: u8,
     pub target_local_page_id: u32,
+}
+
+/// Logical identity of one prefix page whose durable record has passed the
+/// strict tier-record validator.
+///
+/// This replaces the old caller-supplied `has_draft` boolean. Target and
+/// draft capability are now bound to the namespace, generation, and exact
+/// logical piece hashes that a restore coordinator validated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrefixPageAttachment {
+    namespace: [u8; 32],
+    key: PrefixPageKey,
+    generation: u64,
+    target_kv_sha256: [u8; 32],
+    target_indexer_sha256: [u8; 32],
+    draft_sidecar_sha256: Option<[u8; 32]>,
+}
+
+impl PrefixPageAttachment {
+    pub fn from_tier_record(record: &TierRecord) -> Result<Self, SequencePageError> {
+        record.validate()?;
+        Ok(Self {
+            namespace: record.namespace,
+            key: PrefixPageKey(record.page_key),
+            generation: record.generation,
+            target_kv_sha256: piece_hash(record, TierPiece::TargetKv)?,
+            target_indexer_sha256: piece_hash(record, TierPiece::TargetIndexer)?,
+            draft_sidecar_sha256: record
+                .mtp
+                .then(|| piece_hash(record, TierPiece::DraftSidecar))
+                .transpose()?,
+        })
+    }
+
+    #[must_use]
+    pub const fn key(self) -> PrefixPageKey {
+        self.key
+    }
+
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn has_draft(self) -> bool {
+        self.draft_sidecar_sha256.is_some()
+    }
+
+    fn relation_to(self, candidate: Self) -> Result<AttachmentRelation, SequencePageError> {
+        if self.namespace != candidate.namespace
+            || self.key != candidate.key
+            || self.target_kv_sha256 != candidate.target_kv_sha256
+            || self.target_indexer_sha256 != candidate.target_indexer_sha256
+        {
+            return Err(SequencePageError::Prefix);
+        }
+        match (self.draft_sidecar_sha256, candidate.draft_sidecar_sha256) {
+            (None, None) => Ok(AttachmentRelation::Exact),
+            (Some(_), None) => Ok(AttachmentRelation::RetainDraft),
+            (None, Some(_)) if candidate.generation > self.generation => {
+                Ok(AttachmentRelation::DraftUpgrade)
+            }
+            (Some(current), Some(next)) if current == next => Ok(AttachmentRelation::Exact),
+            (None, Some(_)) | (Some(_), Some(_)) => Err(SequencePageError::Prefix),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttachmentRelation {
+    Exact,
+    RetainDraft,
+    DraftUpgrade,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,7 +120,7 @@ struct PhysicalPage {
     state: PageState,
     valid_tokens: u8,
     references: u32,
-    prefix: Option<(PrefixPageKey, u64)>,
+    prefix: Option<(PrefixPageAttachment, u64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -111,7 +185,7 @@ impl SequencePageTable {
         &mut self,
         sequence_id: u64,
         mtp: bool,
-        prefix_pages: &[(PrefixPageKey, bool)],
+        prefix_pages: &[PrefixPageAttachment],
     ) -> Result<(), SequencePageError> {
         if sequence_id == 0
             || self.sequences.contains_key(&sequence_id)
@@ -123,8 +197,9 @@ impl SequencePageTable {
         let result = (|| {
             let mut pages = Vec::with_capacity(prefix_pages.len());
             let mut seen = BTreeSet::new();
-            for (ordinal, &(key, has_draft)) in prefix_pages.iter().enumerate() {
-                if mtp && !has_draft {
+            for (ordinal, &attachment) in prefix_pages.iter().enumerate() {
+                let key = attachment.key();
+                if mtp && !attachment.has_draft() {
                     return Err(SequencePageError::MissingDraft);
                 }
                 if !seen.insert(key) {
@@ -136,10 +211,26 @@ impl SequencePageTable {
                         page.state == PageState::HbmSealed
                             && page.valid_tokens == PAGE_TOKENS as u8
                             && physical.owner_rank == owner_rank(ordinal)
-                            && page.prefix == Some((key, ordinal))
+                            && page.prefix.is_some_and(|(current, current_ordinal)| {
+                                current_ordinal == ordinal
+                                    && current.relation_to(attachment).is_ok()
+                            })
                     });
                     if !valid {
                         return Err(SequencePageError::Prefix);
+                    }
+                    let relation = self
+                        .physical
+                        .get(&physical)
+                        .and_then(|page| page.prefix)
+                        .ok_or(SequencePageError::Invariant)?
+                        .0
+                        .relation_to(attachment)?;
+                    if relation == AttachmentRelation::DraftUpgrade {
+                        self.physical
+                            .get_mut(&physical)
+                            .ok_or(SequencePageError::Invariant)?
+                            .prefix = Some((attachment, ordinal));
                     }
                     if mtp && self.physical[&physical].draft_local_page_id.is_none() {
                         let draft = self.free_draft[usize::from(physical.owner_rank)]
@@ -167,7 +258,7 @@ impl SequencePageTable {
                         .ok_or(SequencePageError::Invariant)?;
                     page.valid_tokens = PAGE_TOKENS as u8;
                     page.state = page.state.transition(PageState::HbmSealed)?;
-                    page.prefix = Some((key, ordinal));
+                    page.prefix = Some((attachment, ordinal));
                     self.prefixes.insert(key, physical);
                     physical
                 };
@@ -666,8 +757,8 @@ impl SequencePageTable {
             .physical
             .remove(&physical)
             .ok_or(SequencePageError::Invariant)?;
-        if let Some((key, _ordinal)) = page.prefix
-            && self.prefixes.remove(&key) != Some(physical)
+        if let Some((attachment, _ordinal)) = page.prefix
+            && self.prefixes.remove(&attachment.key()) != Some(physical)
         {
             return Err(SequencePageError::Invariant);
         }
@@ -703,6 +794,7 @@ pub enum SequencePageError {
     Invariant,
     Overflow,
     Transition(crate::PageTransitionError),
+    Tier(crate::TierError),
 }
 
 impl fmt::Display for SequencePageError {
@@ -719,9 +811,64 @@ impl From<crate::PageTransitionError> for SequencePageError {
     }
 }
 
+impl From<crate::TierError> for SequencePageError {
+    fn from(value: crate::TierError) -> Self {
+        Self::Tier(value)
+    }
+}
+
+fn piece_hash(record: &TierRecord, piece: TierPiece) -> Result<[u8; 32], SequencePageError> {
+    record
+        .pieces
+        .iter()
+        .find(|candidate| candidate.piece == piece)
+        .map(|candidate| candidate.sha256)
+        .ok_or(SequencePageError::Prefix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn attachment(
+        key: PrefixPageKey,
+        generation: u64,
+        target_marker: u8,
+        draft_marker: Option<u8>,
+    ) -> PrefixPageAttachment {
+        let mut pieces = vec![
+            crate::TierPieceRecord {
+                piece: TierPiece::TargetKv,
+                byte_length: TierPiece::TargetKv.expected_bytes(),
+                storage_offset: 0,
+                sha256: [target_marker; 32],
+            },
+            crate::TierPieceRecord {
+                piece: TierPiece::TargetIndexer,
+                byte_length: TierPiece::TargetIndexer.expected_bytes(),
+                storage_offset: TierPiece::TargetKv.expected_bytes(),
+                sha256: [target_marker.wrapping_add(1); 32],
+            },
+        ];
+        if let Some(draft_marker) = draft_marker {
+            pieces.push(crate::TierPieceRecord {
+                piece: TierPiece::DraftSidecar,
+                byte_length: TierPiece::DraftSidecar.expected_bytes(),
+                storage_offset: TierPiece::TargetKv.expected_bytes()
+                    + TierPiece::TargetIndexer.expected_bytes(),
+                sha256: [draft_marker; 32],
+            });
+        }
+        PrefixPageAttachment::from_tier_record(&TierRecord {
+            namespace: [0x55; 32],
+            page_key: key.0,
+            generation,
+            tier: crate::Tier::Dram,
+            mtp: draft_marker.is_some(),
+            pieces,
+        })
+        .unwrap()
+    }
 
     #[test]
     fn one_million_positions_fill_exactly_balanced_dcp4_slots() {
@@ -754,7 +901,11 @@ mod tests {
         })
         .unwrap();
         table
-            .admit_with_prefix(1, true, &[(PrefixPageKey([9; 32]), true)])
+            .admit_with_prefix(
+                1,
+                true,
+                &[attachment(PrefixPageKey([9; 32]), 1, 9, Some(11))],
+            )
             .unwrap();
         table.append_committed(1, 10).unwrap();
         table.fork_sequence(1, 2).unwrap();
@@ -875,15 +1026,20 @@ mod tests {
             draft_pages_per_rank: 0,
         })
         .unwrap();
-        table.admit_with_prefix(1, false, &[(key, false)]).unwrap();
+        let first = attachment(key, 1, 4, None);
+        table.admit_with_prefix(1, false, &[first]).unwrap();
         let before = table.stats().unwrap();
         assert_eq!(
-            table.admit_with_prefix(2, false, &[(PrefixPageKey([5; 32]), false), (key, false)]),
+            table.admit_with_prefix(
+                2,
+                false,
+                &[attachment(PrefixPageKey([5; 32]), 1, 5, None), first,],
+            ),
             Err(SequencePageError::Prefix)
         );
         assert_eq!(table.stats().unwrap(), before);
         assert_eq!(
-            table.admit_with_prefix(2, false, &[(key, false), (key, false)]),
+            table.admit_with_prefix(2, false, &[first, first]),
             Err(SequencePageError::Prefix)
         );
     }
@@ -896,15 +1052,17 @@ mod tests {
             draft_pages_per_rank: 1,
         })
         .unwrap();
-        table.admit_with_prefix(1, false, &[(key, true)]).unwrap();
+        let target = attachment(key, 1, 7, None);
+        let mtp = attachment(key, 2, 7, Some(9));
+        table.admit_with_prefix(1, false, &[target]).unwrap();
         let target_only = table.pages(1).unwrap();
         assert_eq!(target_only[0].draft_local_page_id, None);
 
-        table.admit_with_prefix(2, true, &[(key, true)]).unwrap();
-        let mtp = table.pages(2).unwrap();
-        assert_eq!(target_only[0].physical, mtp[0].physical);
-        assert!(mtp[0].draft_local_page_id.is_some());
-        assert_eq!(mtp[0].references, 2);
+        table.admit_with_prefix(2, true, &[mtp]).unwrap();
+        let mtp_pages = table.pages(2).unwrap();
+        assert_eq!(target_only[0].physical, mtp_pages[0].physical);
+        assert!(mtp_pages[0].draft_local_page_id.is_some());
+        assert_eq!(mtp_pages[0].references, 2);
         assert_eq!(table.stats().unwrap().target_pages_used, [1, 0, 0, 0]);
         assert_eq!(table.stats().unwrap().draft_pages_used, [1, 0, 0, 0]);
 
@@ -912,5 +1070,42 @@ mod tests {
         table.remove_sequence(1).unwrap();
         assert_eq!(table.stats().unwrap().target_pages_used, [0; 4]);
         assert_eq!(table.stats().unwrap().draft_pages_used, [0; 4]);
+    }
+
+    #[test]
+    fn prefix_attachment_binds_generation_and_every_logical_piece_hash() {
+        let key = PrefixPageKey([8; 32]);
+        let target = attachment(key, 4, 8, None);
+        let stale_upgrade = attachment(key, 4, 8, Some(10));
+        let valid_upgrade = attachment(key, 5, 8, Some(10));
+        let wrong_target = attachment(key, 6, 9, Some(10));
+        let wrong_draft = attachment(key, 6, 8, Some(11));
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 1,
+            draft_pages_per_rank: 1,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, false, &[target]).unwrap();
+        let before = table.stats().unwrap();
+
+        assert_eq!(
+            table.admit_with_prefix(2, true, &[stale_upgrade]),
+            Err(SequencePageError::Prefix)
+        );
+        assert_eq!(
+            table.admit_with_prefix(2, true, &[wrong_target]),
+            Err(SequencePageError::Prefix)
+        );
+        assert_eq!(table.stats().unwrap(), before);
+
+        table.admit_with_prefix(2, true, &[valid_upgrade]).unwrap();
+        let upgraded = table.stats().unwrap();
+        assert_eq!(upgraded.target_pages_used, [1, 0, 0, 0]);
+        assert_eq!(upgraded.draft_pages_used, [1, 0, 0, 0]);
+        assert_eq!(
+            table.admit_with_prefix(3, true, &[wrong_draft]),
+            Err(SequencePageError::Prefix)
+        );
+        assert_eq!(table.stats().unwrap(), upgraded);
     }
 }
