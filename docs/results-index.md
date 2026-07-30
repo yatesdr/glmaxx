@@ -3,7 +3,7 @@
 Date: 2026-07-30
 
 Current CPU implementation baseline:
-`cbe3e9f0881ebc3d8f8c0b3bc1abc571c29a4888`
+`4fc17f2204cac987f8f27eed61af279e3b446bcd`
 
 The complete local gate most recently ran against active-prefix record
 binding implementation
@@ -118,6 +118,11 @@ descriptors are still hash-checked and semantically reread on resume. The
 complete local gate passes 293 Rust tests; no conversion-speed claim is made
 without a matched benchmark. Independent review is requested by
 `docs/fable-streaming-write-single-pass-v1-handoff.md`.
+The startup-order prerequisite is pinned in
+`docs/normative-startup-order-proof-v1.md`. The retained Rust coordinator now
+uses the exact engine-v0 sequence, places memory planning before weight load,
+and fails terminally when the obsolete ordering is attempted. This is a CPU
+state-machine result, not a real CUDA startup or checkpoint-load result.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
