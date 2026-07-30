@@ -262,6 +262,14 @@ native-plane and source-control references, offline downstream
 full-vocabulary sensitivity evidence, and matched eager/captured controls.
 It is an unreviewed design only; no fixture, CPU replay, CUDA run, layer
 result, quality result, or speed claim exists.
+The fit-capable hybrid serving boundary is now specified in
+`docs/hybrid-serving-manifest-v1.md`. It replaces the physically inaccurate
+WeightPolicy.v1 design with an expert-atomic v2 policy, distinguishes EXL3
+and NVFP4 1D/2D realizations, derives variable full-checkpoint tensor-plane,
+aligned file-region, device, metadata, and plan bytes, and requires a
+completed four-rank 1M/MTP6 budget before conversion. It is an unreviewed
+design only and selects no membership, converts no checkpoint, and
+establishes no fit, quality, capacity, or speed result.
 The checkpoint-load CPU core is pinned in
 `docs/checkpoint-load-cpu-core-proof-v1.md`. Candidate `6561492` implements
 the exact plan, tensor-layout, prepared-receipt, prepared-set, adoption, and

@@ -160,14 +160,22 @@ An all-NVFP4 full-model serving profile does not exist in v0.
 
 ### 5.3 `hybrid-serve`
 
-- Each tensor or routed expert SHALL have one immutable codec selected by the
-  manifest.
+- Each routed expert SHALL have one immutable physical gate/up representation
+  and one immutable down representation selected by the manifest.
+- Gate and up MAY be scored separately for quality, but their physical
+  selection SHALL be expert-atomic: either two direct EXL3 source
+  projections, or one combined NVFP4 1D projection. Mixed gate/up backends,
+  split NVFP4, combined EXL3, and NVFP4 2D gate/up are forbidden.
+- Down MAY independently use direct EXL3 source, NVFP4 1D, or NVFP4 2D.
 - Codec selection MAY differ for the same expert index in different layers;
   the immutable selection key is `(layer_id, expert_id, tensor_role)`.
 - Any NVFP4-bearing full-model serving process SHALL use this profile.
 - The average routed-expert physical bytes MUST fit the reviewed profile
   budget in section 8; this requires a substantial EXL3 allocation.
 - The policy MUST declare physical bytes and quality evidence.
+- The policy, manifest, semantic catalog, target program, graph profile,
+  load-plan domain, and cache namespace MUST bind the exact physical
+  realization and distinguish NVFP4 1D from NVFP4 2D.
 - Runtime routing MAY group active experts by codec.
 - A request or step MUST NOT change an expert's codec.
 
