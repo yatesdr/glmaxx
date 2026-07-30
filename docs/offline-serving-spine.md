@@ -111,11 +111,32 @@ tail. MTP0–6 reservations transition target and draft attachments together,
 including a cross-page verifier tail, and commit or roll back atomically.
 Allocation failure restores the complete prior metadata state.
 
+`ServingCoordinator` now owns this table rather than only a generation
+counter. It atomically attaches restored prefix records at admission, checks
+scheduler progress against committed positions, reserves every batch row
+before submitting any TP4 worker, commits the exact consensus output count,
+and removes terminal mappings before releasing prefix pins. Cancellation is
+applied before another runnable batch is selected, so cleanup cannot be
+starved by continuous decode.
+
+The scheduler selects the deepest captured MTP verifier depth that fits the
+remaining generation budget. If no lower-depth verifier is captured, it uses
+the MTP0 graph for the tail. The coordinator test reaches 1,048,575 committed
+positions with exactly 4,096 pages on every owner rank, executes the final
+token, and releases all pages for both target-only and MTP6-capable tables.
+It also proves that a late capacity failure occurs before a rank worker is
+called and that a 1,048,577-position request budget is rejected at admission.
+
 This is not an HBM allocation or payload-transfer claim. A validated logical
 attachment is not a device-upload receipt. The physical IDs are bounded
 rank-local slot identities; the future CUDA rank executor must map them to
 preallocated target, indexer, draft, and draft-indexer arenas without changing
 these ownership or transaction rules.
+
+The current serving transaction remains a clone-on-step, per-token CPU
+oracle. Fixed-capacity undo, page-granular mutation, canonical rank deltas,
+device acknowledgments, physical-ID quarantine, and cache-only removal
+updates remain required before a CUDA executor consumes these IDs.
 
 ## Reproducible proof
 
@@ -132,11 +153,12 @@ and a deterministic summary. The golden report is
 and compares it.
 
 The proof currently covers two tenants, one real 64-token durable prefix
-restore, cold prefill, MTP0 decode, MTP6 verify, eleven emitted tokens, and
-clean completion through four consensus workers. The CPU executor deliberately
-returns one target token per verify step, so this proof claims no synthetic
-draft acceptance. A separate scripted-executor test proves the bounded
-multi-token result and accepted-draft event path.
+restore, cold prefill, MTP0 decode, MTP6 verify and tail fallback, eleven
+emitted tokens in eleven scheduled steps, and clean completion through four
+consensus workers. The CPU executor deliberately returns one target token per
+verify step, so this proof claims no synthetic draft acceptance. A separate
+scripted-executor test proves the bounded multi-token result and
+accepted-draft event path.
 
 ## SM120 handoff boundary
 

@@ -61,6 +61,11 @@ The active sequence table now consumes validated immutable prefix attachments
 instead of page keys plus caller-supplied draft booleans. Namespace,
 generation, target hashes, and optional draft hash follow the authoritative
 restored tier record; stale or colliding upgrades fail atomically.
+The serving coordinator now owns that table, reserves every selected batch
+before rank submission, commits exact consensus counts, removes terminal
+rows before releasing pins, and bounds MTP depth by the remaining generation
+budget. A CPU boundary test accounts and releases all target and draft pages
+at 1,048,576 positions without claiming model KV payloads.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -68,13 +73,16 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at active-prefix record binding implementation
-`6a5c574` passed:
+The latest local run at active-page serving transaction implementation
+`f480ef1` passed:
 
-- `scripts/local-checks.sh`: 270 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 273 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 64 then-present candidate-based review-handoff hash proofs; the new
-  active-prefix record-binding handoff separately passes `review-proof`;
+  and all 65 then-present candidate-based review-handoff hash proofs;
+- serving regressions cover mandatory active-table admission, pre-worker
+  capacity rejection, exact MTP0/MTP6-capable 1M-boundary accounting and
+  cleanup, dynamic MTP tail selection, cancellation-before-peer cleanup, and
+  authoritative restored-prefix attachment;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -97,7 +105,7 @@ Pinned inputs:
 |---|---|
 | `scripts/local-checks.sh` | `839ec27e61aff8249ffa5b586621e6a1fa316221dd50eddf3ee467d096a1d18f` |
 | `fixtures/cache-lifecycle-proof-v1.json` | `c1151c34a3a9bee4fd97dea11e807603a56c2af4d37deab813cc9b5631177d6a` |
-| `fixtures/cpu-serving-proof-v1.json` | `fb76dd1cdc83501ff35ef192dc2be012b5e5cc52ced9a7f8ff4b0b1313698db1` |
+| `fixtures/cpu-serving-proof-v1.json` | `c95e1049bc52f8a8aaacd5a2d704008df9e8cfe72c8f3486982568adbaa7b47e` |
 | `fixtures/engine-contract-proof-v1.json` | `a28686829ae46d62ab449eacae3a1b64bf965c43c22699bb4c9130ecedc9c1a2` |
 | `fixtures/nvfp4-actual-shape-v1.json` | `56bca55ab3489fe6f50cd864f73a21f3b83367d79faa8bc70cb26f325f9b1099` |
 | `fixtures/sm120-fc1-matrix-proof-v1.json` | `5ebf329ee29e4cd95e2c92a41a99625808dcf4212f996c874d651d637cdb6eef` |

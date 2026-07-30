@@ -2,9 +2,9 @@
 
 Date: 2026-07-29
 
-Status: design candidate with a CPU prefix-identity correction; complete
-implementation remains blocked on the active-page-table and `StepInput.v1`
-adversarial reviews
+Status: CPU coordinator subset implemented at `f480ef1`; rank-visible delta,
+fixed-capacity hot path, and device integration remain pending review and
+implementation
 
 GPU claim: none
 
@@ -19,6 +19,14 @@ Production `ServingCoordinator` owns exactly one active page table constructed
 from `SystemMemoryPlan.v2.cache_arena`. Every target, target-indexer, draft-KV,
 and draft-indexer address used by a serving step is derived from its reviewed
 rank-local physical page IDs.
+
+The retained CPU implementation now makes the table mandatory, binds exact
+restored attachments at admission, reserves every selected row before worker
+submission, commits rank-consensus output counts, and removes terminal rows
+before releasing prefix pins. Its proof is
+`docs/serving-active-page-transaction-proof-v1.md`. It is still a
+clone-on-step metadata oracle and does not yet construct a rank-visible
+`PageTableDelta`.
 
 ## Admission transaction
 
@@ -76,6 +84,11 @@ DCP owners. It produces:
 - valid-token counts before execution;
 - the new sequence-table generation; and
 - a canonical reservation digest.
+
+The CPU subset proves the prior committed position, exact logical reservation,
+bounded owner-local physical allocation, and all-row atomicity. The explicit
+changed spans, reservation generation, and canonical digest are requirements
+for the next rank-delta implementation, not claims about `f480ef1`.
 
 ## Rank page-table delta
 
@@ -172,6 +185,11 @@ The global generation advances after every visible page-table mutation:
 - cancellation cleanup; and
 - terminal removal.
 
+The CPU subset advances one host-visible generation for admission and each
+published successful or terminal mutation. It intentionally does not claim
+the separate reservation/commit generations until ranks consume and
+acknowledge a canonical delta.
+
 Overflow is fatal. Ranks never choose a fallback from local capacity. If one
 row or owner cannot reserve the canonical batch, the entire batch remains
 unlaunched and returns to scheduling or admission according to one
@@ -189,16 +207,18 @@ The following are fatal invariants:
 
 ## Required CPU proof
 
-Before a CUDA executor consumes this boundary, tests cover:
+The retained coordinator now covers cold/fully/partially cached admission,
+target-only and draft-capable attachment, bounded prefill/decode/verify
+reservation, late capacity failure before rank submission, worker and output
+failure cleanup, cancellation cleanup, accepted draft EOS, exact MTP0 and
+MTP6-capable 1,048,576-position accounting, and dynamic MTP tail clamping.
 
-- cold, fully cached, and partially cached prefill;
-- target-only and all-draft-capable prefixes;
-- C1 and C64 batches at MTP0 through MTP6;
-- every tail occupancy 0–63, including a cross-page verify;
-- one late-row and one late-owner capacity failure with no partial mutation;
-- worker failure and malformed output rollback;
-- cancellation after reservation;
-- accepted draft EOS with no target correction;
-- session fork copy-on-write isolation;
-- exact 1,048,576-token admission with the 4,167-page serving arena; and
-- generation/digest disagreement across ranks.
+Before a CUDA executor consumes the complete boundary, the remaining CPU ABI
+proof must cover:
+
+- fixed-capacity C1 and C64 undo records at MTP0 through MTP6;
+- page-granular prefill without a per-token loop;
+- every tail occupancy 0–63 through the serving coordinator;
+- the canonical rank delta and reservation digest;
+- rank acknowledgment, removal quarantine, and `CACHE_ONLY` cleanup; and
+- generation/digest disagreement across four rank consumers.
