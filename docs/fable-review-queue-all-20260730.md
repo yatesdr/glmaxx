@@ -109,6 +109,7 @@ result path; follow the output instructions in that handoff.
 | 87 | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` | `1770563713722685db26b0d3378f32e4ecf92519` | `docs/reviews/fable-native-checkpoint-load-smoke-v1.md` | `native-checkpoint-load-smoke-v1-accepted` |
 | 88 | `docs/fable-resident-tensor-device-binding-v1-handoff.md` | `a49210fe384012066d80087f61668d5d8a8e2a78` | `docs/reviews/fable-resident-tensor-device-binding-v1.md` | `resident-tensor-device-binding-v1-accepted` |
 | 89 | `docs/fable-target-program-projection-discriminator-v1-handoff.md` | `39fbee5bf220467104535d86c00b49effe96c3a8` | `docs/reviews/fable-target-program-projection-discriminator-v1.md` | `target-program-projection-discriminator-v1-accepted` |
+| 90 | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` | `a0f2bee3edd1754aebefe1643eecd0a63cd4d4b7` | `docs/reviews/fable-sm120-rank-executor-v1-r2.md` | `sm120-rank-executor-v1-accepted` |
 
 ## Verification command
 
