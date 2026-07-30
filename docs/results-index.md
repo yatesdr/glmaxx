@@ -6,8 +6,9 @@ Current host implementation baseline:
 `da6d89fe0c7997653807080bcfbebc6a00356395`
 
 The complete local gate most recently ran at
-`da6d89fe0c7997653807080bcfbebc6a00356395`, whose latest behavioral
-implementation is
+`68425cef2486048bf76fb1493046a818669f1925`, whose review-inbox
+infrastructure is that exact commit and whose latest model-execution
+behavioral implementation remains
 `a49210fe384012066d80087f61668d5d8a8e2a78`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
