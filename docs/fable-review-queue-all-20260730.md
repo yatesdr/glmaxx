@@ -3,9 +3,9 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`ccd636967bec031c8a8b0349a18b39113c0a6ae6`
+`a9b40f1b1440797a05543d5e65e61927fd141b97`
 
-`review-proof-all` verified 94 current handoffs and skipped the two historical
+`review-proof-all` verified 98 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
 `docs/fable-review-handoff.md`. No configured result artifact was present
 when this queue was generated.
@@ -117,6 +117,7 @@ result path; follow the output instructions in that handoff.
 | 95 | `docs/fable-direct-tier-durable-format-v1-handoff.md` | `96be26e8a1d43cac047cd57a38bf3d13f6dbb756` | `docs/reviews/fable-direct-tier-durable-format-v1.md` | `direct-tier-durable-format-v1-design-accepted` |
 | 96 | `docs/fable-hbm-dram-transfer-v1-handoff.md` | `839f377473e08994269bcac68881f3e7afa14790` | `docs/reviews/fable-hbm-dram-transfer-v1.md` | `hbm-dram-transfer-v1-design-accepted` |
 | 97 | `docs/fable-nvfp4-fused-routed-moe-v1-handoff.md` | `803ae518424aef00d98e09e73b940f6b2c9832ca` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1.md` | `nvfp4-fused-routed-moe-v1-design-accepted` |
+| 98 | `docs/fable-online-prefix-publication-v1-r2-handoff.md` | `a9b40f1b1440797a05543d5e65e61927fd141b97` | `docs/reviews/fable-online-prefix-publication-v1-r2.md` | `online-prefix-publication-v1-accepted` |
 
 ## Verification command
 
@@ -127,5 +128,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 97 current handoffs and two
+The expected queue count for this document is 98 current handoffs and two
 explicitly skipped historical umbrella handoffs.
