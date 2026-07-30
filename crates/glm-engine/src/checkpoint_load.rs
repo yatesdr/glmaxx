@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use glm_format::{
     NATIVE_PAYLOAD_ALIGNMENT, NativeRankReader, RankPayloadProof, RankTensorSink,
@@ -125,17 +125,21 @@ impl TensorArenaEntry {
 pub struct RankSetLoadPlan {
     pub header: RankSetLoadPlanHeader,
     pub ranks: [RankLoadEntry; RANK_SET_SIZE],
-    pub tensors: [Vec<TensorArenaEntry>; RANK_SET_SIZE],
+    pub tensors: [Arc<[TensorArenaEntry]>; RANK_SET_SIZE],
     plan_sha256: [u8; 32],
 }
 
 impl RankSetLoadPlan {
-    pub fn new(
+    pub fn new<T>(
         header: RankSetLoadPlanHeader,
         ranks: [RankLoadEntry; RANK_SET_SIZE],
-        tensors: [Vec<TensorArenaEntry>; RANK_SET_SIZE],
-    ) -> Result<Self, LoadPlanError> {
+        tensors: [T; RANK_SET_SIZE],
+    ) -> Result<Self, LoadPlanError>
+    where
+        T: Into<Arc<[TensorArenaEntry]>>,
+    {
         validate_header(&header)?;
+        let tensors = tensors.map(Into::into);
         validate_ranks(&header, &ranks, &tensors)?;
         let mut plan = Self {
             header,
@@ -173,7 +177,7 @@ impl RankSetLoadPlan {
             output.extend_from_slice(&encode_rank(rank));
         }
         for rank_tensors in &self.tensors {
-            for tensor in rank_tensors {
+            for tensor in rank_tensors.iter() {
                 output.extend_from_slice(&tensor.encode());
             }
         }
@@ -208,7 +212,7 @@ impl RankSetLoadPlan {
         let mut metadata_bytes = 0_u64;
         let mut primary_bytes = 0_u64;
         let mut auxiliary_bytes = 0_u64;
-        for tensor in tensors {
+        for tensor in tensors.iter() {
             metadata_bytes = metadata_bytes
                 .checked_add(tensor.metadata_bytes)
                 .ok_or(LoadPlanError::Overflow)?;
@@ -1673,7 +1677,7 @@ fn validate_header(header: &RankSetLoadPlanHeader) -> Result<(), LoadPlanError> 
 fn validate_ranks(
     header: &RankSetLoadPlanHeader,
     ranks: &[RankLoadEntry; RANK_SET_SIZE],
-    tensors: &[Vec<TensorArenaEntry>; RANK_SET_SIZE],
+    tensors: &[Arc<[TensorArenaEntry]>; RANK_SET_SIZE],
 ) -> Result<(), LoadPlanError> {
     for expected_rank in 0..RANK_SET_SIZE {
         let rank = ranks[expected_rank];
@@ -2340,7 +2344,10 @@ mod tests {
             observed.header.tensor_catalog_sha256,
             rank_invariant_tensor_catalog_sha256(&semantics).unwrap()
         );
-        assert_eq!(observed.tensors, std::array::from_fn(|_| layout.clone()));
+        assert_eq!(
+            observed.tensors,
+            std::array::from_fn(|_| Arc::from(layout.clone()))
+        );
         for (rank, manifest) in manifests.iter().enumerate() {
             assert_eq!(observed.ranks[rank].rank, u8::try_from(rank).unwrap());
             assert_eq!(
@@ -2427,7 +2434,7 @@ mod tests {
     fn arena_overlap_and_unbounded_tail_are_rejected() {
         let valid = plan();
         let mut overlap = valid.tensors.clone();
-        overlap[2][1].primary_destination_offset = 256;
+        Arc::make_mut(&mut overlap[2])[1].primary_destination_offset = 256;
         let mut ranks = valid.ranks;
         ranks[2].arena_layout_sha256 = arena_layout_sha256(2, 1024, 256, &overlap[2]);
         assert_eq!(
@@ -2457,7 +2464,7 @@ mod tests {
 
         let valid = plan();
         let mut tensors = valid.tensors.clone();
-        tensors[3][1].codec_id += 1;
+        Arc::make_mut(&mut tensors[3])[1].codec_id += 1;
         let mut ranks = valid.ranks;
         ranks[3].arena_layout_sha256 = arena_layout_sha256(3, 1024, 256, &tensors[3]);
         assert_eq!(

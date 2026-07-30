@@ -19,7 +19,7 @@ mod worker;
 
 pub use checkpoint_cuda::{
     AcknowledgedCudaRank, CudaArenaVerificationEvidence, CudaQuarantinedArena, CudaWeightArena,
-    PreparedCudaRank, RankCheckpointLoadError,
+    DeviceArenaSpan, DeviceTensorBinding, PreparedCudaRank, RankCheckpointLoadError,
 };
 pub use checkpoint_load::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, AdoptionCommand, LOAD_PLAN_HEADER_BYTES,

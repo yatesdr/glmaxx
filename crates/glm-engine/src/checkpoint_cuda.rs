@@ -3,6 +3,7 @@ use std::{
     fmt,
     marker::PhantomData,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,7 @@ use crate::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, LoadPlanError, PlannedRankTensorSink,
     PreparedRankReceipt, PreparedRankSet, QuarantinedArenaWriter, RANK_SET_SIZE,
     READER_CHUNK_BYTES, RankArenaLifecycle, RankLoadTimingEvidence, RankLoadVerificationEvidence,
-    RankSetLoadPlan, WeightArenaExecutionPermit,
+    RankSetLoadPlan, TensorArenaEntry, WeightArenaExecutionPermit,
 };
 
 const DEVICE_ALIGNMENT: u64 = 256;
@@ -387,9 +388,10 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
         })
     }
 
-    pub fn adopt(
+    fn adopt(
         mut self,
         permit: WeightArenaExecutionPermit,
+        tensor_layout: Arc<[TensorArenaEntry]>,
     ) -> Result<CudaWeightArena<B>, LoadPlanError> {
         if !self.sealed
             || !self.content_verified
@@ -397,6 +399,8 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
             || permit.rank() != self.rank
             || permit.plan_sha256() != self.plan_sha256
             || permit.owner_allocation_generation() != self.owner_allocation_generation
+            || validate_resident_layout(&tensor_layout, self.weight_bytes, self.metadata_bytes)
+                .is_err()
         {
             return Err(LoadPlanError::Adoption);
         }
@@ -405,6 +409,7 @@ impl<B: RankLoadBackend> CudaQuarantinedArena<B> {
             permit,
             weight_bytes: self.weight_bytes,
             metadata_bytes: self.metadata_bytes,
+            tensor_layout,
             resources,
         })
     }
@@ -669,6 +674,7 @@ impl<B: RankLoadBackend> QuarantinedArenaWriter for CudaQuarantinedArena<B> {
 /// carries only a copyable receipt across the coordinator boundary.
 pub struct PreparedCudaRank<B: RankLoadBackend> {
     arena: CudaQuarantinedArena<B>,
+    tensor_layout: Arc<[TensorArenaEntry]>,
     lifecycle: RankArenaLifecycle,
     receipt: PreparedRankReceipt,
 }
@@ -719,8 +725,14 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
             verification_evidence,
         )?;
         lifecycle.prepare(plan, receipt)?;
+        let tensor_layout = plan
+            .tensors
+            .get(usize::from(rank))
+            .ok_or(LoadPlanError::Rank)?
+            .clone();
         Ok(Self {
             arena,
+            tensor_layout,
             lifecycle,
             receipt,
         })
@@ -737,6 +749,7 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
     ) -> Result<(AcknowledgedCudaRank<B>, AdoptionAcknowledgement), RankCheckpointLoadError> {
         let Self {
             arena,
+            tensor_layout,
             mut lifecycle,
             receipt,
         } = self;
@@ -744,6 +757,7 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
         Ok((
             AcknowledgedCudaRank {
                 arena,
+                tensor_layout,
                 lifecycle,
                 receipt,
             },
@@ -769,6 +783,7 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
 /// returns the final four-rank adopted receipt.
 pub struct AcknowledgedCudaRank<B: RankLoadBackend> {
     arena: CudaQuarantinedArena<B>,
+    tensor_layout: Arc<[TensorArenaEntry]>,
     lifecycle: RankArenaLifecycle,
     receipt: PreparedRankReceipt,
 }
@@ -784,10 +799,13 @@ impl<B: RankLoadBackend> AcknowledgedCudaRank<B> {
         adopted: AdoptedRankSetReceipt,
     ) -> Result<CudaWeightArena<B>, RankCheckpointLoadError> {
         let Self {
-            arena, lifecycle, ..
+            arena,
+            tensor_layout,
+            lifecycle,
+            ..
         } = self;
         let permit = lifecycle.execution_permit(adopted)?;
-        arena.adopt(permit).map_err(Into::into)
+        arena.adopt(permit, tensor_layout).map_err(Into::into)
     }
 
     pub fn abort_and_release(self) -> Result<(), RankCheckpointLoadError> {
@@ -804,12 +822,86 @@ impl<B: RankLoadBackend> AcknowledgedCudaRank<B> {
 
 /// Globally adopted immutable device weight arenas.
 ///
-/// This is the first type in the load path that exposes device pointers.
+/// This is the first type in the load path that can resolve authenticated
+/// tensor IDs to device pointers.
 pub struct CudaWeightArena<B: RankLoadBackend> {
     permit: WeightArenaExecutionPermit,
     weight_bytes: u64,
     metadata_bytes: u64,
+    tensor_layout: Arc<[TensorArenaEntry]>,
     resources: CudaArenaResources<B>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceArenaSpan {
+    pointer: u64,
+    bytes: u64,
+}
+
+impl DeviceArenaSpan {
+    #[must_use]
+    pub const fn pointer(self) -> u64 {
+        self.pointer
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceTensorBinding {
+    tensor_id: u32,
+    role_id: u16,
+    codec_id: u16,
+    descriptor_flags: u32,
+    required_device_alignment: u32,
+    metadata: Option<DeviceArenaSpan>,
+    primary: DeviceArenaSpan,
+    auxiliary: Option<DeviceArenaSpan>,
+}
+
+impl DeviceTensorBinding {
+    #[must_use]
+    pub const fn tensor_id(self) -> u32 {
+        self.tensor_id
+    }
+
+    #[must_use]
+    pub const fn role_id(self) -> u16 {
+        self.role_id
+    }
+
+    #[must_use]
+    pub const fn codec_id(self) -> u16 {
+        self.codec_id
+    }
+
+    #[must_use]
+    pub const fn descriptor_flags(self) -> u32 {
+        self.descriptor_flags
+    }
+
+    #[must_use]
+    pub const fn required_device_alignment(self) -> u32 {
+        self.required_device_alignment
+    }
+
+    #[must_use]
+    pub const fn metadata(self) -> Option<DeviceArenaSpan> {
+        self.metadata
+    }
+
+    #[must_use]
+    pub const fn primary(self) -> DeviceArenaSpan {
+        self.primary
+    }
+
+    #[must_use]
+    pub const fn auxiliary(self) -> Option<DeviceArenaSpan> {
+        self.auxiliary
+    }
 }
 
 impl<B: RankLoadBackend> CudaWeightArena<B> {
@@ -819,14 +911,14 @@ impl<B: RankLoadBackend> CudaWeightArena<B> {
     }
 
     #[must_use]
-    pub fn weight_pointer(&self) -> u64 {
+    fn weight_pointer(&self) -> u64 {
         self.resources
             .weight_pointer
             .expect("adopted arena retains weight allocation")
     }
 
     #[must_use]
-    pub fn metadata_pointer(&self) -> u64 {
+    fn metadata_pointer(&self) -> u64 {
         self.resources
             .metadata_pointer
             .expect("adopted arena retains metadata allocation")
@@ -842,9 +934,165 @@ impl<B: RankLoadBackend> CudaWeightArena<B> {
         self.metadata_bytes
     }
 
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        self.tensor_layout.len()
+    }
+
+    #[must_use]
+    pub fn plan_sha256(&self) -> [u8; 32] {
+        self.permit.plan_sha256()
+    }
+
+    #[must_use]
+    pub fn owner_allocation_generation(&self) -> u64 {
+        self.permit.owner_allocation_generation()
+    }
+
+    /// Resolves one authenticated tensor ID to absolute device spans.
+    ///
+    /// The layout is copied from the validated rank-set plan before global
+    /// adoption. No name lookup, caller-provided offset, or rank-local codec
+    /// choice participates in this operation.
+    pub fn tensor_binding(&self, tensor_id: u32) -> Result<DeviceTensorBinding, LoadPlanError> {
+        let entry = self
+            .tensor_layout
+            .get(usize::try_from(tensor_id).map_err(|_| LoadPlanError::Overflow)?)
+            .copied()
+            .ok_or(LoadPlanError::Tensor)?;
+        if entry.tensor_id != tensor_id {
+            return Err(LoadPlanError::Tensor);
+        }
+        let weight_pointer = self.weight_pointer();
+        let metadata_pointer = self.metadata_pointer();
+        Ok(DeviceTensorBinding {
+            tensor_id,
+            role_id: entry.role_id,
+            codec_id: entry.codec_id,
+            descriptor_flags: entry.descriptor_flags,
+            required_device_alignment: entry.required_device_alignment,
+            metadata: resolve_optional_span(
+                metadata_pointer,
+                self.metadata_bytes,
+                entry.metadata_destination_offset,
+                entry.metadata_bytes,
+                entry.required_device_alignment,
+            )?,
+            primary: resolve_required_span(
+                weight_pointer,
+                self.weight_bytes,
+                entry.primary_destination_offset,
+                entry.primary_bytes,
+                entry.required_device_alignment,
+            )?,
+            auxiliary: resolve_optional_span(
+                weight_pointer,
+                self.weight_bytes,
+                entry.auxiliary_destination_offset,
+                entry.auxiliary_bytes,
+                entry.required_device_alignment,
+            )?,
+        })
+    }
+
     pub fn shutdown(mut self) -> Result<(), KernelError> {
         self.resources.cleanup()
     }
+}
+
+fn validate_resident_layout(
+    tensor_layout: &[TensorArenaEntry],
+    weight_bytes: u64,
+    metadata_bytes: u64,
+) -> Result<(), LoadPlanError> {
+    if tensor_layout.is_empty() || weight_bytes == 0 || metadata_bytes == 0 {
+        return Err(LoadPlanError::Tensor);
+    }
+    for (expected_id, entry) in tensor_layout.iter().copied().enumerate() {
+        if entry.tensor_id != u32::try_from(expected_id).map_err(|_| LoadPlanError::Overflow)?
+            || entry.role_id == 0
+            || entry.codec_id == 0
+            || entry.primary_bytes == 0
+            || entry.required_device_alignment == 0
+            || !entry.required_device_alignment.is_power_of_two()
+        {
+            return Err(LoadPlanError::Tensor);
+        }
+        validate_relative_span(
+            entry.primary_destination_offset,
+            entry.primary_bytes,
+            weight_bytes,
+            entry.required_device_alignment,
+            true,
+        )?;
+        validate_relative_span(
+            entry.auxiliary_destination_offset,
+            entry.auxiliary_bytes,
+            weight_bytes,
+            entry.required_device_alignment,
+            false,
+        )?;
+        validate_relative_span(
+            entry.metadata_destination_offset,
+            entry.metadata_bytes,
+            metadata_bytes,
+            entry.required_device_alignment,
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_relative_span(
+    offset: u64,
+    bytes: u64,
+    capacity: u64,
+    alignment: u32,
+    required: bool,
+) -> Result<(), LoadPlanError> {
+    if bytes == 0 {
+        return if required || offset > capacity {
+            Err(LoadPlanError::Bounds)
+        } else {
+            Ok(())
+        };
+    }
+    let alignment = u64::from(alignment);
+    if !offset.is_multiple_of(alignment)
+        || offset.checked_add(bytes).is_none_or(|end| end > capacity)
+    {
+        return Err(LoadPlanError::Bounds);
+    }
+    Ok(())
+}
+
+fn resolve_required_span(
+    base: u64,
+    capacity: u64,
+    offset: u64,
+    bytes: u64,
+    alignment: u32,
+) -> Result<DeviceArenaSpan, LoadPlanError> {
+    validate_relative_span(offset, bytes, capacity, alignment, true)?;
+    let pointer = base.checked_add(offset).ok_or(LoadPlanError::Overflow)?;
+    if !pointer.is_multiple_of(u64::from(alignment)) {
+        return Err(LoadPlanError::Alignment);
+    }
+    Ok(DeviceArenaSpan { pointer, bytes })
+}
+
+fn resolve_optional_span(
+    base: u64,
+    capacity: u64,
+    offset: u64,
+    bytes: u64,
+    alignment: u32,
+) -> Result<Option<DeviceArenaSpan>, LoadPlanError> {
+    validate_relative_span(offset, bytes, capacity, alignment, false)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+    resolve_required_span(base, capacity, offset, bytes, alignment).map(Some)
 }
 
 fn require_handle(handle: u64, alignment: u64) -> Result<(), KernelError> {
@@ -1306,7 +1554,7 @@ mod tests {
     }
 
     fn load_plan() -> RankSetLoadPlan {
-        let tensor = crate::TensorArenaEntry {
+        let tensor = TensorArenaEntry {
             tensor_id: 0,
             role_id: 1,
             codec_id: 1,
@@ -1367,6 +1615,22 @@ mod tests {
         .unwrap()
     }
 
+    fn resident_layout() -> Arc<[TensorArenaEntry]> {
+        Arc::from([TensorArenaEntry {
+            tensor_id: 0,
+            role_id: 0x0501,
+            codec_id: 0x0004,
+            descriptor_flags: 7,
+            metadata_destination_offset: 0,
+            metadata_bytes: 256,
+            primary_destination_offset: 0,
+            primary_bytes: 768,
+            auxiliary_destination_offset: 768,
+            auxiliary_bytes: 256,
+            required_device_alignment: 256,
+        }])
+    }
+
     #[test]
     fn fixed_ring_waits_before_reuse_and_only_adopted_type_exposes_pointers() {
         let (mut arena, state) = arena();
@@ -1407,12 +1671,43 @@ mod tests {
         );
         assert_eq!(arena.write_weight(20, &[]), Err(KernelError::Async(-1)));
         let permit = WeightArenaExecutionPermit::test_only(2, [9; 32], 17);
-        let adopted = arena.adopt(permit).unwrap();
+        let adopted = arena.adopt(permit, resident_layout()).unwrap();
         assert_eq!(adopted.rank(), 2);
         assert_eq!(adopted.weight_pointer(), 0x10_0000);
         assert_eq!(adopted.metadata_pointer(), 0x20_0000);
         assert_eq!(adopted.weight_bytes(), 1024);
         assert_eq!(adopted.metadata_bytes(), 256);
+        assert_eq!(adopted.tensor_count(), 1);
+        assert_eq!(adopted.plan_sha256(), [9; 32]);
+        assert_eq!(adopted.owner_allocation_generation(), 17);
+        let tensor = adopted.tensor_binding(0).unwrap();
+        assert_eq!(tensor.tensor_id(), 0);
+        assert_eq!(tensor.role_id(), 0x0501);
+        assert_eq!(tensor.codec_id(), 0x0004);
+        assert_eq!(tensor.descriptor_flags(), 7);
+        assert_eq!(tensor.required_device_alignment(), 256);
+        assert_eq!(
+            tensor.metadata(),
+            Some(DeviceArenaSpan {
+                pointer: 0x20_0000,
+                bytes: 256
+            })
+        );
+        assert_eq!(
+            tensor.primary(),
+            DeviceArenaSpan {
+                pointer: 0x10_0000,
+                bytes: 768
+            }
+        );
+        assert_eq!(
+            tensor.auxiliary(),
+            Some(DeviceArenaSpan {
+                pointer: 0x10_0300,
+                bytes: 256
+            })
+        );
+        assert_eq!(adopted.tensor_binding(1), Err(LoadPlanError::Tensor));
         adopted.shutdown().unwrap();
 
         let operations = &state.lock().unwrap().operations;
@@ -1444,6 +1739,52 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn adopted_tensor_bindings_reject_layout_drift_and_encode_absent_planes_as_none() {
+        for mutation in 0..4 {
+            let (mut arena, _) = arena();
+            arena.drain_and_seal().unwrap();
+            arena.verify_device_contents().unwrap();
+            let mut layout = resident_layout();
+            match mutation {
+                0 => Arc::make_mut(&mut layout)[0].tensor_id = 1,
+                1 => Arc::make_mut(&mut layout)[0].role_id = 0,
+                2 => Arc::make_mut(&mut layout)[0].primary_destination_offset = 512,
+                3 => Arc::make_mut(&mut layout)[0].required_device_alignment = 192,
+                _ => unreachable!(),
+            }
+            let permit = WeightArenaExecutionPermit::test_only(2, [9; 32], 17);
+            assert!(matches!(
+                arena.adopt(permit, layout),
+                Err(LoadPlanError::Adoption)
+            ));
+        }
+
+        let (mut arena, _) = arena();
+        arena.drain_and_seal().unwrap();
+        arena.verify_device_contents().unwrap();
+        let layout = Arc::from([TensorArenaEntry {
+            tensor_id: 0,
+            role_id: 0x0003,
+            codec_id: 0x0001,
+            descriptor_flags: 0,
+            metadata_destination_offset: 256,
+            metadata_bytes: 0,
+            primary_destination_offset: 0,
+            primary_bytes: 1024,
+            auxiliary_destination_offset: 1024,
+            auxiliary_bytes: 0,
+            required_device_alignment: 256,
+        }]);
+        let permit = WeightArenaExecutionPermit::test_only(2, [9; 32], 17);
+        let adopted = arena.adopt(permit, layout).unwrap();
+        let tensor = adopted.tensor_binding(0).unwrap();
+        assert_eq!(tensor.metadata(), None);
+        assert_eq!(tensor.auxiliary(), None);
+        assert_eq!(tensor.primary().pointer(), adopted.weight_pointer());
+        adopted.shutdown().unwrap();
     }
 
     #[test]
@@ -1508,7 +1849,10 @@ mod tests {
         arena.drain_and_seal().unwrap();
         arena.verify_device_contents().unwrap();
         let wrong = WeightArenaExecutionPermit::test_only(1, [9; 32], 17);
-        assert!(matches!(arena.adopt(wrong), Err(LoadPlanError::Adoption)));
+        assert!(matches!(
+            arena.adopt(wrong, resident_layout()),
+            Err(LoadPlanError::Adoption)
+        ));
 
         let operations = &state.lock().unwrap().operations;
         assert!(
@@ -1535,7 +1879,10 @@ mod tests {
             Err(KernelError::DeviceValidation(READBACK_MISMATCH))
         );
         let permit = WeightArenaExecutionPermit::test_only(2, [9; 32], 17);
-        assert!(matches!(arena.adopt(permit), Err(LoadPlanError::Adoption)));
+        assert!(matches!(
+            arena.adopt(permit, resident_layout()),
+            Err(LoadPlanError::Adoption)
+        ));
     }
 
     #[test]
@@ -1572,6 +1919,7 @@ mod tests {
         lifecycle.prepare(&plan, receipts[2]).unwrap();
         let local = PreparedCudaRank {
             arena,
+            tensor_layout: plan.tensors[2].clone(),
             lifecycle,
             receipt: receipts[2],
         };
@@ -1592,6 +1940,7 @@ mod tests {
         let adopted = acknowledged.adopt(adopted_receipt).unwrap();
         assert_eq!(adopted.rank(), 2);
         assert_eq!(adopted.weight_pointer(), 0x10_0000);
+        assert!(Arc::ptr_eq(&adopted.tensor_layout, &plan.tensors[2]));
         adopted.shutdown().unwrap();
 
         assert_eq!(
