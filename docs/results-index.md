@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Current CPU implementation baseline:
-`4fc17f2204cac987f8f27eed61af279e3b446bcd`
+`dfc1253c961c1d5aeaf7b490842d4d7528f69bb1`
 
-The complete local gate most recently ran against active-prefix record
-binding implementation
-`6a5c574bf7a3d4060cb28ef78bc0425bd61f305a`. The
+The complete local gate most recently ran against native-rank load-plan
+implementation
+`dfc1253c961c1d5aeaf7b490842d4d7528f69bb1`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -140,6 +140,14 @@ adoption-bound `WeightsLoaded` startup transition. The exact candidate passes
 309 tests and the complete local gate. This is not a native-rank plan
 builder, CUDA upload, checkpoint smoke, device-residency, or production
 health result.
+The native-rank load-plan successor is pinned in
+`docs/native-rank-load-plan-proof-v1.md`. Candidate `dfc1253` requires four
+authenticated capacity-EXL3 readers, derives the common 59,585-entry semantic
+catalog, and constructs each 81,605,027,840-byte weight plus 14,942,048-byte
+metadata arena from the compiled checkpoint contract rather than
+file-controlled plane lengths. The exact candidate passes 314 tests and the
+complete local gate. Complete rank files, device allocation, CUDA upload,
+checkpoint smoke, and GPU evidence remain absent.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -147,16 +155,14 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest complete local run against page-reuse implementation `cd42ad4`
+The latest complete local run against native-rank load-plan implementation
+`dfc1253`
 passed:
 
-- `scripts/local-checks.sh` passes 286 Rust tests with zero failures,
+- `scripts/local-checks.sh` passes 314 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 69 candidate-based review-handoff
-  hash proofs with 0/50 configured result artifacts;
-- a later standalone `review-proof-all` run passes all 72 current handoffs
-  with 0/53 configured result artifacts; code and deterministic fixtures are
-  unchanged since the 286-test run;
+  deterministic proof regeneration, and all 79 candidate-based review-handoff
+  hash proofs with 0/60 configured result artifacts;
 - new cache regressions prove exact target/draft ID quarantine, wrong or
   missing generation rejection, mutation freeze while bound, post-receipt
   reuse, accepted-page identity preservation, and rejected-suffix retirement;
