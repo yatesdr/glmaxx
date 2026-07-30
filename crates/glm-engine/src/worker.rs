@@ -3225,7 +3225,33 @@ mod tests {
     }
 
     #[test]
-    fn queue_is_bounded_and_rank_divergence_fails_the_step() {
+    fn queue_is_bounded_while_the_physical_step_is_active() {
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Barrier::new(5));
+        let executors = std::array::from_fn(|_| {
+            Box::new(FirstStepBlockingRankExecutor {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+                calls: 0,
+            }) as Box<dyn RankExecutor + Send>
+        });
+        let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        let (plan, schedule) = step(1);
+        let handle = pool.try_submit(plan, schedule).unwrap();
+        entered.wait();
+
+        let (next_plan, next_schedule) = step(2);
+        assert!(matches!(
+            pool.try_submit(next_plan, next_schedule),
+            Err(WorkerError::Saturated)
+        ));
+
+        release.wait();
+        handle.receive().unwrap();
+    }
+
+    #[test]
+    fn rank_divergence_fails_the_step_and_closes_the_generation() {
         let pool = Tp4WorkerPool::spawn_cpu(
             1,
             Some(MockWorkerFault::DivergentOutput {
@@ -3236,12 +3262,14 @@ mod tests {
         .unwrap();
         let (plan, schedule) = step(1);
         let handle = pool.try_submit(plan, schedule).unwrap();
+        assert!(matches!(handle.receive(), Err(WorkerError::Consensus)));
+        assert!(pool.is_closed());
+        assert!(!pool.quota_poisoned());
         let (next_plan, next_schedule) = step(2);
         assert!(matches!(
             pool.try_submit(next_plan, next_schedule),
-            Err(WorkerError::Saturated)
+            Err(WorkerError::Closed)
         ));
-        assert!(matches!(handle.receive(), Err(WorkerError::Consensus)));
     }
 
     #[test]
@@ -3610,13 +3638,14 @@ mod tests {
                 phase: RankWeightPhase::Abort
             })
         );
-        assert_eq!(
+        assert!(failure.cleanup_acknowledgements[2].is_none());
+        assert!(
             failure
                 .cleanup_acknowledgements
                 .iter()
                 .filter(|acknowledgement| acknowledgement.is_some())
-                .count(),
-            RANK_SET_SIZE - 1
+                .count()
+                < RANK_SET_SIZE
         );
     }
 

@@ -149,6 +149,14 @@ proves the normal exclusive terminal path publishes `CLOSED`, clears
 exclusive occupancy to zero, does not fabricate poison, and rejects later
 ordinary admission as `Closed`.
 
+`queue_is_bounded_while_the_physical_step_is_active` uses a five-party
+barrier to prove the second step is rejected as `Saturated` only while all
+four ranks are known to be inside the first physical operation.
+
+`rank_divergence_fails_the_step_and_closes_the_generation` separately proves
+an exact consensus failure, closure-before-response, zero fabricated poison,
+and a subsequent `Closed` admission result.
+
 The prior implementation fails the first two poison regressions and has no
 stable closed-state assertion for the last regression.
 
@@ -162,12 +170,27 @@ cargo test --offline -p glm-engine worker::tests
 cargo clippy --offline -p glm-engine --all-targets -- -D warnings
 ```
 
-The exact worker filter reports 25 passing tests. After an exploratory silent
-loop returned a failure without retaining its test output, the full verbose
-filter passed 50 consecutive invocations and a failure-capturing silent loop
-passed 100 consecutive invocations. The independent reviewer must repeat the
-failure-capturing loop rather than treating the exploratory result as
-evidence:
+The exact worker filter reports 26 passing tests.
+
+Pre-freeze failure-capturing stress found two timing assumptions in retained
+tests:
+
+1. the old combined queue/divergence test could finish the divergent step and
+   correctly publish `Closed` before it asserted that a second submission
+   must return `Saturated`; and
+2. the phase-timeout test required exactly three cleanup acknowledgements
+   within a 5 ms deadline even though the contract returns the exact partial
+   set observed by that deadline.
+
+The first test is now split into the barrier-backed bounded-queue test and the
+independent closure test described above. The timeout test now requires the
+delayed rank acknowledgement to be absent and the returned set to be
+incomplete. Non-timeout cleanup tests continue to require all four exact
+acknowledgements.
+
+After both corrections, the failure-capturing filter passed 500 consecutive
+fresh test-process invocations. The independent reviewer must repeat at least
+100:
 
 ```text
 for run_index in {1..100}; do
@@ -179,8 +202,9 @@ for run_index in {1..100}; do
 done
 ```
 
-No claim is made that timing-sensitive host tests or the operating system can
-never fail.
+No claim is made that the operating system or hardware can never fail. The
+repeat gate now avoids asserting an ordering or completion count that the
+worker contract does not promise.
 
 ## Retained behavior
 
@@ -235,4 +259,4 @@ The reviewer must verify:
 Withhold acceptance for flag/count aliasing, lost or double release,
 poison/closure clearing, response-before-closure, fabricated poison on a
 normal terminal path, incorrect error mapping, a nondistinguishing
-regression, unexplained repeat failure, or any GPU/model overstatement.
+regression, repeat failure, or any GPU/model overstatement.
