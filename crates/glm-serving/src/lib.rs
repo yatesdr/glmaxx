@@ -986,6 +986,7 @@ impl From<PrefixRestoreError> for ServingError {
 mod tests {
     use std::{
         fs,
+        sync::{Arc, Barrier},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1138,6 +1139,26 @@ mod tests {
         (plan, schedule)
     }
 
+    struct BlockingReservationRankExecutor {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    impl RankExecutor for BlockingReservationRankExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.entered.wait();
+            self.release.wait();
+            let token = CommittedTokens::target(1).map_err(|_| RankExecutionError::Invariant)?;
+            StepOutput::new(&vec![token; usize::from(plan.active_sequences)])
+                .map_err(|_| RankExecutionError::Invariant)
+        }
+    }
+
     #[test]
     fn step_observation_captures_exact_graph_routes_bytes_and_host_split() {
         let mut serving = coordinator(None);
@@ -1279,9 +1300,18 @@ mod tests {
 
     #[test]
     fn submit_failure_fails_selected_rows_without_stranding_inflight() {
-        let workers = Tp4WorkerPool::spawn_cpu(1, None).unwrap();
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Barrier::new(5));
+        let executors = std::array::from_fn(|_| {
+            Box::new(BlockingReservationRankExecutor {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(1, executors).unwrap();
         let (plan, schedule) = worker_reservation_step();
         let held_slot = workers.try_submit(plan, schedule).unwrap();
+        entered.wait();
         let mut serving = coordinator_with_workers(workers);
         serving
             .admit_prevalidated(ServingRequest {
@@ -1310,7 +1340,8 @@ mod tests {
             serving.drain_events(),
             vec![RequestEvent::Failed { request_id: 93 }]
         );
-        drop(held_slot);
+        release.wait();
+        held_slot.receive().unwrap();
         assert!(!serving.tick().unwrap());
     }
 
