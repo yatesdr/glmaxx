@@ -50,12 +50,11 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at retained HTTP startup implementation `2d99fe1` plus
-evidence correction `5066e4c` passed:
+The latest local run at retained HTTP startup status `9207548` passed:
 
 - `scripts/local-checks.sh`: 264 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 58 then-present candidate-based review-handoff hash proofs;
+  and all 59 candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -336,11 +335,12 @@ Excluded scope:
   one-layer, checkpoint, quality, capacity, or serving claim was made.
 
 The record pins the container digest, toolchains, source state, artifact
-hashes, and raw evidence hashes. A final read-only inventory is recorded in
-`docs/cn4-release-20260729.md`: it found an existing four-rank vLLM allocation
-and no GLMAXX process, launched no CUDA work, and immediately released cn4.
-This repository currently has no authorization to reconnect or launch work
-there.
+hashes, and raw evidence hashes. The final read-only confirmation in
+`docs/cn4-release-20260729.md` found an unrelated four-rank vLLM job occupying
+95,496–95,632 MiB per GPU, no GLMAXX process, and no project-named shared
+memory. It launched no CUDA work, disturbed no process, and immediately
+released cn4. This repository currently has no authorization to reconnect or
+launch work there.
 
 ## Adversarial gate state
 
