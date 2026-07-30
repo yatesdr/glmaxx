@@ -516,11 +516,13 @@ pub fn load_native_checkpoint(
 
     let preflight_identities =
         std::array::from_fn(|rank| [u8::try_from(rank).expect("four ranks fit") + 1; 32]);
-    build_rank_set_load_plan(
+    let preflight_plan = build_rank_set_load_plan(
         reader_refs,
         config.rank_set_environment(preflight_identities, memory_plan_sha256),
     )
     .map_err(NativeCheckpointStartupError::Plan)?;
+    validate_checkpoint_arena_budget(&preflight_plan, &config.memory_plan)
+        .map_err(NativeCheckpointStartupError::Plan)?;
 
     let pool = Tp4WorkerPool::spawn_native_checkpoint_loaders(
         config.maximum_outstanding,
@@ -553,6 +555,33 @@ pub fn load_native_checkpoint(
         load_outcome,
         device_identity_sha256,
     })
+}
+
+fn validate_checkpoint_arena_budget(
+    plan: &RankSetLoadPlan,
+    memory_plan: &SystemMemoryPlan,
+) -> Result<(), LoadPlanError> {
+    for rank in 0..RANK_SET_SIZE {
+        let load = plan.ranks.get(rank).ok_or(LoadPlanError::Rank)?;
+        let memory = memory_plan.ranks.get(rank).ok_or(LoadPlanError::Memory)?;
+        let physical_arena_bytes = load
+            .device_weight_arena_bytes
+            .checked_add(load.device_metadata_arena_bytes)
+            .ok_or(LoadPlanError::Overflow)?;
+        let weight_and_metadata_budget = memory
+            .terms
+            .weights
+            .checked_add(memory.terms.model_metadata)
+            .ok_or(LoadPlanError::Overflow)?;
+        if usize::from(load.rank) != rank
+            || usize::from(memory.rank) != rank
+            || load.file_payload_bytes != memory.terms.weights
+            || physical_arena_bytes > weight_and_metadata_budget
+        {
+            return Err(LoadPlanError::Memory);
+        }
+    }
+    Ok(())
 }
 
 impl NativeCheckpointStartupConfig {
