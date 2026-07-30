@@ -83,6 +83,9 @@ The latest local run at canonical page-table delta implementation
 - `scripts/local-checks.sh`: 278 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
   and all 66 candidate-based review-handoff hash proofs;
+- the subsequently added page-table delta handoff separately passes
+  `review-proof`; repository-wide verification now covers 67 handoffs and
+  0/48 configured result artifacts;
 - new cache regressions cover page-granular append equivalence, all 448
   tail/depth reservations, canonical tentative/admission/removal delta
   reconstruction, unchanged-prefix suffix omission, and fail-closed digest,
@@ -461,6 +464,7 @@ verdicts:
 | queue-independent backend cancellation delivery | `2ace56c` | `docs/fable-backend-lossless-cancellation-v1-handoff.md` |
 | active-prefix record and capability binding | `92568f6` | `docs/fable-active-prefix-record-binding-v1-handoff.md` |
 | serving active-page admission, step, and cleanup transaction | `326158a` | `docs/fable-serving-active-page-transaction-v1-handoff.md` |
+| canonical page-table delta and page-granular mutation | `a1d4cb4` | `docs/fable-page-table-delta-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
