@@ -162,6 +162,16 @@ black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
 fairness, cancellation/slow-client/rank/tier/restart faults, raw per-request
 evidence, the complete SM120 posture matrix, and a six-hour soak. No driver
 or load result exists yet.
+The matched runtime control design is pinned in
+`docs/matched-runtime-control-v1.md`. It adds immutable target/control
+identities, precision-membership and logical-dequant equivalence, exact
+tokenizer and stream-event rules, cache/MTP/resource matching, a fail-closed
+comparison key, paired-block statistics, and explicit unavailable,
+product-posture, invalid, and matched classes for vLLM, SGLang,
+llama.cpp/ExLlama, and retained controls. It is an unreviewed design only:
+no control revision was selected, no connector/comparator was implemented,
+no endpoint or cn4 was accessed, and no model, capacity, quality, or
+performance result is implied.
 The NVFP4 canonical decoder correction is pinned in
 `docs/nvfp4-metadata-canonicality-proof-v1.md`. It rejects resigned
 rounding/dtype/global-scale-mode and reserved-field lies, inconsistent
