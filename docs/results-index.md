@@ -3,10 +3,11 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`b22781c3bc548a4cf807cc05fab4b51f7c53d3d1`
+`b235dc854f1b43da232c056ce417c243c8a1897f`
 
-The complete local gate most recently ran against backend runtime-readiness
-implementation `b22781c3bc548a4cf807cc05fab4b51f7c53d3d1`. The
+The complete local gate most recently ran against distributed-greedy
+all-masked rejection implementation
+`b235dc854f1b43da232c056ce417c243c8a1897f`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -43,6 +44,9 @@ The coordinator API backend now waits for a receipt from inside its runtime
 thread before publishing production health and synchronously joins and
 destroys the complete coordinator/TP4 ownership tree after a pre-ready
 failure.
+The distributed greedy CPU reference now rejects a globally all-masked
+vocabulary row instead of turning four `-inf` rank winners into token zero,
+while retaining legal rank-local masked partitions.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -50,13 +54,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at backend runtime-readiness implementation `b22781c`
-passed:
+The latest local run at distributed-greedy all-masked implementation
+`b235dc8` passed:
 
-- `scripts/local-checks.sh`: 265 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 266 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 59 then-present candidate-based review-handoff hash proofs; the new
-  backend runtime-readiness handoff separately passes `review-proof`;
+  and all 60 candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
