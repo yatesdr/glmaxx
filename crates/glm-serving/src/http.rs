@@ -437,10 +437,24 @@ pub struct ApiHttpServer {
     worker_threads: Vec<JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HttpStartupFault {
+    Worker(usize),
+    Accept,
+}
+
 impl ApiHttpServer {
     pub fn bind(
         config: ApiServerConfig,
         backend: Arc<dyn ApiBackend>,
+    ) -> Result<Self, ApiServerError> {
+        Self::bind_inner(config, backend, None)
+    }
+
+    fn bind_inner(
+        config: ApiServerConfig,
+        backend: Arc<dyn ApiBackend>,
+        startup_fault: Option<HttpStartupFault>,
     ) -> Result<Self, ApiServerError> {
         config.validate()?;
         let health = backend.health();
@@ -459,22 +473,54 @@ impl ApiHttpServer {
             let worker_receiver = Arc::clone(&receiver);
             let worker_backend = Arc::clone(&backend);
             let worker_config = Arc::clone(&shared_config);
-            worker_threads.push(
+            let worker = if startup_fault == Some(HttpStartupFault::Worker(worker_id)) {
+                Err(io::Error::other(format!(
+                    "injected HTTP worker {worker_id} spawn failure"
+                )))
+            } else {
                 thread::Builder::new()
                     .name(format!("glmaxx-http-{worker_id}"))
                     .spawn(move || {
                         worker_loop(worker_receiver, worker_backend, worker_config);
-                    })?,
-            );
+                    })
+            };
+            match worker {
+                Ok(worker) => worker_threads.push(worker),
+                Err(error) => {
+                    return Err(if shutdown_http_workers(sender, worker_threads) {
+                        ApiServerError::ThreadPanic
+                    } else {
+                        error.into()
+                    });
+                }
+            }
         }
 
         let accept_shutdown = Arc::clone(&shutdown);
         let accept_config = Arc::clone(&shared_config);
-        let accept_thread = thread::Builder::new()
-            .name("glmaxx-http-accept".to_owned())
-            .spawn(move || {
-                accept_loop(listener, sender, accept_shutdown, accept_config);
-            })?;
+        let accept_thread = if startup_fault == Some(HttpStartupFault::Accept) {
+            drop(sender);
+            return Err(if shutdown_http_worker_handles(worker_threads) {
+                ApiServerError::ThreadPanic
+            } else {
+                io::Error::other("injected HTTP accept spawn failure").into()
+            });
+        } else {
+            match thread::Builder::new()
+                .name("glmaxx-http-accept".to_owned())
+                .spawn(move || {
+                    accept_loop(listener, sender, accept_shutdown, accept_config);
+                }) {
+                Ok(thread) => thread,
+                Err(error) => {
+                    return Err(if shutdown_http_worker_handles(worker_threads) {
+                        ApiServerError::ThreadPanic
+                    } else {
+                        error.into()
+                    });
+                }
+            }
+        };
         Ok(Self {
             local_addr,
             shutdown,
@@ -487,6 +533,19 @@ impl ApiHttpServer {
     pub const fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
+}
+
+fn shutdown_http_workers(sender: SyncSender<TcpStream>, workers: Vec<JoinHandle<()>>) -> bool {
+    drop(sender);
+    shutdown_http_worker_handles(workers)
+}
+
+fn shutdown_http_worker_handles(workers: Vec<JoinHandle<()>>) -> bool {
+    let mut panicked = false;
+    for worker in workers {
+        panicked |= worker.join().is_err();
+    }
+    panicked
 }
 
 impl Drop for ApiHttpServer {
@@ -1105,6 +1164,7 @@ pub enum ApiServerError {
     Config,
     BackendNotHealthy,
     Io(io::Error),
+    ThreadPanic,
 }
 
 impl fmt::Display for ApiServerError {
@@ -1343,6 +1403,39 @@ mod tests {
                 .code,
             "TRAILING_HTTP_BYTES"
         );
+    }
+
+    #[test]
+    fn startup_failure_joins_partial_http_workers_before_returning() {
+        let backend = MockBackend::healthy();
+        let mut worker_config = config();
+        worker_config.connection_workers = 4;
+        let worker_error = match ApiHttpServer::bind_inner(
+            worker_config,
+            backend.clone(),
+            Some(HttpStartupFault::Worker(2)),
+        ) {
+            Err(ApiServerError::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return;
+            }
+            Err(ApiServerError::Io(error)) => error,
+            Err(error) => panic!("unexpected HTTP worker startup error: {error}"),
+            Ok(_) => panic!("injected HTTP worker startup failure returned a server"),
+        };
+        assert!(worker_error.to_string().contains("injected HTTP worker 2"));
+        assert_eq!(Arc::strong_count(&backend), 1);
+
+        let accept_error = match ApiHttpServer::bind_inner(
+            config(),
+            backend.clone(),
+            Some(HttpStartupFault::Accept),
+        ) {
+            Err(ApiServerError::Io(error)) => error,
+            Err(error) => panic!("unexpected HTTP accept startup error: {error}"),
+            Ok(_) => panic!("injected HTTP accept startup failure returned a server"),
+        };
+        assert!(accept_error.to_string().contains("injected HTTP accept"));
+        assert_eq!(Arc::strong_count(&backend), 1);
     }
 
     #[test]
