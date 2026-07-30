@@ -115,6 +115,7 @@ result path; follow the output instructions in that handoff.
 | 93 | `docs/fable-direct-tier-extent-cpu-v1-handoff.md` | `8c27c1e6082f35cc225a8ed76255bd2724c47c6c` | `docs/reviews/fable-direct-tier-extent-cpu-v1.md` | `direct-tier-extent-cpu-v1-accepted` |
 | 94 | `docs/fable-direct-tier-state-cpu-v1-handoff.md` | `ccd636967bec031c8a8b0349a18b39113c0a6ae6` | `docs/reviews/fable-direct-tier-state-cpu-v1.md` | `direct-tier-state-cpu-v1-accepted` |
 | 95 | `docs/fable-direct-tier-durable-format-v1-handoff.md` | `96be26e8a1d43cac047cd57a38bf3d13f6dbb756` | `docs/reviews/fable-direct-tier-durable-format-v1.md` | `direct-tier-durable-format-v1-design-accepted` |
+| 96 | `docs/fable-hbm-dram-transfer-v1-handoff.md` | `839f377473e08994269bcac68881f3e7afa14790` | `docs/reviews/fable-hbm-dram-transfer-v1.md` | `hbm-dram-transfer-v1-design-accepted` |
 
 ## Verification command
 
@@ -125,5 +126,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 95 current handoffs and two
+The expected queue count for this document is 96 current handoffs and two
 explicitly skipped historical umbrella handoffs.
