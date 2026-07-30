@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
-#[cfg(feature = "cuda-ffi")]
 use std::time::{Duration, Instant};
 
 use glm_cache::{
@@ -119,6 +118,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("direct-tier-checksum-proof") => {
             let report = direct_tier_checksum_proof()?;
+            let mut json = serde_json::to_vec_pretty(&report)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
+        Some("direct-tier-checksum-worker-proof") => {
+            let report = direct_tier_checksum_worker_proof()?;
             let mut json = serde_json::to_vec_pretty(&report)?;
             json.push(b'\n');
             if let Some(path) = arguments.get(2) {
@@ -477,7 +487,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -2520,7 +2530,7 @@ fn direct_tier_checksum_proof() -> Result<DirectTierChecksumProof, Box<dyn std::
         .ticket();
     corrupt.reserve_buffer(corrupt_ticket)?;
     corrupt.submit_read(corrupt_ticket)?;
-    corrupt.read_destination_mut(corrupt_ticket)?[0] = 1;
+    corrupt.copy_into_read_destination(corrupt_ticket, 0, &[1])?;
     corrupt.complete_original(corrupt_ticket, glm_cache::DirectReadCompletion::Exact)?;
     let corrupt_job = corrupt
         .next_hash_job()?
@@ -2584,6 +2594,265 @@ fn direct_tier_checksum_proof() -> Result<DirectTierChecksumProof, Box<dyn std::
         gpu_evidence: "none: deterministic CPU checksum authority only",
         verdict: "DIRECT_TIER_CHECKSUM_AUTHORITY_PASS",
     })
+}
+
+#[derive(Serialize)]
+struct DirectTierChecksumWorkerProof {
+    schema: &'static str,
+    maximum_hash_jobs: u32,
+    worker_count: u32,
+    command_queue_capacity: u32,
+    completion_queue_capacity: u32,
+    workers_started_before_read_admission: bool,
+    queued_before_dispatch: usize,
+    running_after_dispatch: usize,
+    manual_execution_rejected: bool,
+    live_shutdown_rejected: bool,
+    completed_ticket_ids: Vec<u64>,
+    target_extent_verified: bool,
+    mtp_extent_verified: bool,
+    zero_copy_shared_allocation_verified: bool,
+    abandoned_hash_acknowledged: bool,
+    corrupt_extent_rejected: bool,
+    corrupt_buffer_quarantined: bool,
+    worker_restart_rejected: bool,
+    post_shutdown_read_rejected: bool,
+    final_worker_count: u32,
+    final_tickets: usize,
+    final_waiters: usize,
+    final_active_hash_jobs: u32,
+    final_active_buffers: usize,
+    final_quarantined_buffers: usize,
+    final_descriptors: usize,
+    final_cqes: u32,
+    final_physical_bytes: u64,
+    gpu_evidence: &'static str,
+    verdict: &'static str,
+}
+
+fn direct_tier_checksum_worker_proof()
+-> Result<DirectTierChecksumWorkerProof, Box<dyn std::error::Error>> {
+    let config = direct_tier_state_config();
+    let mut table = glm_cache::DirectRestoreTable::new(config, false)?;
+    table.start_checksum_workers(2)?;
+    let worker_count = table.checksum_worker_count();
+    let command_queue_capacity = table.checksum_worker_capacity();
+    let completion_queue_capacity = table.checksum_worker_capacity();
+    let workers_started_before_read_admission =
+        table.ticket_count() == 0 && table.active_hash_jobs() == 0 && worker_count == 2;
+
+    let target = table
+        .plan(
+            direct_tier_state_request(1, 1, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 41),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    let mtp = table
+        .plan(
+            direct_tier_state_request(2, 2, glm_cache::DirectTierCapability::Mtp),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Mtp, 42),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    for ticket in [target, mtp] {
+        table.reserve_buffer(ticket)?;
+        table.submit_read(ticket)?;
+        table.complete_original(ticket, glm_cache::DirectReadCompletion::Exact)?;
+    }
+    let queued_before_dispatch = table.queued_hash_jobs();
+    let manual_execution_rejected = matches!(
+        table.next_hash_job(),
+        Err(glm_cache::DirectRestoreError::HashExecutionMode)
+    );
+    for expected in [target, mtp] {
+        let dispatched = table
+            .dispatch_next_checksum()?
+            .ok_or("direct-tier checksum worker proof lost a queued task")?;
+        if dispatched.ticket() != expected {
+            return Err("direct-tier checksum worker dispatch order drift".into());
+        }
+    }
+    let running_after_dispatch = table.running_hash_jobs();
+    let live_shutdown_rejected = matches!(
+        table.shutdown_checksum_workers(),
+        Err(glm_cache::DirectRestoreError::CompletionOutstanding)
+    );
+
+    let mut completed_ticket_ids = BTreeSet::new();
+    let mut target_extent_verified = false;
+    let mut mtp_extent_verified = false;
+    let mut zero_copy_shared_allocation_verified = true;
+    for _ in 0..2 {
+        let result = wait_direct_checksum_result(&mut table)?;
+        zero_copy_shared_allocation_verified &= result.worker_shared_allocation() == Some(true);
+        if result.job().ticket() == target {
+            target_extent_verified = result.verified();
+        } else if result.job().ticket() == mtp {
+            mtp_extent_verified = result.verified();
+        } else {
+            return Err("direct-tier checksum worker returned an unknown ticket".into());
+        }
+        completed_ticket_ids.insert(result.job().ticket().0);
+        let ticket = result.job().ticket();
+        table.complete_hash(result)?;
+        table.finish_cpu_delivery(ticket)?;
+    }
+
+    let abandoned = table
+        .plan(
+            direct_tier_state_request(3, 3, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 43),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    table.reserve_buffer(abandoned)?;
+    table.submit_read(abandoned)?;
+    table.complete_original(abandoned, glm_cache::DirectReadCompletion::Exact)?;
+    let abandonment_waited_for_hash = matches!(
+        table.cancel_waiter(3, true)?,
+        glm_cache::DirectCancellation::WaitingForHashAcknowledgement
+    );
+    table
+        .dispatch_next_checksum()?
+        .ok_or("direct-tier abandoned checksum task was not dispatched")?;
+    let abandoned_result = wait_direct_checksum_result(&mut table)?;
+    zero_copy_shared_allocation_verified &=
+        abandoned_result.worker_shared_allocation() == Some(true);
+    let abandoned_result_verified = abandoned_result.verified();
+    table.complete_hash(abandoned_result)?;
+    let abandoned_hash_acknowledged = abandonment_waited_for_hash
+        && abandoned_result_verified
+        && table.ticket_count() == 0
+        && table.active_hash_jobs() == 0;
+
+    let corrupt = table
+        .plan(
+            direct_tier_state_request(4, 4, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 44),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    table.reserve_buffer(corrupt)?;
+    table.submit_read(corrupt)?;
+    table.copy_into_read_destination(corrupt, 0, &[1])?;
+    table.complete_original(corrupt, glm_cache::DirectReadCompletion::Exact)?;
+    table
+        .dispatch_next_checksum()?
+        .ok_or("direct-tier corrupt checksum task was not dispatched")?;
+    let corrupt_result = wait_direct_checksum_result(&mut table)?;
+    zero_copy_shared_allocation_verified &= corrupt_result.worker_shared_allocation() == Some(true);
+    let corrupt_extent_rejected = !corrupt_result.verified()
+        && matches!(
+            table.complete_hash(corrupt_result),
+            Err(glm_cache::DirectRestoreError::Integrity)
+        );
+    let corrupt_buffer_quarantined = table.quarantined_buffers() == 1
+        && table.ticket_count() == 0
+        && table.active_hash_jobs() == 0;
+
+    table.shutdown_checksum_workers()?;
+    let final_worker_count = table.checksum_worker_count();
+    let worker_restart_rejected = matches!(
+        table.start_checksum_workers(1),
+        Err(glm_cache::DirectRestoreError::WorkerConfig)
+    );
+    let after_shutdown = table
+        .plan(
+            direct_tier_state_request(5, 5, glm_cache::DirectTierCapability::Target),
+            direct_tier_state_record(glm_cache::DirectTierCapability::Target, 45),
+            5,
+            [0x51; 32],
+        )?
+        .ticket();
+    table.reserve_buffer(after_shutdown)?;
+    let post_shutdown_read_rejected = matches!(
+        table.submit_read(after_shutdown),
+        Err(glm_cache::DirectRestoreError::WorkerUnavailable)
+    );
+    table.cancel_waiter(5, true)?;
+    table.validate_invariants()?;
+
+    let completed_ticket_ids: Vec<_> = completed_ticket_ids.into_iter().collect();
+    let all_pass = worker_count == 2
+        && command_queue_capacity == config.maximum_hash_jobs
+        && completion_queue_capacity == config.maximum_hash_jobs
+        && workers_started_before_read_admission
+        && queued_before_dispatch == 2
+        && running_after_dispatch == 2
+        && manual_execution_rejected
+        && live_shutdown_rejected
+        && completed_ticket_ids == [target.0, mtp.0]
+        && target_extent_verified
+        && mtp_extent_verified
+        && zero_copy_shared_allocation_verified
+        && abandoned_hash_acknowledged
+        && corrupt_extent_rejected
+        && corrupt_buffer_quarantined
+        && worker_restart_rejected
+        && post_shutdown_read_rejected
+        && final_worker_count == 0
+        && table.ticket_count() == 0
+        && table.waiter_count() == 0
+        && table.active_hash_jobs() == 0
+        && table.active_buffers() == 0
+        && table.quarantined_buffers() == 1
+        && table.outstanding_descriptors() == 0
+        && table.outstanding_cqes() == 0
+        && table.physical_bytes() == 0;
+    if !all_pass {
+        return Err("direct-tier checksum worker CPU proof failed".into());
+    }
+
+    Ok(DirectTierChecksumWorkerProof {
+        schema: "glmaxx.direct-tier-checksum-workers-cpu-proof.v1",
+        maximum_hash_jobs: config.maximum_hash_jobs,
+        worker_count,
+        command_queue_capacity,
+        completion_queue_capacity,
+        workers_started_before_read_admission,
+        queued_before_dispatch,
+        running_after_dispatch,
+        manual_execution_rejected,
+        live_shutdown_rejected,
+        completed_ticket_ids,
+        target_extent_verified,
+        mtp_extent_verified,
+        zero_copy_shared_allocation_verified,
+        abandoned_hash_acknowledged,
+        corrupt_extent_rejected,
+        corrupt_buffer_quarantined,
+        worker_restart_rejected,
+        post_shutdown_read_rejected,
+        final_worker_count,
+        final_tickets: table.ticket_count(),
+        final_waiters: table.waiter_count(),
+        final_active_hash_jobs: table.active_hash_jobs(),
+        final_active_buffers: table.active_buffers(),
+        final_quarantined_buffers: table.quarantined_buffers(),
+        final_descriptors: table.outstanding_descriptors(),
+        final_cqes: table.outstanding_cqes(),
+        final_physical_bytes: table.physical_bytes(),
+        gpu_evidence: "none: deterministic fixed CPU checksum workers only",
+        verdict: "DIRECT_TIER_FIXED_CHECKSUM_WORKERS_PASS",
+    })
+}
+
+fn wait_direct_checksum_result(
+    table: &mut glm_cache::DirectRestoreTable,
+) -> Result<glm_cache::DirectHashResult, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Some(result) = table.poll_checksum_result()? {
+            return Ok(result);
+        }
+        thread::yield_now();
+    }
+    Err("direct-tier checksum worker exceeded the bounded CPU proof deadline".into())
 }
 
 fn direct_tier_state_config() -> glm_cache::DirectRestoreConfig {

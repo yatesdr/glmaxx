@@ -1,5 +1,12 @@
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
+};
+use std::thread::{self, JoinHandle};
 
+use crate::direct_state::DirectHashBuffer;
 use crate::{
     DirectBufferId, DirectBufferPool, DirectBufferState, DirectBufferStateError, DirectBufferUse,
     DirectCompletionToken, DirectDescriptorBinding, DirectDescriptorError, DirectDescriptorTable,
@@ -107,6 +114,181 @@ impl DirectHashJob {
 pub struct DirectHashResult {
     job: DirectHashJob,
     verified: bool,
+    worker_shared_allocation: Option<bool>,
+}
+
+#[derive(Debug)]
+struct DirectChecksumTask {
+    job: DirectHashJob,
+    record: Arc<DirectExtentRecord>,
+    buffer: DirectHashBuffer,
+    expected_address: usize,
+    #[cfg(test)]
+    panic_for_test: bool,
+}
+
+#[derive(Debug)]
+struct DirectChecksumCompletion {
+    job: DirectHashJob,
+    outcome: DirectChecksumOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectChecksumOutcome {
+    Verified {
+        integrity: bool,
+        shared_allocation: bool,
+    },
+    BufferFailure(DirectBufferStateError),
+    WorkerPanic,
+}
+
+#[derive(Debug)]
+struct DirectChecksumWorkers {
+    maximum_jobs: u32,
+    worker_count: u32,
+    command_sender: Option<SyncSender<DirectChecksumTask>>,
+    completion_receiver: Receiver<DirectChecksumCompletion>,
+    handles: Vec<JoinHandle<()>>,
+    failed: bool,
+}
+
+impl DirectChecksumWorkers {
+    fn new(maximum_jobs: u32, worker_count: u32) -> Result<Self, DirectRestoreError> {
+        if maximum_jobs == 0 || worker_count == 0 || worker_count > maximum_jobs {
+            return Err(DirectRestoreError::WorkerConfig);
+        }
+        let queue_capacity =
+            usize::try_from(maximum_jobs).map_err(|_| DirectRestoreError::Overflow)?;
+        let (command_sender, command_receiver) = sync_channel(queue_capacity);
+        let (completion_sender, completion_receiver) = sync_channel(queue_capacity);
+        let command_receiver = Arc::new(Mutex::new(command_receiver));
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(worker_count as usize)
+            .map_err(|_| DirectRestoreError::WorkerSpawn)?;
+        for worker in 0..worker_count {
+            let receiver = Arc::clone(&command_receiver);
+            let completions = completion_sender.clone();
+            let handle = thread::Builder::new()
+                .name(format!("glmaxx-direct-sha-{worker}"))
+                .spawn(move || direct_checksum_worker(receiver, completions));
+            match handle {
+                Ok(handle) => handles.push(handle),
+                Err(_) => {
+                    drop(command_sender);
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                    return Err(DirectRestoreError::WorkerSpawn);
+                }
+            }
+        }
+        drop(completion_sender);
+        Ok(Self {
+            maximum_jobs,
+            worker_count,
+            command_sender: Some(command_sender),
+            completion_receiver,
+            handles,
+            failed: false,
+        })
+    }
+
+    fn shutdown(mut self) -> Result<(), DirectRestoreError> {
+        self.command_sender.take();
+        let mut panicked = false;
+        for handle in self.handles.drain(..) {
+            panicked |= handle.join().is_err();
+        }
+        if panicked {
+            Err(DirectRestoreError::WorkerPanic)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for DirectChecksumWorkers {
+    fn drop(&mut self) {
+        self.command_sender.take();
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn direct_checksum_worker(
+    commands: Arc<Mutex<Receiver<DirectChecksumTask>>>,
+    completions: SyncSender<DirectChecksumCompletion>,
+) {
+    loop {
+        let task = {
+            let Ok(receiver) = commands.lock() else {
+                return;
+            };
+            match receiver.recv() {
+                Ok(task) => task,
+                Err(_) => return,
+            }
+        };
+        let physical_length = match usize::try_from(task.record.physical_length) {
+            Ok(length) => length,
+            Err(_) => {
+                if completions
+                    .send(DirectChecksumCompletion {
+                        job: task.job,
+                        outcome: DirectChecksumOutcome::Verified {
+                            integrity: false,
+                            shared_allocation: task
+                                .buffer
+                                .address()
+                                .is_ok_and(|address| address == task.expected_address),
+                        },
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+        };
+        let outcome = match catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if task.panic_for_test {
+                panic!("injected direct checksum worker panic");
+            }
+            task.buffer.verify(|bytes| {
+                let shared_allocation = task.buffer.id() == task.job.buffer
+                    && bytes.as_ptr().addr() == task.expected_address;
+                let integrity = shared_allocation
+                    && bytes
+                        .get(..physical_length)
+                        .is_some_and(|extent| decode_direct_extent(&task.record, extent).is_ok());
+                (integrity, shared_allocation)
+            })
+        })) {
+            Ok(Ok((integrity, shared_allocation))) => DirectChecksumOutcome::Verified {
+                integrity,
+                shared_allocation,
+            },
+            Ok(Err(error)) => DirectChecksumOutcome::BufferFailure(error),
+            Err(_) => DirectChecksumOutcome::WorkerPanic,
+        };
+        let worker_panicked = outcome == DirectChecksumOutcome::WorkerPanic;
+        if completions
+            .send(DirectChecksumCompletion {
+                job: task.job,
+                outcome,
+            })
+            .is_err()
+        {
+            return;
+        }
+        if worker_panicked {
+            return;
+        }
+    }
 }
 
 impl DirectHashResult {
@@ -118,6 +300,11 @@ impl DirectHashResult {
     #[must_use]
     pub const fn verified(self) -> bool {
         self.verified
+    }
+
+    #[must_use]
+    pub const fn worker_shared_allocation(self) -> Option<bool> {
+        self.worker_shared_allocation
     }
 }
 
@@ -247,7 +434,7 @@ struct DirectRestoreWaiter {
 
 #[derive(Clone, Debug)]
 struct DirectRestoreTicket {
-    record: DirectExtentRecord,
+    record: Arc<DirectExtentRecord>,
     catalog_epoch: u64,
     catalog_record_sha256: [u8; 32],
     state: DirectRestoreState,
@@ -269,6 +456,10 @@ pub struct DirectRestoreTable {
     logical_by_tenant: BTreeMap<u64, u64>,
     physical_bytes: u64,
     active_hash_jobs: u32,
+    checksum_workers: Option<DirectChecksumWorkers>,
+    checksum_workers_retired: bool,
+    #[cfg(test)]
+    panic_next_checksum_for_test: bool,
     buffers: DirectBufferPool,
     descriptors: DirectDescriptorTable,
     cq: DirectCqTracker,
@@ -302,6 +493,10 @@ impl DirectRestoreTable {
             logical_by_tenant: BTreeMap::new(),
             physical_bytes: 0,
             active_hash_jobs: 0,
+            checksum_workers: None,
+            checksum_workers_retired: false,
+            #[cfg(test)]
+            panic_next_checksum_for_test: false,
             buffers: DirectBufferPool::new(config.buffer_slots)?,
             descriptors: DirectDescriptorTable::new(config.descriptor_capacity)?,
             cq: DirectCqTracker::new(config.descriptor_capacity, cq_entries, nodrop_present)?,
@@ -385,7 +580,7 @@ impl DirectRestoreTable {
         self.tickets.insert(
             ticket_id,
             DirectRestoreTicket {
-                record,
+                record: Arc::new(record),
                 catalog_epoch,
                 catalog_record_sha256,
                 state: DirectRestoreState::Planned,
@@ -422,6 +617,16 @@ impl DirectRestoreTable {
         &mut self,
         ticket_id: DirectRestoreTicketId,
     ) -> Result<(), DirectRestoreError> {
+        if self.checksum_workers_retired {
+            return Err(DirectRestoreError::WorkerUnavailable);
+        }
+        if self
+            .checksum_workers
+            .as_ref()
+            .is_some_and(|workers| workers.failed)
+        {
+            return Err(DirectRestoreError::WorkerPanic);
+        }
         let ticket = self.ticket(ticket_id)?;
         if ticket.state != DirectRestoreState::BufferReserved
             || ticket.original_pending
@@ -465,10 +670,12 @@ impl DirectRestoreTable {
         Ok(())
     }
 
-    pub fn read_destination_mut(
+    pub fn copy_into_read_destination(
         &mut self,
         ticket_id: DirectRestoreTicketId,
-    ) -> Result<&mut [u8], DirectRestoreError> {
+        offset: u64,
+        source: &[u8],
+    ) -> Result<(), DirectRestoreError> {
         let ticket = self.ticket(ticket_id)?;
         if ticket.state != DirectRestoreState::ReadSubmitted
             || !ticket.original_pending
@@ -480,10 +687,16 @@ impl DirectRestoreTable {
         let buffer = ticket.buffer.ok_or(DirectRestoreError::State)?;
         let physical_length = usize::try_from(ticket.record.physical_length)
             .map_err(|_| DirectRestoreError::Overflow)?;
+        let offset = usize::try_from(offset).map_err(|_| DirectRestoreError::Overflow)?;
+        let end = offset
+            .checked_add(source.len())
+            .ok_or(DirectRestoreError::Overflow)?;
+        if end > physical_length {
+            return Err(DirectRestoreError::Record);
+        }
         self.buffers
-            .bytes_mut(buffer)?
-            .get_mut(..physical_length)
-            .ok_or(DirectRestoreError::Record)
+            .with_bytes_mut(buffer, |bytes| bytes[offset..end].copy_from_slice(source))?;
+        Ok(())
     }
 
     pub fn cancel_waiter(
@@ -663,7 +876,172 @@ impl DirectRestoreTable {
         }
     }
 
+    pub fn start_checksum_workers(&mut self, worker_count: u32) -> Result<(), DirectRestoreError> {
+        if self.checksum_workers.is_some()
+            || self.checksum_workers_retired
+            || self.active_hash_jobs != 0
+        {
+            return Err(DirectRestoreError::WorkerConfig);
+        }
+        self.checksum_workers = Some(DirectChecksumWorkers::new(
+            self.config.maximum_hash_jobs,
+            worker_count,
+        )?);
+        Ok(())
+    }
+
+    pub fn dispatch_next_checksum(&mut self) -> Result<Option<DirectHashJob>, DirectRestoreError> {
+        let workers = self
+            .checksum_workers
+            .as_ref()
+            .ok_or(DirectRestoreError::WorkerUnavailable)?;
+        if workers.failed {
+            return Err(DirectRestoreError::WorkerPanic);
+        }
+        let sender = workers
+            .command_sender
+            .as_ref()
+            .ok_or(DirectRestoreError::WorkerDisconnected)?
+            .clone();
+        let Some((&ticket_id, ticket)) = self
+            .tickets
+            .iter()
+            .find(|(_, ticket)| ticket.hash_state == DirectHashState::Queued)
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            ticket.state,
+            DirectRestoreState::DataReady | DirectRestoreState::Abandoned
+        ) || ticket.original_pending
+            || ticket.cancel_pending
+        {
+            return Err(DirectRestoreError::HashBinding);
+        }
+        let job = DirectHashJob {
+            ticket: ticket_id,
+            buffer: ticket.buffer.ok_or(DirectRestoreError::HashBinding)?,
+        };
+        let record = Arc::clone(&ticket.record);
+        let buffer = self.buffers.hash_buffer(job.buffer)?;
+        let expected_address = buffer.address()?;
+        #[cfg(test)]
+        let panic_for_test = std::mem::take(&mut self.panic_next_checksum_for_test);
+        let task = DirectChecksumTask {
+            job,
+            record,
+            buffer,
+            expected_address,
+            #[cfg(test)]
+            panic_for_test,
+        };
+        self.ticket_mut(ticket_id)?.hash_state = DirectHashState::Running;
+        match sender.try_send(task) {
+            Ok(()) => Ok(Some(job)),
+            Err(TrySendError::Full(_)) => {
+                self.ticket_mut(ticket_id)?.hash_state = DirectHashState::Queued;
+                Err(DirectRestoreError::WorkerWait)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.ticket_mut(ticket_id)?.hash_state = DirectHashState::Queued;
+                self.fail_checksum_pool()?;
+                Err(DirectRestoreError::WorkerDisconnected)
+            }
+        }
+    }
+
+    pub fn poll_checksum_result(&mut self) -> Result<Option<DirectHashResult>, DirectRestoreError> {
+        if self
+            .checksum_workers
+            .as_ref()
+            .ok_or(DirectRestoreError::WorkerUnavailable)?
+            .failed
+        {
+            return Err(DirectRestoreError::WorkerPanic);
+        }
+        let completion = match self
+            .checksum_workers
+            .as_ref()
+            .ok_or(DirectRestoreError::WorkerUnavailable)?
+            .completion_receiver
+            .try_recv()
+        {
+            Ok(completion) => completion,
+            Err(TryRecvError::Empty) => return Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                self.fail_checksum_pool()?;
+                return Err(DirectRestoreError::WorkerDisconnected);
+            }
+        };
+        let ticket = self.ticket(completion.job.ticket)?;
+        if !matches!(
+            ticket.state,
+            DirectRestoreState::DataReady | DirectRestoreState::Abandoned
+        ) || ticket.original_pending
+            || ticket.cancel_pending
+            || ticket.hash_state != DirectHashState::Running
+            || ticket.buffer != Some(completion.job.buffer)
+        {
+            return Err(DirectRestoreError::HashBinding);
+        }
+        match completion.outcome {
+            DirectChecksumOutcome::Verified {
+                integrity,
+                shared_allocation,
+            } => {
+                if !shared_allocation {
+                    self.fail_checksum_pool()?;
+                    return Err(DirectRestoreError::WorkerBinding);
+                }
+                Ok(Some(DirectHashResult {
+                    job: completion.job,
+                    verified: integrity,
+                    worker_shared_allocation: Some(true),
+                }))
+            }
+            DirectChecksumOutcome::BufferFailure(error) => {
+                self.fail_ticket(completion.job.ticket)?;
+                Err(error.into())
+            }
+            DirectChecksumOutcome::WorkerPanic => {
+                self.fail_checksum_pool()?;
+                Err(DirectRestoreError::WorkerPanic)
+            }
+        }
+    }
+
+    pub fn shutdown_checksum_workers(&mut self) -> Result<(), DirectRestoreError> {
+        if self.active_hash_jobs != 0 {
+            return Err(DirectRestoreError::CompletionOutstanding);
+        }
+        let workers = self
+            .checksum_workers
+            .take()
+            .ok_or(DirectRestoreError::WorkerUnavailable)?;
+        self.checksum_workers_retired = true;
+        workers.shutdown()
+    }
+
+    #[must_use]
+    pub fn checksum_worker_count(&self) -> u32 {
+        self.checksum_workers
+            .as_ref()
+            .map(|workers| workers.worker_count)
+            .unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn checksum_worker_capacity(&self) -> u32 {
+        self.checksum_workers
+            .as_ref()
+            .map(|workers| workers.maximum_jobs)
+            .unwrap_or(0)
+    }
+
     pub fn next_hash_job(&mut self) -> Result<Option<DirectHashJob>, DirectRestoreError> {
+        if self.checksum_workers.is_some() || self.checksum_workers_retired {
+            return Err(DirectRestoreError::HashExecutionMode);
+        }
         let Some((&ticket_id, ticket)) = self
             .tickets
             .iter()
@@ -688,6 +1066,9 @@ impl DirectRestoreTable {
     }
 
     pub fn run_hash_job(&self, job: DirectHashJob) -> Result<DirectHashResult, DirectRestoreError> {
+        if self.checksum_workers.is_some() || self.checksum_workers_retired {
+            return Err(DirectRestoreError::HashExecutionMode);
+        }
         let ticket = self.ticket(job.ticket)?;
         if ticket.hash_state != DirectHashState::Running
             || ticket.buffer != Some(job.buffer)
@@ -702,13 +1083,17 @@ impl DirectRestoreTable {
         }
         let physical_length = usize::try_from(ticket.record.physical_length)
             .map_err(|_| DirectRestoreError::Overflow)?;
-        let bytes = self
-            .buffers
-            .bytes(job.buffer)?
-            .get(..physical_length)
-            .ok_or(DirectRestoreError::Record)?;
-        let verified = decode_direct_extent(&ticket.record, bytes).is_ok();
-        Ok(DirectHashResult { job, verified })
+        let verified = self.buffers.with_bytes(job.buffer, |bytes| {
+            let extent = bytes
+                .get(..physical_length)
+                .ok_or(DirectRestoreError::Record)?;
+            Ok::<_, DirectRestoreError>(decode_direct_extent(&ticket.record, extent).is_ok())
+        })??;
+        Ok(DirectHashResult {
+            job,
+            verified,
+            worker_shared_allocation: None,
+        })
     }
 
     pub fn complete_hash(&mut self, result: DirectHashResult) -> Result<(), DirectRestoreError> {
@@ -861,6 +1246,11 @@ impl DirectRestoreTable {
     }
 
     pub fn validate_invariants(&self) -> Result<(), DirectRestoreError> {
+        if self.checksum_workers_retired
+            && (self.checksum_workers.is_some() || self.active_hash_jobs != 0)
+        {
+            return Err(DirectRestoreError::State);
+        }
         let maximum_waiters = self
             .tickets
             .len()
@@ -1040,7 +1430,7 @@ impl DirectRestoreTable {
         required_capability: DirectTierCapability,
     ) -> Option<DirectRestoreTicketId> {
         self.tickets.iter().find_map(|(&ticket_id, ticket)| {
-            (ticket.record == *record
+            (ticket.record.as_ref() == record
                 && ticket.catalog_epoch == catalog_epoch
                 && ticket.catalog_record_sha256 == catalog_record_sha256
                 && capability_satisfies(ticket.record.capability, required_capability)
@@ -1118,6 +1508,24 @@ impl DirectRestoreTable {
         let ticket = self.ticket(ticket_id)?;
         if !ticket.original_pending && !ticket.cancel_pending {
             self.remove_ticket(ticket_id)?;
+        }
+        Ok(())
+    }
+
+    fn fail_checksum_pool(&mut self) -> Result<(), DirectRestoreError> {
+        self.checksum_workers
+            .as_mut()
+            .ok_or(DirectRestoreError::WorkerUnavailable)?
+            .failed = true;
+        let active_tickets = self
+            .tickets
+            .iter()
+            .filter_map(|(&ticket_id, ticket)| {
+                (ticket.hash_state != DirectHashState::None).then_some(ticket_id)
+            })
+            .collect::<Vec<_>>();
+        for ticket_id in active_tickets {
+            self.fail_ticket(ticket_id)?;
         }
         Ok(())
     }
@@ -1246,6 +1654,14 @@ pub enum DirectRestoreError {
     CqUnderflow,
     HashWait,
     HashBinding,
+    HashExecutionMode,
+    WorkerConfig,
+    WorkerSpawn,
+    WorkerWait,
+    WorkerUnavailable,
+    WorkerDisconnected,
+    WorkerBinding,
+    WorkerPanic,
     Accounting,
     Overflow,
     Buffer(DirectBufferStateError),
@@ -1275,6 +1691,8 @@ impl std::error::Error for DirectRestoreError {}
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use crate::{
         DIRECT_TIER_FORMAT_VERSION, DRAFT_SIDECAR_EXTENT_LENGTH, DRAFT_SIDECAR_EXTENT_OFFSET,
         MTP_PHYSICAL_BYTES, TARGET_INDEXER_EXTENT_LENGTH, TARGET_INDEXER_EXTENT_OFFSET,
@@ -1379,7 +1797,19 @@ mod tests {
         assert_eq!(job.ticket(), expected_ticket);
         let result = table.run_hash_job(job).unwrap();
         assert!(result.verified());
+        assert_eq!(result.worker_shared_allocation(), None);
         table.complete_hash(result).unwrap();
+    }
+
+    fn wait_checksum_result(table: &mut DirectRestoreTable) -> DirectHashResult {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(result) = table.poll_checksum_result().unwrap() {
+                return result;
+            }
+            std::thread::yield_now();
+        }
+        panic!("checksum worker did not return a bounded CPU proof result");
     }
 
     fn assert_valid(table: &DirectRestoreTable) {
@@ -1706,7 +2136,7 @@ mod tests {
             record(DirectTierCapability::Mtp, 7),
         );
         submit(&mut table, ticket);
-        table.read_destination_mut(ticket).unwrap()[0] = 1;
+        table.copy_into_read_destination(ticket, 0, &[1]).unwrap();
         table
             .complete_original(ticket, DirectReadCompletion::Exact)
             .unwrap();
@@ -1814,6 +2244,215 @@ mod tests {
             Err(DirectRestoreError::MissingTicket)
         );
         assert_eq!(table.active_hash_jobs(), 0);
+        assert_valid(&table);
+    }
+
+    #[test]
+    fn fixed_checksum_workers_hash_two_buffers_without_blocking_the_authority() {
+        let mut limited = config();
+        limited.maximum_hash_jobs = 2;
+        let mut table = DirectRestoreTable::new(limited, false).unwrap();
+        table.start_checksum_workers(2).unwrap();
+        assert_eq!(table.checksum_worker_count(), 2);
+        assert_eq!(table.checksum_worker_capacity(), 2);
+        let first = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 26),
+        );
+        let second = plan(
+            &mut table,
+            request(2, 2, DirectTierCapability::Mtp),
+            record(DirectTierCapability::Mtp, 27),
+        );
+        submit(&mut table, first);
+        submit(&mut table, second);
+        table
+            .complete_original(first, DirectReadCompletion::Exact)
+            .unwrap();
+        table
+            .complete_original(second, DirectReadCompletion::Exact)
+            .unwrap();
+        assert_eq!(
+            table.dispatch_next_checksum().unwrap().unwrap().ticket(),
+            first
+        );
+        assert_eq!(
+            table.dispatch_next_checksum().unwrap().unwrap().ticket(),
+            second
+        );
+        assert_eq!(table.dispatch_next_checksum().unwrap(), None);
+        assert_eq!(
+            table.next_hash_job(),
+            Err(DirectRestoreError::HashExecutionMode)
+        );
+
+        let mut completed = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let result = wait_checksum_result(&mut table);
+            assert!(result.verified());
+            assert_eq!(result.worker_shared_allocation(), Some(true));
+            completed.insert(result.job().ticket());
+            table.complete_hash(result).unwrap();
+        }
+        assert_eq!(completed, [first, second].into_iter().collect());
+        table.finish_cpu_delivery(first).unwrap();
+        table.finish_cpu_delivery(second).unwrap();
+        table.shutdown_checksum_workers().unwrap();
+        assert_eq!(table.checksum_worker_count(), 0);
+        assert_eq!(table.active_hash_jobs(), 0);
+        assert_valid(&table);
+    }
+
+    #[test]
+    fn worker_hash_acknowledges_abandonment_and_quarantines_corruption() {
+        let mut table = DirectRestoreTable::new(config(), false).unwrap();
+        table.start_checksum_workers(1).unwrap();
+        let abandoned = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 28),
+        );
+        submit(&mut table, abandoned);
+        table
+            .complete_original(abandoned, DirectReadCompletion::Exact)
+            .unwrap();
+        assert_eq!(
+            table.cancel_waiter(1, true).unwrap(),
+            DirectCancellation::WaitingForHashAcknowledgement
+        );
+        assert_eq!(
+            table.dispatch_next_checksum().unwrap().unwrap().ticket(),
+            abandoned
+        );
+        let result = wait_checksum_result(&mut table);
+        assert!(result.verified());
+        assert_eq!(result.worker_shared_allocation(), Some(true));
+        table.complete_hash(result).unwrap();
+        assert_eq!(table.ticket_count(), 0);
+
+        let corrupt = plan(
+            &mut table,
+            request(2, 2, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 29),
+        );
+        submit(&mut table, corrupt);
+        table.copy_into_read_destination(corrupt, 0, &[1]).unwrap();
+        table
+            .complete_original(corrupt, DirectReadCompletion::Exact)
+            .unwrap();
+        table.dispatch_next_checksum().unwrap().unwrap();
+        assert_eq!(
+            table.shutdown_checksum_workers(),
+            Err(DirectRestoreError::CompletionOutstanding)
+        );
+        let result = wait_checksum_result(&mut table);
+        assert!(!result.verified());
+        assert_eq!(result.worker_shared_allocation(), Some(true));
+        assert_eq!(
+            table.complete_hash(result),
+            Err(DirectRestoreError::Integrity)
+        );
+        assert_eq!(table.quarantined_buffers(), 1);
+        table.shutdown_checksum_workers().unwrap();
+        assert_valid(&table);
+    }
+
+    #[test]
+    fn worker_configuration_is_fixed_before_read_admission() {
+        let mut table = DirectRestoreTable::new(config(), false).unwrap();
+        assert_eq!(
+            table.start_checksum_workers(0),
+            Err(DirectRestoreError::WorkerConfig)
+        );
+        assert_eq!(
+            table.start_checksum_workers(config().maximum_hash_jobs + 1),
+            Err(DirectRestoreError::WorkerConfig)
+        );
+        table.start_checksum_workers(1).unwrap();
+        assert_eq!(
+            table.start_checksum_workers(1),
+            Err(DirectRestoreError::WorkerConfig)
+        );
+        let ticket = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 30),
+        );
+        submit(&mut table, ticket);
+        assert_eq!(
+            table.shutdown_checksum_workers(),
+            Err(DirectRestoreError::CompletionOutstanding)
+        );
+        table
+            .complete_original(ticket, DirectReadCompletion::Failed)
+            .unwrap();
+        table.shutdown_checksum_workers().unwrap();
+        assert_eq!(
+            table.start_checksum_workers(1),
+            Err(DirectRestoreError::WorkerConfig)
+        );
+        let after_shutdown = plan(
+            &mut table,
+            request(2, 2, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 31),
+        );
+        table.reserve_buffer(after_shutdown).unwrap();
+        assert_eq!(
+            table.submit_read(after_shutdown),
+            Err(DirectRestoreError::WorkerUnavailable)
+        );
+        table.cancel_waiter(2, true).unwrap();
+        assert_valid(&table);
+    }
+
+    #[test]
+    fn worker_panic_is_reported_quarantined_and_stops_new_dispatch() {
+        let mut table = DirectRestoreTable::new(config(), false).unwrap();
+        table.start_checksum_workers(1).unwrap();
+        let first = plan(
+            &mut table,
+            request(1, 1, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 32),
+        );
+        let queued = plan(
+            &mut table,
+            request(2, 2, DirectTierCapability::Target),
+            record(DirectTierCapability::Target, 33),
+        );
+        for ticket in [first, queued] {
+            submit(&mut table, ticket);
+            table
+                .complete_original(ticket, DirectReadCompletion::Exact)
+                .unwrap();
+        }
+        table.panic_next_checksum_for_test = true;
+        table.dispatch_next_checksum().unwrap().unwrap();
+        let mut failure = None;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match table.poll_checksum_result() {
+                Ok(None) => std::thread::yield_now(),
+                Ok(Some(_)) => panic!("injected worker panic produced a successful result"),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        assert_eq!(failure, Some(DirectRestoreError::WorkerPanic));
+        assert_eq!(table.ticket_count(), 0);
+        assert_eq!(table.active_hash_jobs(), 0);
+        assert_eq!(table.quarantined_buffers(), 2);
+        assert_eq!(
+            table.dispatch_next_checksum(),
+            Err(DirectRestoreError::WorkerPanic)
+        );
+        assert_eq!(
+            table.poll_checksum_result(),
+            Err(DirectRestoreError::WorkerPanic)
+        );
+        table.shutdown_checksum_workers().unwrap();
         assert_valid(&table);
     }
 

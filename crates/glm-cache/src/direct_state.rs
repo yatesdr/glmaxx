@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use crate::{DirectExtentBuffer, DirectTierCapability};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -52,7 +54,34 @@ pub enum DirectBufferUse {
 struct DirectBufferSlot {
     generation: u64,
     state: DirectBufferState,
-    bytes: DirectExtentBuffer,
+    bytes: Arc<RwLock<DirectExtentBuffer>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DirectHashBuffer {
+    id: DirectBufferId,
+    bytes: Arc<RwLock<DirectExtentBuffer>>,
+}
+
+impl DirectHashBuffer {
+    pub(crate) const fn id(&self) -> DirectBufferId {
+        self.id
+    }
+
+    pub(crate) fn verify<R>(
+        &self,
+        verifier: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, DirectBufferStateError> {
+        let bytes = self
+            .bytes
+            .read()
+            .map_err(|_| DirectBufferStateError::Poisoned)?;
+        Ok(verifier(bytes.as_slice()))
+    }
+
+    pub(crate) fn address(&self) -> Result<usize, DirectBufferStateError> {
+        self.verify(|bytes| bytes.as_ptr().addr())
+    }
 }
 
 #[derive(Debug)]
@@ -75,8 +104,10 @@ impl DirectBufferPool {
             slots.push(DirectBufferSlot {
                 generation: DirectBufferId::INVALID_GENERATION,
                 state: DirectBufferState::Free,
-                bytes: DirectExtentBuffer::new(DirectTierCapability::Mtp)
-                    .map_err(|_| DirectBufferStateError::Allocation)?,
+                bytes: Arc::new(RwLock::new(
+                    DirectExtentBuffer::new(DirectTierCapability::Mtp)
+                        .map_err(|_| DirectBufferStateError::Allocation)?,
+                )),
             });
         }
         Ok(Self {
@@ -104,12 +135,20 @@ impl DirectBufferPool {
                 slot.state = DirectBufferState::Retired;
                 continue;
             }
+            let mut bytes = match slot.bytes.write() {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    slot.state = DirectBufferState::Quarantined;
+                    return Err(DirectBufferStateError::Poisoned);
+                }
+            };
+            bytes.as_mut_slice().fill(0);
+            drop(bytes);
             slot.generation = generation;
             slot.state = match usage {
                 DirectBufferUse::CpuWrite => DirectBufferState::HashingForWrite,
                 DirectBufferUse::CpuRead => DirectBufferState::ReadQueued,
             };
-            slot.bytes.as_mut_slice().fill(0);
             self.next_search = (slot_index + 1) % capacity;
             return Ok(DirectBufferId {
                 slot: u32::try_from(slot_index).map_err(|_| DirectBufferStateError::Capacity)?,
@@ -123,7 +162,11 @@ impl DirectBufferPool {
         Ok(self.slot(id)?.state)
     }
 
-    pub fn bytes(&self, id: DirectBufferId) -> Result<&[u8], DirectBufferStateError> {
+    pub fn with_bytes<R>(
+        &self,
+        id: DirectBufferId,
+        reader: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, DirectBufferStateError> {
         let slot = self.slot(id)?;
         if !slot.state.is_active() {
             return Err(DirectBufferStateError::State {
@@ -131,10 +174,18 @@ impl DirectBufferPool {
                 requested: slot.state,
             });
         }
-        Ok(slot.bytes.as_slice())
+        let bytes = slot
+            .bytes
+            .read()
+            .map_err(|_| DirectBufferStateError::Poisoned)?;
+        Ok(reader(bytes.as_slice()))
     }
 
-    pub fn bytes_mut(&mut self, id: DirectBufferId) -> Result<&mut [u8], DirectBufferStateError> {
+    pub fn with_bytes_mut<R>(
+        &mut self,
+        id: DirectBufferId,
+        writer: impl FnOnce(&mut [u8]) -> R,
+    ) -> Result<R, DirectBufferStateError> {
         let slot = self.slot_mut(id)?;
         if !slot.state.is_active() {
             return Err(DirectBufferStateError::State {
@@ -142,7 +193,28 @@ impl DirectBufferPool {
                 requested: slot.state,
             });
         }
-        Ok(slot.bytes.as_mut_slice())
+        let mut bytes = slot
+            .bytes
+            .write()
+            .map_err(|_| DirectBufferStateError::Poisoned)?;
+        Ok(writer(bytes.as_mut_slice()))
+    }
+
+    pub(crate) fn hash_buffer(
+        &self,
+        id: DirectBufferId,
+    ) -> Result<DirectHashBuffer, DirectBufferStateError> {
+        let slot = self.slot(id)?;
+        if slot.state != DirectBufferState::HashingForRead {
+            return Err(DirectBufferStateError::State {
+                current: slot.state,
+                requested: DirectBufferState::HashingForRead,
+            });
+        }
+        Ok(DirectHashBuffer {
+            id,
+            bytes: Arc::clone(&slot.bytes),
+        })
     }
 
     pub fn transition(
@@ -159,7 +231,11 @@ impl DirectBufferPool {
             });
         }
         if next == DirectBufferState::Free {
-            slot.bytes.as_mut_slice().fill(0);
+            slot.bytes
+                .write()
+                .map_err(|_| DirectBufferStateError::Poisoned)?
+                .as_mut_slice()
+                .fill(0);
         }
         slot.state = next;
         Ok(())
@@ -184,7 +260,11 @@ impl DirectBufferPool {
                 requested: DirectBufferState::Free,
             });
         }
-        slot.bytes.as_mut_slice().fill(0);
+        slot.bytes
+            .write()
+            .map_err(|_| DirectBufferStateError::Poisoned)?
+            .as_mut_slice()
+            .fill(0);
         slot.state = DirectBufferState::Free;
         Ok(())
     }
@@ -610,6 +690,7 @@ fn valid_transition(current: DirectBufferState, next: DirectBufferState) -> bool
 pub enum DirectBufferStateError {
     Capacity,
     Allocation,
+    Poisoned,
     InvalidGeneration,
     UnknownSlot,
     StaleGeneration,
@@ -646,19 +727,20 @@ mod tests {
         let first = pool.reserve(DirectBufferUse::CpuRead).unwrap();
         assert_eq!(pool.state(first).unwrap(), DirectBufferState::ReadQueued);
         assert!(first.is_valid());
-        assert_eq!(pool.bytes(first).unwrap().len(), 2_052_096);
+        assert_eq!(pool.with_bytes(first, <[u8]>::len).unwrap(), 2_052_096);
         assert!(
-            pool.bytes(first)
+            pool.with_bytes(first, |bytes| bytes.as_ptr().addr())
                 .unwrap()
-                .as_ptr()
-                .addr()
                 .is_multiple_of(4_096)
         );
-        assert!(pool.bytes(first).unwrap().iter().all(|&byte| byte == 0));
-        pool.bytes_mut(first).unwrap()[0] = 7;
+        assert!(
+            pool.with_bytes(first, |bytes| bytes.iter().all(|&byte| byte == 0))
+                .unwrap()
+        );
+        pool.with_bytes_mut(first, |bytes| bytes[0] = 7).unwrap();
         read_to_free(&mut pool, first);
         assert!(matches!(
-            pool.bytes(first),
+            pool.with_bytes(first, |_| ()),
             Err(DirectBufferStateError::State {
                 current: DirectBufferState::Free,
                 ..
@@ -673,11 +755,33 @@ mod tests {
         let reused = pool.reserve(DirectBufferUse::CpuRead).unwrap();
         assert_eq!(reused.slot, first.slot);
         assert_eq!(reused.generation, first.generation + 1);
-        assert!(pool.bytes(reused).unwrap().iter().all(|&byte| byte == 0));
+        assert!(
+            pool.with_bytes(reused, |bytes| bytes.iter().all(|&byte| byte == 0))
+                .unwrap()
+        );
         assert_eq!(
             pool.transition(first, DirectBufferState::ReadInflight),
             Err(DirectBufferStateError::StaleGeneration)
         );
+    }
+
+    #[test]
+    fn hash_handle_reads_the_same_stable_aligned_allocation() {
+        let mut pool = DirectBufferPool::new(1).unwrap();
+        let id = pool.reserve(DirectBufferUse::CpuRead).unwrap();
+        pool.transition(id, DirectBufferState::ReadInflight)
+            .unwrap();
+        pool.with_bytes_mut(id, |bytes| bytes[17] = 9).unwrap();
+        pool.transition(id, DirectBufferState::HashingForRead)
+            .unwrap();
+        let authority_address = pool.with_bytes(id, |bytes| bytes.as_ptr().addr()).unwrap();
+        let handle = pool.hash_buffer(id).unwrap();
+        let worker_observation = handle
+            .verify(|bytes| (bytes.as_ptr().addr(), bytes[17]))
+            .unwrap();
+        assert_eq!(handle.id(), id);
+        assert_eq!(worker_observation, (authority_address, 9));
+        assert!(authority_address.is_multiple_of(4_096));
     }
 
     #[test]
