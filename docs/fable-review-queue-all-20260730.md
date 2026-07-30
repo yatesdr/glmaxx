@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`6cdbeae417e053d08751c8102304064bf86c360e`
+`e188fc7fcd31c7ca35a48750ff2933267dd40111`
 
-`review-proof-all` verified 109 current handoffs and skipped the two historical
+`review-proof-all` verified 110 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 91 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 92 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -128,7 +128,8 @@ result path; follow the output instructions in that handoff.
 | 106 | `docs/fable-fixed-page-transaction-v1-r2-handoff.md` | `b59114734e1fb18761725444e27fbe9c64b6ad43` | `docs/reviews/fable-fixed-page-transaction-v1-r2.md` | `fixed-page-transaction-v1-r2-design-accepted` |
 | 107 | `docs/fable-checkpoint-load-transaction-v1-r3-handoff.md` | `fc96d90836e32d7c582a1bddbf1521a28638ccfa` | `docs/reviews/fable-checkpoint-load-transaction-v1-r3.md` | `checkpoint-load-transaction-v1-r3-accepted` |
 | 108 | `docs/fable-cache-arena-budget-v2-r2-handoff.md` | `04e4c3ac60a50ba6bb3a9767bbe43c3d68cec614` | `docs/reviews/fable-cache-arena-budget-v2-r2.md` | `cache-arena-budget-v2-r2-cpu-accepted` |
-| 109 | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` | `6cdbeae417e053d08751c8102304064bf86c360e` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1.md` | `direct-tier-scheduler-cpu-v1-accepted` |
+| 109 | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` | `6cdbeae417e053d08751c8102304064bf86c360e` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1.md` | superseded; do not issue token |
+| 110 | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` | `e188fc7fcd31c7ca35a48750ff2933267dd40111` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1-r2.md` | `direct-tier-scheduler-cpu-v1-r2-accepted` |
 
 ## Verification command
 
@@ -139,5 +140,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 109 current handoffs and two
+The expected queue count for this document is 110 current handoffs and two
 explicitly skipped historical umbrella handoffs.

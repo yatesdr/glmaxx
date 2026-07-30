@@ -638,6 +638,7 @@ verdicts:
 | cache arena budget | `c33648a` | `docs/fable-cache-arena-budget-v2-handoff.md` |
 | corrected cache arena static planner and pressure proof | `04e4c3a` | `docs/fable-cache-arena-budget-v2-r2-handoff.md` |
 | bounded direct-tier R0/R1/W0/W1 scheduler CPU proof | `6cdbeae` | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` |
+| corrected direct-tier admission/service arbitration CPU proof | `e188fc7` | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |
