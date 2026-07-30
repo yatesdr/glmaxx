@@ -9,6 +9,9 @@ GPU authorization conveyed by this handoff: none
 Review candidate commit:
 `69895e040617a79dea78d7eaf1ced88234ccb193`
 
+Required result path:
+`fable-direct-tier-io-v1.md` at the repository root.
+
 Requested acceptance token, only if every blocker and major is resolved:
 `direct-tier-io-v1-accepted`
 

@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`f39f23495b80dd7527c379788d39f58987ed2b52`
+`b59114734e1fb18761725444e27fbe9c64b6ad43`
 
-`review-proof-all` verified 105 current handoffs and skipped the two historical
+`review-proof-all` verified 106 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Seven of 86 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 88 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -33,7 +33,7 @@ result path; follow the output instructions in that handoff.
 | 11 | `docs/fable-coordinator-api-backend-v1-handoff.md` | `5847a655c5751e3602b0abb7c322fc20cd975aed` | — | `coordinator-api-backend-v1-accepted` |
 | 12 | `docs/fable-coordinator-api-backend-v2-handoff.md` | `8aaef8e50a69ed6fecdc01c6405dd6a2ff14ebc7` | — | `coordinator-api-backend-v2-accepted` |
 | 13 | `docs/fable-current-tree-review-acceptance-v3-handoff.md` | `60311cfa6ec61c80fb0a1544dfe8121e3c3e0c7b` | `fable-current-tree-review-acceptance-v3.md` | `current-tree-review-acceptance-v3-design-accepted` |
-| 14 | `docs/fable-direct-tier-io-v1-handoff.md` | `69895e040617a79dea78d7eaf1ced88234ccb193` | — | `direct-tier-io-v1-accepted` |
+| 14 | `docs/fable-direct-tier-io-v1-handoff.md` | `69895e040617a79dea78d7eaf1ced88234ccb193` | `fable-direct-tier-io-v1.md` | `direct-tier-io-v1-accepted` |
 | 15 | `docs/fable-distributed-greedy-all-masked-v1-handoff.md` | `7867ed2e3839d74aad83f8b504bf5000247838b6` | `fable-distributed-greedy-all-masked-v1.md` | `distributed-greedy-all-masked-v1-accepted` |
 | 16 | `docs/fable-distributed-sampling-abi-v1-handoff.md` | `7c718188b167615affabdb66f34939dcd6b22587` | — | `distributed-sampling-abi-v1-accepted` |
 | 17 | `docs/fable-durable-catalog-extent-integrity-v1-handoff.md` | `de2d43a44474427d6f67fdb7fa300307d7b1caed` | `fable-durable-catalog-extent-integrity-v1.md` | `durable-catalog-extent-integrity-v1-accepted` |

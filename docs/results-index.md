@@ -38,12 +38,13 @@ abandonment.
 The retained pool constructor now waits for exact readiness receipts from
 all four rank threads and synchronously joins/destroys partial startup state
 instead of publishing a disconnected pool.
-The machine provenance gate accepts seven configured Fable results:
-protected-precision plain-padding streaming, durable catalog extent
-integrity, durable content deduplication, prefix/residency coherence, atomic
-sequence removal, TP4 startup handshake, and TP4 physical-step quota. Their
-root artifacts are byte-identical to Fable's staged review bytes. Each
-acceptance is limited to its stated CPU scope and does not authorize cn4.
+The machine provenance gate accepts eight configured Fable results:
+protected-precision plain-padding streaming, the direct DRAM/NVMe tier-I/O
+design, durable catalog extent integrity, durable content deduplication,
+prefix/residency coherence, atomic sequence removal, TP4 startup handshake,
+and TP4 physical-step quota. Their root artifacts are byte-identical to
+Fable's staged review bytes. Each acceptance is limited to its stated scope
+and does not authorize cn4.
 The retained HTTP server now synchronously joins connection workers after a
 worker or accept-thread spawn failure, surfaces cleanup panics, and proves
 its saturation rollback against barrier-held physical TP4 work.
@@ -608,7 +609,6 @@ verdicts:
 | tenant/global serving resource quotas | `7e810c4` | `docs/fable-tenant-resource-quotas-v1-handoff.md` |
 | nonblocking Linux HTTP transport, first review withheld | `3608a03` | `docs/fable-nonblocking-http-transport-v1-handoff.md` |
 | nonblocking Linux HTTP transport r2 corrective design | `b7a2ac4` | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` |
-| direct DRAM/NVMe tier I/O | `69895e0` | `docs/fable-direct-tier-io-v1-handoff.md` |
 | quality, KLD, task, retrieval, and MTP numerical acceptance | `70222ab` | `docs/fable-quality-acceptance-v1-handoff.md` |
 | quarantined checkpoint load and four-rank adoption | `4bb0708` (r1 `737603b` superseded) | `docs/fable-checkpoint-load-transaction-v1-r2-handoff.md` |
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
