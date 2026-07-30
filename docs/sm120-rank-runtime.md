@@ -1,6 +1,6 @@
 # Persistent SM120 TP4 rank runtime
 
-Date: 2026-07-29
+Date: 2026-07-30
 
 Status: native binding qualified on cn4; checkpoint residency command
 prepared but not run; kernel execution and collectives remain pending
@@ -80,6 +80,27 @@ Rust then creates one nonblocking stream on the bound rank thread. Its
 `NativeRankContext` records the creating thread ID and rejects stream access
 or synchronization from another thread. Destruction occurs when the
 persistent rank loop exits.
+
+## Adopted tensor resolution
+
+The rank-set load plan owns each rank's immutable tensor-arena table as one
+reference-counted slice. Prepare, acknowledge, and global adoption move a
+reference to that exact slice beside the quarantined arena; they do not copy
+or reconstruct 59,585 records after HBM upload. Before adoption, no type can
+resolve a device tensor.
+
+After global adoption, the owner-thread arena resolves only an authenticated
+numeric `tensor_id`. It returns a typed binding containing the fixed role,
+codec, flags, required alignment, mandatory primary span, and optional
+metadata/auxiliary spans. Every absolute pointer is derived with checked
+addition from the adopted allocation base and the plan-owned relative
+offset. Bounds and alignment are rechecked. A zero-byte optional plane is
+represented as `None`, not as an apparently usable base pointer.
+
+Raw caller-provided offsets, tensor names, and runtime codec selection do not
+participate. The next target-program compiler must select canonical tensor
+IDs from validated semantics at startup and pass those IDs to this resolver;
+the graph path may not search names or select a rank-local codec.
 
 ## Failure behavior
 
