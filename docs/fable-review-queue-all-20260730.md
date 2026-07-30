@@ -125,6 +125,7 @@ result path; follow the output instructions in that handoff.
 | 103 | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` | `b7a2ac4bd45b1cb7a15c69c33d7d2248da826ad5` | `docs/reviews/fable-nonblocking-http-transport-v1-r2.md` | `nonblocking-http-transport-v1-r2-design-accepted` |
 | 104 | `docs/fable-coordinator-api-backend-v3-handoff.md` | `10a068ba55cc0e8dbe39161f925a0dcf0a17d8ef` | `docs/reviews/fable-coordinator-api-backend-v3.md` | `coordinator-api-backend-v3-accepted` |
 | 105 | `docs/fable-streaming-write-single-pass-v1-r2-handoff.md` | `f39f23495b80dd7527c379788d39f58987ed2b52` | `docs/reviews/fable-streaming-write-single-pass-v1-r2.md` | `streaming-write-single-pass-v1-accepted` |
+| 106 | `docs/fable-fixed-page-transaction-v1-r2-handoff.md` | `b59114734e1fb18761725444e27fbe9c64b6ad43` | `docs/reviews/fable-fixed-page-transaction-v1-r2.md` | `fixed-page-transaction-v1-r2-design-accepted` |
 
 ## Verification command
 
@@ -135,5 +136,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 105 current handoffs and two
+The expected queue count for this document is 106 current handoffs and two
 explicitly skipped historical umbrella handoffs.

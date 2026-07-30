@@ -659,6 +659,7 @@ verdicts:
 | canonical page-table delta and page-granular mutation | `a1d4cb4` | `docs/fable-page-table-delta-v1-handoff.md` |
 | page-reuse quarantine and in-place tentative commit | `832bf97` | `docs/fable-page-reuse-quarantine-v1-handoff.md` |
 | fixed-capacity page transaction design | `e1dd8d8` | `docs/fable-fixed-page-transaction-v1-handoff.md` |
+| bounded mirror/apply and streamed first-install page transaction r2 | `b591147` | `docs/fable-fixed-page-transaction-v1-r2-handoff.md` |
 | sustained serving load and fault qualification design | `1dbab21` | `docs/fable-sustained-serving-load-fault-v1-handoff.md` |
 | atomic TP4 checkpoint load protocol | `d647535` | `docs/fable-tp4-checkpoint-load-protocol-v1-handoff.md` |
 | persistent native checkpoint rank adapter | `b62325a` | `docs/fable-native-checkpoint-rank-adapter-v1-handoff.md` |
