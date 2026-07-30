@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`bcc8ebf0b951516acb63ebf2baea1825018bbed8`
+`0e084967f6750253c584ca3b0221dbc6de382a30`
 
-`review-proof-all` verified 116 current handoffs and skipped the two historical
+`review-proof-all` verified 117 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 98 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 99 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -136,6 +136,7 @@ result path; follow the output instructions in that handoff.
 | 114 | `docs/fable-matched-runtime-control-v1-handoff.md` | `660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1` | `docs/reviews/fable-matched-runtime-control-v1.md` | `matched-runtime-control-v1-design-accepted` |
 | 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | superseded; do not issue token |
 | 116 | `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md` | `bcc8ebf0b951516acb63ebf2baea1825018bbed8` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r3.md` | `nvfp4-fused-routed-moe-v1-r3-design-accepted` |
+| 117 | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` | `0e084967f6750253c584ca3b0221dbc6de382a30` | `docs/reviews/fable-nvfp4-laboratory-manifest-v1.md` | `nvfp4-laboratory-manifest-v1-design-accepted` |
 
 ## Verification command
 
@@ -146,5 +147,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 116 current handoffs and two
+The expected queue count for this document is 117 current handoffs and two
 explicitly skipped historical umbrella handoffs.
