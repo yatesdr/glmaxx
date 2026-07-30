@@ -395,9 +395,12 @@ is absent.
 
 The asynchronous restore-identity correction is pinned in
 `docs/restore-identity-proof-v1.md`. Pending pages now require exact request
-ID, logical ordinal, and full durable-record equality before adoption. Its
-dedicated handoff passed local provenance validation; independent acceptance
-is absent.
+ID, logical ordinal, and full durable-record equality before adoption.
+Fable's review is an unqualified substantive pass and contains the candidate
+plus all six input hashes, but its acceptance token is prose-wrapped instead
+of appearing once on a bare line. The machine gate therefore correctly
+classifies the result as withheld; the exact administrative correction is
+included in `docs/fable-kernel-r2-attestation-repair-request.md`.
 
 The HBM residency admission correction is pinned in
 `docs/residency-admission-atomicity-proof-v1.md`. It precomputes the complete
@@ -627,7 +630,7 @@ The first implementation reviews remain explicitly withheld:
 Corrective r2 handoffs are pinned at `0edfc8d`. Fable's three review texts
 record substantive unqualified passes, but omit complete handoff-input
 attestations and therefore fail `review-proof-all`. The root gate artifacts
-remain absent pending the exact repair request in
+remain absent pending the exact four-result repair request in
 `docs/fable-kernel-r2-attestation-repair-request.md`:
 
 - `docs/fable-exl3-source-projection-v1-r2-handoff.md`;

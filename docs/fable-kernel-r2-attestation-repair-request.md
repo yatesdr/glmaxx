@@ -1,4 +1,4 @@
-# Fable request: repair machine attestations in three accepted kernel reviews
+# Fable request: repair machine attestations in four accepted reviews
 
 Date: 2026-07-30
 
@@ -9,21 +9,25 @@ GPU authorization: none
 
 ## Outcome that triggered this request
 
-Fable placed three substantively accepted corrective reviews in
+Fable placed four substantively accepted reviews in
 `docs/reviews/`:
 
 - `fable-exl3-source-projection-v1-r2.md`;
 - `fable-exl3-warp-decode-v2-r2.md`; and
-- `fable-manifest-abi-v022-r2.md`.
+- `fable-manifest-abi-v022-r2.md`; and
+- `fable-restore-identity-v1.md`.
 
 Their exact acceptance tokens and the gate-specific attestation subsets are
 present. Sol copied the bytes without modification to the root result paths
 required by the handoffs and verified each copy with `cmp` and SHA-256.
 
-The repository-wide machine gate then rejected all three accepted artifacts.
+The repository-wide machine gate then rejected all four accepted artifacts.
 `review-proof-all` requires an accepted result to contain the exact candidate
 commit and every SHA-256 pinned by its handoff. The reviews state that all
-inputs matched at review start and finish, but do not print every hash.
+inputs matched at review start and finish. The three kernel reviews do not
+print every hash. The restore-identity review prints every hash, but its
+acceptance token appears only inside prose rather than exactly once on a bare
+line, so the verifier correctly classifies it as withheld.
 
 The promoted root copies were removed again so the cn4 scripts remain
 fail-closed. The operator-owned originals under `docs/reviews/` were not
@@ -48,6 +52,7 @@ Write repaired files to these staging paths:
 docs/reviews/fable-exl3-source-projection-v1-r2-attested.md
 docs/reviews/fable-exl3-warp-decode-v2-r2-attested.md
 docs/reviews/fable-manifest-abi-v022-r2-attested.md
+docs/reviews/fable-restore-identity-v1-attested.md
 ```
 
 Sol will copy accepted repaired bytes verbatim to the original required root
@@ -142,6 +147,33 @@ Acceptance token:
 manifest-abi-v0.2.2-accepted
 ```
 
+## Asynchronous restore identity v1
+
+Handoff:
+`docs/fable-restore-identity-v1-handoff.md`
+
+Candidate:
+`dc16273b019cf3a3dd8eb810cf9caeb26c99bced`
+
+The current result already contains the candidate and all six exact input
+attestations:
+
+```text
+efaa6dcb4da3e6f40032c61d472a0f548920a3e87642efac315da2771b7df86a
+74e7dd8077d7ce1db082b6b2501debfcf07d39f0c444e5e355bdb5385ac29770
+d37a1400dc0c393b26c121f72694945bef78c28eda29796abf41a2ed713a17ac
+786c7c7e5ce2f417749a78e8c48aa8a7d0a5cb617e0883e960a8e7c17d781720
+11ad4936fea7cd0887e660911f50778d5b0918c21a6cebaca1a98a244b2e2de1
+16c44adf52c8fa0ad40b1656f7774bbea8072673fdddf5763f1ff33a3b4db256
+```
+
+Reissue the same unqualified verdict and append its existing token exactly
+once on a line by itself:
+
+```text
+restore-identity-v1-accepted
+```
+
 ## Sol verification after delivery
 
 For each repaired result, Sol will:
@@ -153,6 +185,7 @@ For each repaired result, Sol will:
 5. require the cn4 phase scripts to remain unauthorized until the operator
    grants a new GPU window.
 
-The expected result is three accepted configured reviews with no missing
-candidate or input attestation. This repair does not itself authorize
-implementation, a CUDA launch, cn4 access, or any quality/performance claim.
+The expected result is four accepted configured reviews with no missing
+candidate, input attestation, or bare token. This repair does not itself
+authorize implementation, a CUDA launch, cn4 access, or any
+quality/performance claim.
