@@ -157,6 +157,15 @@ adoption-bound `WeightsLoaded` startup transition. The exact candidate passes
 309 tests and the complete local gate. This is not a native-rank plan
 builder, CUDA upload, checkpoint smoke, device-residency, or production
 health result.
+The governing checkpoint-load r3 contract in
+`docs/checkpoint-load-transaction-v1.md` now incorporates both majors and all
+eight minors from Fable's r2 review: abort/panic teardown cannot free
+DMA-referenced pinned memory; cleanup-sync failure leaks and terminates;
+first-load HBM contents are verified by bounded full-arena readback; evidence
+has fixed typed preimages; plane lengths and TP divisibility come from the
+compiled common policy; gaps are zero; tensor counts are cross-bound; and
+unimplemented profile bytes remain fail-closed. This correction and the
+current CPU proof still require a consolidated r3 adversarial review.
 The native-rank load-plan successor is pinned in
 `docs/native-rank-load-plan-proof-v1.md`. Candidate `dfc1253` requires four
 authenticated capacity-EXL3 readers, derives the common 59,585-entry semantic

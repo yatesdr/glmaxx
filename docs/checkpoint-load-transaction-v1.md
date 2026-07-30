@@ -218,6 +218,14 @@ profile-budget digest with `measurement_status=complete` and
 `conversion_allowed=true`. The laboratory subset uses a separately identified
 non-serving budget and cannot be promoted by changing only the profile byte.
 
+The three profile byte values reserve stable plan identities; they do not
+imply that all three budget schemas are implemented. The current
+`ProfileBudgetArtifact` and native plan builder accept only
+`capacity-exl3`. `nvfp4-laboratory` and `hybrid-serve` remain fail-closed
+until their separately reviewed budget schemas, validators, and exact
+per-rank memory plans exist. A caller cannot open either route by writing a
+different profile byte into an otherwise capacity-EXL3 plan.
+
 ### Rank-invariant tensor catalog
 
 The common catalog does not erase a rank-local mismatch by simply ignoring
