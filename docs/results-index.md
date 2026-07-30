@@ -658,6 +658,7 @@ verdicts:
 | bounded direct-tier R0/R1/W0/W1 scheduler CPU proof | `6cdbeae` | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` |
 | corrected direct-tier admission/service arbitration CPU proof | `e188fc7` | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` |
 | consolidated direct-tier read-class fairness CPU proof | `b602a9c` | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` |
+| Linux direct-tier feature and fault probe design | `a3771e3` | `docs/fable-direct-tier-linux-probe-v1-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | coordinator/API backend consolidated v3 proof | `10a068b` | `docs/fable-coordinator-api-backend-v3-handoff.md` |

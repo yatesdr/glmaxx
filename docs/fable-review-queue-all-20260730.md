@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`b602a9c26f1821f70b2872b158a2201155f71ef1`
+`a3771e31dd73132db1caa306c097408e05388988`
 
-`review-proof-all` verified 111 current handoffs and skipped the two historical
+`review-proof-all` verified 112 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 93 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 94 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -131,6 +131,7 @@ result path; follow the output instructions in that handoff.
 | 109 | `docs/fable-direct-tier-scheduler-cpu-v1-handoff.md` | `6cdbeae417e053d08751c8102304064bf86c360e` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1.md` | superseded; do not issue token |
 | 110 | `docs/fable-direct-tier-scheduler-cpu-v1-r2-handoff.md` | `e188fc7fcd31c7ca35a48750ff2933267dd40111` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1-r2.md` | superseded; do not issue token |
 | 111 | `docs/fable-direct-tier-scheduler-cpu-v1-r3-handoff.md` | `b602a9c26f1821f70b2872b158a2201155f71ef1` | `docs/reviews/fable-direct-tier-scheduler-cpu-v1-r3.md` | `direct-tier-scheduler-cpu-v1-r3-accepted` |
+| 112 | `docs/fable-direct-tier-linux-probe-v1-handoff.md` | `a3771e31dd73132db1caa306c097408e05388988` | `docs/reviews/fable-direct-tier-linux-probe-v1.md` | `direct-tier-linux-probe-v1-design-accepted` |
 
 ## Verification command
 
@@ -141,5 +142,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 111 current handoffs and two
+The expected queue count for this document is 112 current handoffs and two
 explicitly skipped historical umbrella handoffs.
