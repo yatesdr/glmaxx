@@ -132,6 +132,15 @@ second self-adversarial pass found that oversized reads could make a byte
 bound unsatisfiable and strict R0 priority could starve R1 restores. R3
 requires every read to fit all relevant bounds and gives R0 bounded,
 projected-byte preference rather than indefinite priority.
+The next Linux boundary is designed in
+`docs/direct-tier-linux-probe-v1.md`. It fixes a Rust-only, off-by-default,
+single-issuer `io_uring` probe with 16 SQ entries, 32 CQ entries, sixteen
+registered maximum-size buffers, fixed files, exact 493/501-block
+write-fsync-read checks, deterministic injected faults, real
+alignment/short-read failures, exhaustive original/cancel CQE drain, and
+external scratch/evidence safety. This is an unreviewed design only. No
+Linux command, registered memory, filesystem result, storage qualification,
+CUDA transfer, or performance evidence exists.
 The sustained serving qualification design is pinned in
 `docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
 black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
