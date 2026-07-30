@@ -2,7 +2,7 @@
 
 Date: 2026-07-30
 
-Candidate: `da2aa9cccba6116a803a6d5db4b54e6f3ac37c71`
+Candidate: `12b5370aaf08f3c53da939fbd21c3b1d761c0d5f`
 
 Status: `CPU_AND_HOST_PROOF_COMPLETE_SM120_RUN_PENDING_AUTHORIZATION`
 
@@ -50,7 +50,10 @@ Before native rank startup, the Rust command:
 9. requires the rank files to bind the compiled capacity-EXL3 weight policy;
 10. validates the linked NVFP4 and EXL3 ABIs and exact workspace formulae,
     then derives one process-common codec-capability digest; and
-11. hashes the running executable and uses that digest as the rank-load
+11. requires each rank's source payload bytes to equal its memory-plan weight
+    term and requires its aligned device weight plus codec-metadata arenas to
+    fit within the combined weight and immutable-model-metadata terms; and
+12. hashes the running executable and uses that digest as the rank-load
     software provenance.
 
 `SystemMemoryPlan::validate` reconstructs the full plan from its own public
