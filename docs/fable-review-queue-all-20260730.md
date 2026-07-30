@@ -3,11 +3,11 @@
 Date: 2026-07-30
 
 Latest candidate included in the enumeration:
-`2afb205f7cfe5c90cdeac1262996b9fb9df0f726`
+`bcc8ebf0b951516acb63ebf2baea1825018bbed8`
 
-`review-proof-all` verified 115 current handoffs and skipped the two historical
+`review-proof-all` verified 116 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Eight of 97 configured result artifacts are
+`docs/fable-review-handoff.md`. Eight of 98 configured result artifacts are
 present and machine-accepted, with zero withheld results installed.
 
 For every row, Fable should read the handoff itself and follow its exact
@@ -108,7 +108,7 @@ result path; follow the output instructions in that handoff.
 | 86 | `docs/fable-native-checkpoint-startup-composition-v1-handoff.md` | `b55c8a9169c72a311c59d30e5389618eef3f0d7b` | `docs/reviews/fable-native-checkpoint-startup-composition-v1.md` | `native-checkpoint-startup-composition-v1-accepted` |
 | 87 | `docs/fable-native-checkpoint-load-smoke-v1-handoff.md` | `1770563713722685db26b0d3378f32e4ecf92519` | `docs/reviews/fable-native-checkpoint-load-smoke-v1.md` | `native-checkpoint-load-smoke-v1-accepted` |
 | 88 | `docs/fable-resident-tensor-device-binding-v1-handoff.md` | `a49210fe384012066d80087f61668d5d8a8e2a78` | `docs/reviews/fable-resident-tensor-device-binding-v1.md` | `resident-tensor-device-binding-v1-accepted` |
-| 89 | `docs/fable-target-program-projection-discriminator-v1-handoff.md` | `39fbee5bf220467104535d86c00b49effe96c3a8` | `docs/reviews/fable-target-program-projection-discriminator-v1.md` | `target-program-projection-discriminator-v1-accepted` |
+| 89 | `docs/fable-target-program-projection-discriminator-v1-handoff.md` | `39fbee5bf220467104535d86c00b49effe96c3a8` | `docs/reviews/fable-target-program-projection-discriminator-v1.md` | superseded; do not issue token |
 | 90 | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` | `a0f2bee3edd1754aebefe1643eecd0a63cd4d4b7` | `docs/reviews/fable-sm120-rank-executor-v1-r2.md` | `sm120-rank-executor-v1-accepted` |
 | 91 | `docs/fable-step-execution-abi-v3-handoff.md` | `bab7866b6bd494d3e70ba28463043555f5b583c8` | `docs/reviews/fable-step-execution-abi-v3.md` | `step-execution-abi-v3-design-accepted` |
 | 92 | `docs/fable-exl3-warp-staging-cpu-v2-handoff.md` | `c1ab9d2214f592e02de2cf3e7f2dfb257930b347` | `docs/reviews/fable-exl3-warp-staging-cpu-v2.md` | `exl3-warp-staging-cpu-v2-accepted` |
@@ -134,7 +134,8 @@ result path; follow the output instructions in that handoff.
 | 112 | `docs/fable-direct-tier-linux-probe-v1-handoff.md` | `a3771e31dd73132db1caa306c097408e05388988` | `docs/reviews/fable-direct-tier-linux-probe-v1.md` | `direct-tier-linux-probe-v1-design-accepted` |
 | 113 | `docs/fable-cn4-environment-capture-v1-handoff.md` | `d961d96da3f4b99052272afcd4abf28dbe6f9854` | `docs/reviews/fable-cn4-environment-capture-v1.md` | `cn4-environment-capture-v1-design-accepted` |
 | 114 | `docs/fable-matched-runtime-control-v1-handoff.md` | `660a0707bb4b0a67f3c3983b4cef1dc18a38b6b1` | `docs/reviews/fable-matched-runtime-control-v1.md` | `matched-runtime-control-v1-design-accepted` |
-| 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | `nvfp4-fused-routed-moe-v1-r2-design-accepted` |
+| 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | superseded; do not issue token |
+| 116 | `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md` | `bcc8ebf0b951516acb63ebf2baea1825018bbed8` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r3.md` | `nvfp4-fused-routed-moe-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -145,5 +146,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 115 current handoffs and two
+The expected queue count for this document is 116 current handoffs and two
 explicitly skipped historical umbrella handoffs.
