@@ -1295,8 +1295,8 @@ mod tests {
     };
 
     use glm_cache::{
-        DurablePageRequest, FileTierStore, NamespaceInputs, PagePieceBytes, PrefixIndex,
-        PrefixNamespace, ResidencyConfig, TierPiece,
+        DurablePageRequest, FileTierStore, NamespaceInputs, PagePieceBytes, PageTableConfig,
+        PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
     };
     use glm_engine::{
         AttentionTransport, CollectiveSchedule, CommittedTokens, GraphEntry, GraphKey,
@@ -1474,6 +1474,10 @@ mod tests {
                 epoch: 1,
                 event_capacity: 1_024,
                 maximum_retained_prompt_bytes: 1_024 * 1_024,
+                page_table: PageTableConfig {
+                    target_pages_per_rank: 256,
+                    draft_pages_per_rank: 256,
+                },
             },
             SchedulerConfig {
                 maximum_batch_sequences: 4,

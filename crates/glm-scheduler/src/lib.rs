@@ -256,6 +256,18 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Applies pending cancellations at a collective-safe boundary without
+    /// selecting a new batch. The serving coordinator uses this to release
+    /// active page mappings and prefix pins before continuously runnable peers
+    /// can postpone terminal cleanup.
+    pub fn apply_cancellations_at_boundary(&mut self) -> Result<(), SchedulerError> {
+        if self.inflight.is_some() {
+            return Err(SchedulerError::Inflight);
+        }
+        self.apply_cancellations();
+        Ok(())
+    }
+
     /// Selects one captured-graph step. Cancellation is applied before the
     /// selection, which is the simulator's collective-safe step boundary.
     pub fn next_batch(&mut self) -> Result<Option<ScheduledBatch>, SchedulerError> {
@@ -573,8 +585,9 @@ impl Scheduler {
             .into_iter()
             .next()
             .ok_or(SchedulerError::NoRunnable)?;
-        let first_spec = self.requests[&first].spec;
-        let depth = first_spec.mtp_depth;
+        let first_request = &self.requests[&first];
+        let depth = self.effective_decode_depth(first_request)?;
+        let first_spec = first_request.spec;
         let sampling = first_spec.sampling;
         let mut eligible = self.ordered_requests(RequestState::Decoding, Some((depth, sampling)));
         eligible.truncate(usize::from(self.config.maximum_batch_sequences));
@@ -676,7 +689,8 @@ impl Scheduler {
             .filter(|request| {
                 request.state == state
                     && decode_class.is_none_or(|(depth, sampling)| {
-                        request.spec.mtp_depth == depth && request.spec.sampling == sampling
+                        self.effective_decode_depth(request) == Ok(depth)
+                            && request.spec.sampling == sampling
                     })
             })
             .map(|request| request.spec.id)
@@ -706,17 +720,45 @@ impl Scheduler {
             .entries
             .iter()
             .any(|entry| entry.key.mode == StepMode::Prefill);
-        let decode_mode = if spec.mtp_depth == 0 {
-            StepMode::Decode
-        } else {
-            StepMode::Verify
-        };
         let decode = self.profile.entries.iter().any(|entry| {
-            entry.key.mode == decode_mode
-                && entry.key.mtp_depth == spec.mtp_depth
-                && entry.maximum_query_rows > u32::from(spec.mtp_depth)
+            entry.key.mode == StepMode::Decode
+                && entry.key.mtp_depth == 0
+                && entry.maximum_query_rows != 0
         });
-        prefill && decode
+        let verify = spec.mtp_depth == 0
+            || self.profile.entries.iter().any(|entry| {
+                entry.key.mode == StepMode::Verify
+                    && entry.key.mtp_depth == spec.mtp_depth
+                    && entry.maximum_query_rows > u32::from(spec.mtp_depth)
+            });
+        prefill && decode && verify
+    }
+
+    fn effective_decode_depth(&self, request: &Request) -> Result<u8, SchedulerError> {
+        let remaining = request
+            .spec
+            .maximum_new_tokens
+            .checked_sub(request.generated)
+            .ok_or(SchedulerError::Commit)?;
+        if remaining == 0 {
+            return Err(SchedulerError::Commit);
+        }
+        let maximum_depth = request
+            .spec
+            .mtp_depth
+            .min(u8::try_from(remaining.saturating_sub(1)).unwrap_or(u8::MAX));
+        Ok(self
+            .profile
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.key.mode == StepMode::Verify
+                    && entry.key.mtp_depth <= maximum_depth
+                    && entry.maximum_query_rows > u32::from(entry.key.mtp_depth)
+            })
+            .map(|entry| entry.key.mtp_depth)
+            .max()
+            .unwrap_or(0))
     }
 
     fn apply_cancellations(&mut self) {
@@ -846,7 +888,7 @@ mod tests {
                 id: 2,
                 tenant: 2,
                 prompt_tokens: 12,
-                maximum_new_tokens: 2,
+                maximum_new_tokens: 7,
                 mtp_depth: 6,
                 sampling: SamplingCollective::Greedy,
             })
@@ -859,12 +901,75 @@ mod tests {
         let first_decode = scheduler.next_batch().unwrap().unwrap();
         assert_eq!(first_decode.kind, BatchKind::Verify { depth: 6 });
         assert_eq!(first_decode.query_rows, 7);
+        scheduler
+            .complete_batch_with_commits(true, &[(2, 7)])
+            .unwrap();
+        let target_decode = scheduler.next_batch().unwrap().unwrap();
+        assert_eq!(target_decode.kind, BatchKind::Decode);
+        assert_eq!(target_decode.rows[0].request_id, 1);
+    }
+
+    #[test]
+    fn mtp_depth_clamps_to_captured_tail_shape_and_falls_back_to_decode() {
+        let mut entries = vec![
+            entry(1, StepMode::Prefill, 4, 32, 0),
+            entry(2, StepMode::Decode, 4, 4, 0),
+        ];
+        entries.extend(
+            (1_u8..=6).map(|depth| entry(u32::from(depth) + 2, StepMode::Verify, 4, 28, depth)),
+        );
+        let profile = GraphProfile::new(entries).unwrap();
+        let mut scheduler = Scheduler::new(
+            SchedulerConfig {
+                maximum_batch_sequences: 4,
+                maximum_prefill_tokens: 32,
+                maximum_decode_burst: 2,
+            },
+            profile,
+            vec![TenantConfig {
+                tenant: 1,
+                weight: 1,
+                maximum_active_requests: 4,
+            }],
+        )
+        .unwrap();
+        scheduler
+            .admit_with_prefix(
+                RequestSpec {
+                    id: 1,
+                    tenant: 1,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 8,
+                    mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
+                },
+                64,
+            )
+            .unwrap();
+
+        assert_eq!(
+            scheduler.next_batch().unwrap().unwrap().kind,
+            BatchKind::Verify { depth: 6 }
+        );
+        scheduler
+            .complete_batch_with_commits(true, &[(1, 2)])
+            .unwrap();
+        assert_eq!(
+            scheduler.next_batch().unwrap().unwrap().kind,
+            BatchKind::Verify { depth: 5 }
+        );
+        scheduler
+            .complete_batch_with_commits(true, &[(1, 5)])
+            .unwrap();
+        assert_eq!(
+            scheduler.next_batch().unwrap().unwrap().kind,
+            BatchKind::Decode
+        );
         scheduler.complete_batch(true).unwrap();
-        let second_decode = scheduler.next_batch().unwrap().unwrap();
-        scheduler.complete_batch(true).unwrap();
-        let third_decode = scheduler.next_batch().unwrap().unwrap();
-        assert_eq!(second_decode.kind, BatchKind::Verify { depth: 6 });
-        assert_eq!(third_decode.kind, BatchKind::Decode);
+        assert_eq!(
+            scheduler.request_progress(1).unwrap().state,
+            RequestState::Finished
+        );
     }
 
     #[test]

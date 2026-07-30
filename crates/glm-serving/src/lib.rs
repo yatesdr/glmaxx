@@ -8,6 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use glm_cache::{
+    PageTableConfig, PageTableStats, PrefixPageAttachment, SequencePageError, SequencePageTable,
+};
 use glm_engine::{
     CollectiveKind, CollectiveSchedule, CommittedTokens, GraphProfile, MAX_ACTIVE_SEQUENCES,
     MAX_MTP_DEPTH, StepMode, Tp4WorkerPool, WorkerError,
@@ -44,6 +47,7 @@ pub struct ServingConfig {
     pub epoch: u64,
     pub event_capacity: usize,
     pub maximum_retained_prompt_bytes: u64,
+    pub page_table: PageTableConfig,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +138,7 @@ pub struct ServingCoordinator {
     compiler: StepPlanCompiler,
     workers: Tp4WorkerPool,
     sequence_table_generation: u64,
+    active_pages: SequencePageTable,
     event_capacity: usize,
     maximum_retained_prompt_bytes: u64,
     retained_prompt_bytes: u64,
@@ -160,6 +165,8 @@ struct RequestReleasePlan {
     requests: BTreeMap<u64, RequestReleaseMode>,
     retained_prompt_bytes: u64,
     prefix: Option<PrefixReleasePlan>,
+    active_pages: SequencePageTable,
+    sequence_table_generation: u64,
 }
 
 struct SuccessfulStepPublication {
@@ -238,6 +245,7 @@ impl ServingCoordinator {
             compiler: StepPlanCompiler::new(config.epoch, routes)?,
             workers,
             sequence_table_generation: 1,
+            active_pages: SequencePageTable::new(config.page_table)?,
             event_capacity: config.event_capacity,
             maximum_retained_prompt_bytes: config.maximum_retained_prompt_bytes,
             retained_prompt_bytes: 0,
@@ -264,24 +272,55 @@ impl ServingCoordinator {
     /// Test/internal admission path without a prefix lease. Production callers
     /// must use `admit_tokens`, which derives and restores exact prefix
     /// attachments inside this coordinator.
+    #[cfg(test)]
     pub(crate) fn admit_prevalidated(
         &mut self,
         request: ServingRequest,
     ) -> Result<(), ServingError> {
+        self.admit_active_sequence(
+            request.spec,
+            request.cached_prompt_tokens,
+            &[],
+            request.cached_prompt_tokens,
+        )
+    }
+
+    fn admit_active_sequence(
+        &mut self,
+        spec: RequestSpec,
+        cached_prompt_tokens: u32,
+        prefix_pages: &[PrefixPageAttachment],
+        private_cached_tokens: u32,
+    ) -> Result<(), ServingError> {
+        validate_context_limit(spec)?;
         self.require_event_space(1)?;
-        if self.pending_admissions.contains_key(&request.spec.id)
-            || self.prefix_leases.contains_key(&request.spec.id)
-            || self.request_tokens.contains_key(&request.spec.id)
+        if self.pending_admissions.contains_key(&spec.id)
+            || self.prefix_leases.contains_key(&spec.id)
+            || self.request_tokens.contains_key(&spec.id)
         {
             return Err(ServingError::Backpressure);
         }
+        let prefix_tokens = u32::try_from(prefix_pages.len())
+            .ok()
+            .and_then(|pages| pages.checked_mul(u32::try_from(glm_cache::PAGE_TOKENS).ok()?))
+            .ok_or(ServingError::Overflow)?;
+        if prefix_tokens
+            .checked_add(private_cached_tokens)
+            .is_none_or(|tokens| tokens != cached_prompt_tokens)
+        {
+            return Err(ServingError::Request);
+        }
         let next_generation = self.next_sequence_generation()?;
+        let mut active_pages = self.active_pages.clone();
+        active_pages.admit_with_prefix(spec.id, spec.mtp_depth != 0, prefix_pages)?;
+        active_pages.append_committed(spec.id, u64::from(private_cached_tokens))?;
         self.scheduler
-            .admit_with_prefix(request.spec, request.cached_prompt_tokens)?;
+            .admit_with_prefix(spec, cached_prompt_tokens)?;
+        self.active_pages = active_pages;
         self.sequence_table_generation = next_generation;
         self.events.push_back(RequestEvent::Admitted {
-            request_id: request.spec.id,
-            cached_prompt_tokens: request.cached_prompt_tokens,
+            request_id: spec.id,
+            cached_prompt_tokens,
         });
         Ok(())
     }
@@ -304,6 +343,7 @@ impl ServingCoordinator {
         spec: RequestSpec,
         tokens: &[u32],
     ) -> Result<AdmissionStatus, ServingError> {
+        validate_context_limit(spec)?;
         if usize::try_from(spec.prompt_tokens).ok() != Some(tokens.len()) {
             return Err(ServingError::Request);
         }
@@ -421,10 +461,8 @@ impl ServingCoordinator {
             restored = RestoredPrefix::empty();
         }
         let matched_tokens = restored.matched_tokens;
-        let result = self.admit_prevalidated(ServingRequest {
-            spec,
-            cached_prompt_tokens: matched_tokens,
-        });
+        let result =
+            self.admit_active_sequence(spec, matched_tokens, restored.page_attachments(), 0);
         if let Err(error) = result {
             self.prefix_cache
                 .as_mut()
@@ -467,9 +505,8 @@ impl ServingCoordinator {
             self.terminal_events.insert(request_id);
             return Ok(());
         }
-        let next_generation = self.next_sequence_generation()?;
+        self.next_sequence_generation()?;
         self.scheduler.cancel(request_id)?;
-        self.sequence_table_generation = next_generation;
         Ok(())
     }
 
@@ -488,8 +525,10 @@ impl ServingCoordinator {
     pub fn tick_observed(&mut self) -> Result<Option<ServingStepObservation>, ServingError> {
         let step_start = Instant::now();
         self.require_event_space(MAXIMUM_STEP_EVENTS)?;
+        self.scheduler.apply_cancellations_at_boundary()?;
+        self.emit_terminal_transitions()?;
+        self.require_event_space(MAXIMUM_STEP_EVENTS)?;
         let Some(batch) = self.scheduler.next_batch()? else {
-            self.emit_terminal_transitions()?;
             return Ok(None);
         };
         let entry = match self.scheduler.graph_entry(batch.graph_id).cloned() {
@@ -523,6 +562,10 @@ impl ServingCoordinator {
             .collect::<Result<Vec<_>, _>>();
         let starting_progress = match starting_progress {
             Ok(progress) => progress,
+            Err(error) => return self.fail_selected_step(&batch, error),
+        };
+        let mut active_pages = match self.reserve_active_step(&batch, &starting_progress) {
+            Ok(active_pages) => active_pages,
             Err(error) => return self.fail_selected_step(&batch, error),
         };
         let worker_start = Instant::now();
@@ -571,11 +614,18 @@ impl ServingCoordinator {
         if !output_fits_requests {
             return self.fail_selected_step(&batch, ServingError::Output);
         }
-        let publication =
-            match self.plan_successful_step_publication(&batch, &starting_progress, output_rows) {
-                Ok(publication) => publication,
-                Err(error) => return self.fail_selected_step(&batch, error),
-            };
+        if let Err(error) = Self::commit_active_step(&mut active_pages, &batch, output_rows) {
+            return self.fail_selected_step(&batch, error);
+        }
+        let publication = match self.plan_successful_step_publication(
+            &batch,
+            &starting_progress,
+            output_rows,
+            active_pages,
+        ) {
+            Ok(publication) => publication,
+            Err(error) => return self.fail_selected_step(&batch, error),
+        };
         if let Err(error) = self
             .scheduler
             .complete_batch_with_results(true, &completions)
@@ -645,11 +695,21 @@ impl ServingCoordinator {
         self.pending_admissions.contains_key(&request_id)
     }
 
+    pub fn active_page_stats(&self) -> Result<PageTableStats, ServingError> {
+        self.active_pages.stats().map_err(Into::into)
+    }
+
+    #[must_use]
+    pub fn active_committed_tokens(&self, request_id: u64) -> Option<u64> {
+        self.active_pages.committed_tokens(request_id)
+    }
+
     fn plan_successful_step_publication(
         &self,
         batch: &ScheduledBatch,
         starting_progress: &[(u64, RequestProgress)],
         output_rows: &[CommittedTokens],
+        active_pages: SequencePageTable,
     ) -> Result<SuccessfulStepPublication, ServingError> {
         if starting_progress.len() != batch.rows.len()
             || (!matches!(batch.kind, BatchKind::Prefill) && output_rows.len() != batch.rows.len())
@@ -732,7 +792,7 @@ impl ServingCoordinator {
         self.require_event_space(events.len)?;
         Ok(SuccessfulStepPublication {
             events,
-            releases: self.plan_request_releases(releases.iter())?,
+            releases: self.plan_request_releases(releases.iter(), active_pages)?,
         })
     }
 
@@ -747,12 +807,16 @@ impl ServingCoordinator {
             .filter(|&id| self.scheduler.request_state(id) == Some(RequestState::Cancelled))
             .filter(|id| !self.terminal_events.contains(id))
             .collect();
+        if cancelled.is_empty() {
+            return Ok(());
+        }
         self.require_event_space(cancelled.len())?;
         let releases = self.plan_request_releases(
             cancelled
                 .iter()
                 .copied()
                 .map(|request_id| (request_id, RequestReleaseMode::Prefix)),
+            self.active_pages.clone(),
         )?;
         self.commit_request_releases(releases);
         for request_id in cancelled {
@@ -773,6 +837,7 @@ impl ServingCoordinator {
                 .rows
                 .iter()
                 .map(|row| (row.request_id, RequestReleaseMode::Prefix)),
+            self.active_pages.clone(),
         );
         let event_space = self.require_event_space(batch.rows.len());
         self.scheduler.complete_batch(false)?;
@@ -807,6 +872,7 @@ impl ServingCoordinator {
     fn plan_request_releases(
         &self,
         releases: impl IntoIterator<Item = (u64, RequestReleaseMode)>,
+        mut active_pages: SequencePageTable,
     ) -> Result<RequestReleasePlan, ServingError> {
         let mut requests = BTreeMap::new();
         for (request_id, mode) in releases {
@@ -850,14 +916,23 @@ impl ServingCoordinator {
                     .plan_release_many(page_sets)?,
             )
         };
+        for (&request_id, &mode) in &requests {
+            if mode == RequestReleaseMode::Prefix {
+                active_pages.remove_sequence(request_id)?;
+            }
+        }
         Ok(RequestReleasePlan {
             requests,
             retained_prompt_bytes,
             prefix,
+            active_pages,
+            sequence_table_generation: self.next_sequence_generation()?,
         })
     }
 
     fn commit_request_releases(&mut self, plan: RequestReleasePlan) {
+        self.active_pages = plan.active_pages;
+        self.sequence_table_generation = plan.sequence_table_generation;
         if let Some(prefix) = plan.prefix {
             self.prefix_cache
                 .as_mut()
@@ -873,6 +948,62 @@ impl ServingCoordinator {
         self.retained_prompt_bytes = plan.retained_prompt_bytes;
     }
 
+    fn reserve_active_step(
+        &self,
+        batch: &ScheduledBatch,
+        starting_progress: &[(u64, RequestProgress)],
+    ) -> Result<SequencePageTable, ServingError> {
+        if batch.rows.len() != starting_progress.len() {
+            return Err(ServingError::Request);
+        }
+        let mut active_pages = self.active_pages.clone();
+        for (row, &(request_id, progress)) in batch.rows.iter().zip(starting_progress) {
+            if row.request_id != request_id {
+                return Err(ServingError::Request);
+            }
+            let expected_committed = u64::from(progress.prompt_done)
+                .checked_add(u64::from(progress.generated))
+                .ok_or(ServingError::Overflow)?;
+            if active_pages.committed_tokens(request_id) != Some(expected_committed) {
+                return Err(ServingError::PageTable);
+            }
+            match batch.kind {
+                BatchKind::Prefill => {
+                    active_pages.append_committed(request_id, u64::from(row.prompt_tokens))?;
+                }
+                BatchKind::Decode => active_pages.begin_tentative(request_id, 1)?,
+                BatchKind::Verify { depth } => {
+                    let reserved = depth.checked_add(1).ok_or(ServingError::Overflow)?;
+                    active_pages.begin_tentative(request_id, reserved)?;
+                }
+            }
+        }
+        Ok(active_pages)
+    }
+
+    fn commit_active_step(
+        active_pages: &mut SequencePageTable,
+        batch: &ScheduledBatch,
+        output_rows: &[CommittedTokens],
+    ) -> Result<(), ServingError> {
+        match batch.kind {
+            BatchKind::Prefill => {
+                if !output_rows.is_empty() {
+                    return Err(ServingError::Output);
+                }
+            }
+            BatchKind::Decode | BatchKind::Verify { .. } => {
+                if output_rows.len() != batch.rows.len() {
+                    return Err(ServingError::Output);
+                }
+                for (row, output) in batch.rows.iter().zip(output_rows) {
+                    active_pages.commit_tentative(row.request_id, output.count())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn retained_prompt_bytes_after_release(&self, token_count: usize) -> Result<u64, ServingError> {
         self.retained_prompt_bytes
             .checked_sub(prompt_bytes(token_count)?)
@@ -885,6 +1016,14 @@ fn prompt_bytes(token_count: usize) -> Result<u64, ServingError> {
         .ok()
         .and_then(|count| count.checked_mul(u64::from(u32::BITS / 8)))
         .ok_or(ServingError::Overflow)
+}
+
+fn validate_context_limit(spec: RequestSpec) -> Result<(), ServingError> {
+    u64::from(spec.prompt_tokens)
+        .checked_add(u64::from(spec.maximum_new_tokens))
+        .filter(|&tokens| tokens <= glm_cache::MAXIMUM_CONTEXT_TOKENS)
+        .map(|_| ())
+        .ok_or(ServingError::Request)
 }
 
 fn output_has_valid_termination(output: &glm_engine::CommittedTokens) -> bool {
@@ -952,6 +1091,8 @@ pub enum ServingError {
     Scheduler(SchedulerError),
     Compile(glm_scheduler::CompileError),
     Worker(WorkerError),
+    PageTable,
+    Pages(SequencePageError),
 }
 
 impl fmt::Display for ServingError {
@@ -986,11 +1127,20 @@ impl From<PrefixRestoreError> for ServingError {
     }
 }
 
+impl From<SequencePageError> for ServingError {
+    fn from(value: SequencePageError) -> Self {
+        Self::Pages(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         fs,
-        sync::{Arc, Barrier},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1064,6 +1214,19 @@ mod tests {
     }
 
     fn coordinator_with_workers(workers: Tp4WorkerPool) -> ServingCoordinator {
+        coordinator_with_page_config(
+            workers,
+            PageTableConfig {
+                target_pages_per_rank: 256,
+                draft_pages_per_rank: 256,
+            },
+        )
+    }
+
+    fn coordinator_with_page_config(
+        workers: Tp4WorkerPool,
+        page_table: PageTableConfig,
+    ) -> ServingCoordinator {
         let profile = GraphProfile::new(vec![
             entry(1, StepMode::Prefill, 4, 64, 0),
             entry(2, StepMode::Decode, 4, 4, 0),
@@ -1075,6 +1238,7 @@ mod tests {
                 epoch: 1,
                 event_capacity: 1024,
                 maximum_retained_prompt_bytes: 64 * 1024 * 1024,
+                page_table,
             },
             SchedulerConfig {
                 maximum_batch_sequences: 4,
@@ -1104,8 +1268,10 @@ mod tests {
         serving: &mut ServingCoordinator,
         request_id: u64,
     ) -> Result<(), ServingError> {
-        let plan = serving
-            .plan_request_releases(std::iter::once((request_id, RequestReleaseMode::Prefix)))?;
+        let plan = serving.plan_request_releases(
+            std::iter::once((request_id, RequestReleaseMode::Prefix)),
+            serving.active_pages.clone(),
+        )?;
         serving.commit_request_releases(plan);
         Ok(())
     }
@@ -1148,6 +1314,31 @@ mod tests {
         release: Arc<Barrier>,
     }
 
+    struct CountingRankExecutor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl RankExecutor for CountingRankExecutor {
+        fn execute(
+            &mut self,
+            _rank: u8,
+            plan: &StepPlan,
+            _schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match plan.mode {
+                StepMode::Prefill => Ok(StepOutput::empty()),
+                StepMode::Decode | StepMode::Verify => {
+                    let token =
+                        CommittedTokens::target(1).map_err(|_| RankExecutionError::Invariant)?;
+                    StepOutput::new(&vec![token; usize::from(plan.active_sequences)])
+                        .map_err(|_| RankExecutionError::Invariant)
+                }
+                StepMode::Mixed | StepMode::CacheOnly => Err(RankExecutionError::Invariant),
+            }
+        }
+    }
+
     impl RankExecutor for BlockingReservationRankExecutor {
         fn execute(
             &mut self,
@@ -1179,6 +1370,9 @@ mod tests {
                 cached_prompt_tokens: 0,
             })
             .unwrap();
+        assert_eq!(serving.active_committed_tokens(91), Some(0));
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 1);
+        assert_eq!(serving.sequence_table_generation, 2);
         let _ = serving.drain_events();
 
         let prefill = serving.tick_observed().unwrap().unwrap();
@@ -1204,6 +1398,8 @@ mod tests {
                 .saturating_add(prefill.coordinator_overhead),
             prefill.total_step_time
         );
+        assert_eq!(serving.active_committed_tokens(91), Some(64));
+        assert_eq!(serving.sequence_table_generation, 3);
         let _ = serving.drain_events();
 
         let decode = serving.tick_observed().unwrap().unwrap();
@@ -1220,11 +1416,179 @@ mod tests {
         assert_eq!(decode.collectives.sampling_bytes, 8);
         assert_eq!(decode.collectives.dcp_candidate_route_id, 4);
         assert_eq!(decode.collectives.sampling_route_id, 6);
+        assert_eq!(serving.active_committed_tokens(91), None);
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
+        assert_eq!(serving.sequence_table_generation, 4);
+    }
+
+    #[test]
+    fn page_capacity_failure_is_atomic_and_never_reaches_rank_workers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executors = std::array::from_fn(|_| {
+            Box::new(CountingRankExecutor {
+                calls: Arc::clone(&calls),
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
+        let mut serving = coordinator_with_page_config(
+            workers,
+            PageTableConfig {
+                target_pages_per_rank: 1,
+                draft_pages_per_rank: 1,
+            },
+        );
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 94,
+                    tenant: 1,
+                    prompt_tokens: 257,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 0,
+            })
+            .unwrap();
+        let _ = serving.drain_events();
+        for expected in [64_u64, 128, 192, 256] {
+            assert!(serving.tick().unwrap());
+            assert_eq!(serving.active_committed_tokens(94), Some(expected));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 16);
+        assert!(matches!(
+            serving.tick(),
+            Err(ServingError::Pages(SequencePageError::Capacity))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 16);
+        assert_eq!(
+            serving.request_progress(94).unwrap().state,
+            RequestState::Failed
+        );
+        assert_eq!(serving.active_committed_tokens(94), None);
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
+        assert!(
+            serving
+                .drain_events()
+                .contains(&RequestEvent::Failed { request_id: 94 })
+        );
+    }
+
+    #[test]
+    fn exact_one_million_context_is_admitted_accounted_executed_and_released() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executors = std::array::from_fn(|_| {
+            Box::new(CountingRankExecutor {
+                calls: Arc::clone(&calls),
+            }) as Box<dyn RankExecutor>
+        });
+        let workers = Tp4WorkerPool::spawn(2, executors).unwrap();
+        let mut serving = coordinator_with_page_config(
+            workers,
+            PageTableConfig {
+                target_pages_per_rank: 4_096,
+                draft_pages_per_rank: 4_096,
+            },
+        );
+        let prompt_tokens = u32::try_from(glm_cache::MAXIMUM_CONTEXT_TOKENS - 1).unwrap();
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 95,
+                    tenant: 1,
+                    prompt_tokens,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: prompt_tokens,
+            })
+            .unwrap();
+        assert_eq!(
+            serving.active_committed_tokens(95),
+            Some(glm_cache::MAXIMUM_CONTEXT_TOKENS - 1)
+        );
+        assert_eq!(
+            serving.active_page_stats().unwrap(),
+            PageTableStats {
+                target_pages_used: [4_096; 4],
+                draft_pages_used: [0; 4],
+                active_sequences: 1,
+                active_positions: glm_cache::MAXIMUM_CONTEXT_TOKENS - 1,
+                maximum_target_only_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+                maximum_mtp_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+            }
+        );
+        let _ = serving.drain_events();
+
+        assert!(serving.tick().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(serving.active_committed_tokens(95), None);
+        assert_eq!(
+            serving.active_page_stats().unwrap(),
+            PageTableStats {
+                target_pages_used: [0; 4],
+                draft_pages_used: [0; 4],
+                active_sequences: 0,
+                active_positions: 0,
+                maximum_target_only_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+                maximum_mtp_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+            }
+        );
+
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 96,
+                    tenant: 1,
+                    prompt_tokens,
+                    maximum_new_tokens: 1,
+                    mtp_depth: 6,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: prompt_tokens,
+            })
+            .unwrap();
+        assert_eq!(
+            serving.active_page_stats().unwrap(),
+            PageTableStats {
+                target_pages_used: [4_096; 4],
+                draft_pages_used: [4_096; 4],
+                active_sequences: 1,
+                active_positions: glm_cache::MAXIMUM_CONTEXT_TOKENS - 1,
+                maximum_target_only_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+                maximum_mtp_sequence_tokens: glm_cache::MAXIMUM_CONTEXT_TOKENS,
+            }
+        );
+        let _ = serving.drain_events();
+        assert_eq!(
+            serving.tick_observed().unwrap().unwrap().mode,
+            StepMode::Decode
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 8);
+        assert_eq!(serving.active_committed_tokens(96), None);
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
+
+        assert!(matches!(
+            serving.admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 97,
+                    tenant: 1,
+                    prompt_tokens: u32::try_from(glm_cache::MAXIMUM_CONTEXT_TOKENS).unwrap(),
+                    maximum_new_tokens: 1,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: u32::try_from(glm_cache::MAXIMUM_CONTEXT_TOKENS).unwrap(),
+            }),
+            Err(ServingError::Request)
+        ));
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
     }
 
     #[test]
     fn maximum_verify_publication_fits_the_fixed_event_boundary_exactly() {
-        let serving = coordinator(None);
+        let mut serving = coordinator(None);
         let batch = ScheduledBatch {
             step_id: 1,
             kind: BatchKind::Verify { depth: 6 },
@@ -1257,9 +1621,24 @@ mod tests {
             .collect();
         let committed = CommittedTokens::verify(&[1, 2, 3, 4, 5, 6], Some(7)).unwrap();
         let output_rows = vec![committed; usize::from(glm_engine::MAX_ACTIVE_SEQUENCES)];
+        for row in &batch.rows {
+            serving
+                .active_pages
+                .admit_with_prefix(row.request_id, true, &[])
+                .unwrap();
+            serving
+                .active_pages
+                .append_committed(row.request_id, 64)
+                .unwrap();
+        }
 
         let publication = serving
-            .plan_successful_step_publication(&batch, &starting_progress, &output_rows)
+            .plan_successful_step_publication(
+                &batch,
+                &starting_progress,
+                &output_rows,
+                serving.active_pages.clone(),
+            )
             .unwrap();
         assert_eq!(publication.events.len, MAXIMUM_STEP_EVENTS);
         assert_eq!(
@@ -1344,6 +1723,8 @@ mod tests {
             serving.drain_events(),
             vec![RequestEvent::Failed { request_id: 93 }]
         );
+        assert_eq!(serving.active_committed_tokens(93), None);
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
         release.wait();
         held_slot.receive().unwrap();
         assert!(!serving.tick().unwrap());
@@ -1437,7 +1818,7 @@ mod tests {
                     id: 20,
                     tenant: 2,
                     prompt_tokens: 64,
-                    maximum_new_tokens: 2,
+                    maximum_new_tokens: 7,
                     mtp_depth: 6,
                     sampling: SamplingCollective::Greedy,
                 },
@@ -1469,7 +1850,7 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(event, RequestEvent::Token { .. }))
                 .count(),
-            4
+            9
         );
         assert!(events.iter().any(|event| matches!(
             event,
@@ -1479,6 +1860,15 @@ mod tests {
                 ..
             }
         )));
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
+        assert_eq!(
+            serving.active_page_stats().unwrap().target_pages_used,
+            [0; 4]
+        );
+        assert_eq!(
+            serving.active_page_stats().unwrap().draft_pages_used,
+            [0; 4]
+        );
     }
 
     #[test]
@@ -1497,12 +1887,39 @@ mod tests {
                 cached_prompt_tokens: 0,
             })
             .unwrap();
+        serving
+            .admit_prevalidated(ServingRequest {
+                spec: RequestSpec {
+                    id: 20,
+                    tenant: 2,
+                    prompt_tokens: 64,
+                    maximum_new_tokens: 2,
+                    mtp_depth: 0,
+                    sampling: SamplingCollective::Greedy,
+                },
+                cached_prompt_tokens: 64,
+            })
+            .unwrap();
         serving.cancel(10).unwrap();
         let _ = serving.drain_events();
-        assert!(!serving.tick().unwrap());
+        assert!(serving.tick().unwrap());
+        let events = serving.drain_events();
+        assert!(events.contains(&RequestEvent::Cancelled { request_id: 10 }));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RequestEvent::Token {
+                request_id: 20,
+                position: 0,
+                speculative: false,
+                draft_ordinal: None,
+                ..
+            }
+        )));
+        assert_eq!(serving.active_committed_tokens(10), None);
+        assert_eq!(serving.active_committed_tokens(20), Some(65));
         assert_eq!(
-            serving.drain_events(),
-            vec![RequestEvent::Cancelled { request_id: 10 }]
+            serving.request_progress(10).unwrap().state,
+            RequestState::Cancelled
         );
     }
 
@@ -1534,10 +1951,12 @@ mod tests {
             serving.drain_events(),
             vec![RequestEvent::Failed { request_id: 10 }]
         );
+        assert_eq!(serving.active_committed_tokens(10), None);
+        assert_eq!(serving.active_page_stats().unwrap().active_sequences, 0);
     }
 
     #[test]
-    fn backend_cannot_commit_past_a_request_generation_limit() {
+    fn mtp_tail_falls_back_to_decode_at_the_request_generation_limit() {
         let mut serving = coordinator_with_workers(fixed_mtp_workers());
         serving
             .admit_prevalidated(ServingRequest {
@@ -1553,11 +1972,24 @@ mod tests {
             })
             .unwrap();
         let _ = serving.drain_events();
-        assert!(matches!(serving.tick(), Err(ServingError::Output)));
+        assert!(serving.tick().unwrap());
+        let events = serving.drain_events();
+        assert!(events.contains(&RequestEvent::Token {
+            request_id: 10,
+            position: 0,
+            token_id: 43,
+            speculative: false,
+            draft_ordinal: None,
+        }));
+        assert!(events.contains(&RequestEvent::Finished {
+            request_id: 10,
+            reason: RequestFinishReason::Length,
+        }));
         assert_eq!(
-            serving.drain_events(),
-            vec![RequestEvent::Failed { request_id: 10 }]
+            serving.request_progress(10).unwrap().state,
+            RequestState::Finished
         );
+        assert_eq!(serving.active_committed_tokens(10), None);
     }
 
     #[test]
@@ -1716,6 +2148,11 @@ mod tests {
             }
         }
         assert_eq!(serving.retained_prompt_bytes(), 0);
+        assert_eq!(serving.active_committed_tokens(77), Some(64));
+        assert_eq!(
+            serving.active_page_stats().unwrap().target_pages_used,
+            [1, 0, 0, 0]
+        );
         assert_eq!(
             serving.drain_events(),
             vec![RequestEvent::Admitted {
@@ -1743,8 +2180,13 @@ mod tests {
             .restore_longest(999, &tokens)
             .unwrap();
         assert_eq!(repaired.page_keys(), [key]);
-        release_prefix(&mut serving, 77).unwrap();
-        assert!(!serving.prefix_leases.contains_key(&77));
+        serving
+            .prefix_cache
+            .as_mut()
+            .unwrap()
+            .release(repaired.page_keys())
+            .unwrap();
+        serving.prefix_leases.remove(&77);
         assert!(serving.tick().unwrap());
         let events = serving.drain_events();
         assert!(
@@ -1756,6 +2198,7 @@ mod tests {
             request_id: 77,
             reason: RequestFinishReason::Length,
         }));
+        assert_eq!(serving.active_committed_tokens(77), None);
 
         assert_eq!(
             serving

@@ -3,7 +3,7 @@
   "backend": "four-rank-cpu-contract",
   "tp_ranks": 4,
   "admitted_requests": 2,
-  "completed_steps": 13,
+  "completed_steps": 11,
   "prefix_restored_tokens": 64,
   "prefill_progress_events": 2,
   "token_events": 11,

@@ -10,7 +10,7 @@ use std::thread;
 
 use glm_cache::{
     Budget, CacheCapacity, DurablePageRequest, FileTierStore, MODEL_POSITIONS, NamespaceInputs,
-    PagePieceBytes, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
+    PagePieceBytes, PageTableConfig, PrefixIndex, PrefixNamespace, ResidencyConfig, TierPiece,
 };
 use glm_cuda::{
     EXL3_KERNEL_ABI, Exl3Descriptor, Exl3KernelProjection, Fc1Descriptor, Fc2Descriptor,
@@ -1387,6 +1387,10 @@ fn serving_proof(evidence_dir: &Path) -> Result<(), Box<dyn std::error::Error>> 
             epoch: 1,
             event_capacity: 1024,
             maximum_retained_prompt_bytes: 64 * 1024 * 1024,
+            page_table: PageTableConfig {
+                target_pages_per_rank: 256,
+                draft_pages_per_rank: 256,
+            },
         },
         SchedulerConfig {
             maximum_batch_sequences: 4,
