@@ -59,7 +59,8 @@ The latest local run at distributed-greedy all-masked implementation
 
 - `scripts/local-checks.sh`: 266 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 60 candidate-based review-handoff hash proofs;
+  and all 60 then-present candidate-based review-handoff hash proofs; the new
+  distributed-greedy all-masked handoff separately passes `review-proof`;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files
@@ -424,6 +425,7 @@ verdicts:
 | synchronous exact four-rank startup and partial cleanup | `1eb8e1c` | `docs/fable-tp4-rank-startup-handshake-v1-handoff.md` |
 | synchronous retained HTTP partial-start cleanup | `20c773c` | `docs/fable-retained-http-startup-cleanup-v1-handoff.md` |
 | backend runtime readiness and synchronous pre-ready cleanup | `5ff3d48` | `docs/fable-backend-runtime-readiness-v1-handoff.md` |
+| distributed greedy rejection of a globally all-masked row | `7867ed2` | `docs/fable-distributed-greedy-all-masked-v1-handoff.md` |
 
 Handoffs contain requested tokens as instructions; that text is not an
 acceptance result. Only a reviewer artifact with the exact full-line token
