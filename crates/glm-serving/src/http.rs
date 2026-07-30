@@ -515,9 +515,14 @@ fn accept_loop(
         if shutdown.load(Ordering::Acquire) {
             break;
         }
-        let _ = stream.set_read_timeout(Some(config.read_timeout));
-        let _ = stream.set_write_timeout(Some(config.write_timeout));
-        let _ = stream.set_nodelay(true);
+        if stream
+            .set_read_timeout(Some(config.read_timeout))
+            .and_then(|()| stream.set_write_timeout(Some(config.write_timeout)))
+            .and_then(|()| stream.set_nodelay(true))
+            .is_err()
+        {
+            continue;
+        }
         match sender.try_send(stream) {
             Ok(()) => {}
             Err(TrySendError::Full(mut rejected)) => {
@@ -713,8 +718,11 @@ fn write_streaming_completion(
     handle: ApiCompletionHandle,
     timeout: Duration,
 ) -> Result<(), ApiRequestError> {
-    write_stream_headers(stream).map_err(internal_io)?;
     let request_id = handle.request_id;
+    if write_stream_headers(stream).is_err() {
+        let _ = backend.cancel(tenant, request_id);
+        return Ok(());
+    }
     let created = unix_seconds();
     let first = json!({
         "id": format!("chatcmpl-{request_id}"),
@@ -803,6 +811,7 @@ fn recv_before(
     }
 }
 
+#[derive(Debug)]
 struct HttpRequest {
     method: String,
     path: String,
@@ -811,7 +820,7 @@ struct HttpRequest {
 }
 
 fn read_http_request(
-    stream: &mut TcpStream,
+    stream: &mut impl Read,
     maximum_body_bytes: usize,
 ) -> Result<HttpRequest, ApiRequestError> {
     let mut bytes = Vec::with_capacity(4_096);
@@ -828,7 +837,11 @@ fn read_http_request(
                 "HTTP headers exceed 32768 bytes",
             ));
         }
-        let read = stream.read(&mut buffer).map_err(bad_http_io)?;
+        let remaining_header_bytes = MAXIMUM_HEADER_BYTES - bytes.len();
+        let read_bytes = remaining_header_bytes.min(buffer.len());
+        let read = stream
+            .read(&mut buffer[..read_bytes])
+            .map_err(bad_http_io)?;
         if read == 0 {
             return Err(ApiRequestError::new(
                 400,
@@ -839,6 +852,14 @@ fn read_http_request(
         }
         bytes.extend_from_slice(&buffer[..read]);
     };
+    if header_end > MAXIMUM_HEADER_BYTES {
+        return Err(ApiRequestError::new(
+            431,
+            "HEADERS_TOO_LARGE",
+            None,
+            "HTTP headers exceed 32768 bytes",
+        ));
+    }
     let header = std::str::from_utf8(&bytes[..header_end - 4]).map_err(|_| {
         ApiRequestError::new(
             400,
@@ -917,7 +938,11 @@ fn read_http_request(
         .checked_add(body_length)
         .ok_or_else(|| ApiRequestError::new(413, "REQUEST_TOO_LARGE", None, "request too large"))?;
     while bytes.len() < required {
-        let read = stream.read(&mut buffer).map_err(bad_http_io)?;
+        let remaining_body_bytes = required - bytes.len();
+        let read_bytes = remaining_body_bytes.min(buffer.len());
+        let read = stream
+            .read(&mut buffer[..read_bytes])
+            .map_err(bad_http_io)?;
         if read == 0 {
             return Err(ApiRequestError::new(
                 400,
@@ -927,6 +952,14 @@ fn read_http_request(
             ));
         }
         bytes.extend_from_slice(&buffer[..read]);
+    }
+    if bytes.len() > required {
+        return Err(ApiRequestError::new(
+            400,
+            "TRAILING_HTTP_BYTES",
+            None,
+            "bytes after the declared request body are not supported",
+        ));
     }
     Ok(HttpRequest {
         method,
@@ -1090,12 +1123,25 @@ impl From<io::Error> for ApiServerError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     };
 
     use super::*;
+
+    struct ChunkedReader {
+        inner: Cursor<Vec<u8>>,
+        maximum_chunk: usize,
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let maximum = output.len().min(self.maximum_chunk);
+            self.inner.read(&mut output[..maximum])
+        }
+    }
 
     struct MockBackend {
         health: Mutex<ApiHealth>,
@@ -1261,6 +1307,69 @@ mod tests {
         assert!(rendered.contains(
             "<arg_key>z</arg_key><arg_value>1</arg_value><arg_key>a</arg_key><arg_value>2</arg_value>"
         ));
+    }
+
+    #[test]
+    fn parser_enforces_exact_header_boundary_and_rejects_trailing_bytes() {
+        let prefix = b"GET /health HTTP/1.1\r\nX-Fill: ";
+        let suffix = b"\r\n\r\n";
+        let fill_bytes = MAXIMUM_HEADER_BYTES + 1 - prefix.len() - suffix.len();
+        let mut oversized = Vec::with_capacity(MAXIMUM_HEADER_BYTES + 1);
+        oversized.extend_from_slice(prefix);
+        oversized.extend(std::iter::repeat_n(b'a', fill_bytes));
+        oversized.extend_from_slice(suffix);
+        assert_eq!(oversized.len(), MAXIMUM_HEADER_BYTES + 1);
+        let mut chunked = ChunkedReader {
+            inner: Cursor::new(oversized),
+            maximum_chunk: 4_000,
+        };
+        assert_eq!(
+            read_http_request(&mut chunked, 1)
+                .unwrap_err()
+                .body
+                .error
+                .code,
+            "HEADERS_TOO_LARGE"
+        );
+
+        let mut trailing = Cursor::new(
+            b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 1\r\n\r\nxextra".to_vec(),
+        );
+        assert_eq!(
+            read_http_request(&mut trailing, 64)
+                .unwrap_err()
+                .body
+                .error
+                .code,
+            "TRAILING_HTTP_BYTES"
+        );
+    }
+
+    #[test]
+    fn streaming_header_failure_cancels_submitted_backend_request() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("unexpected listener failure: {error}"),
+        };
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.shutdown(std::net::Shutdown::Write).unwrap();
+        let backend = MockBackend::healthy();
+        let (_sender, events) = mpsc::channel();
+        write_streaming_completion(
+            &mut server,
+            backend.as_ref(),
+            7,
+            ApiCompletionHandle {
+                request_id: 91,
+                events,
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(*backend.cancelled.lock().unwrap(), [(7, 91)]);
+        drop(client);
     }
 
     #[test]
