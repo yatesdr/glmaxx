@@ -96,7 +96,8 @@ The NVFP4 canonical decoder correction is pinned in
 rounding/dtype/global-scale-mode and reserved-field lies, inconsistent
 amax/global-scale pairs, nonzero codes behind zero scales, and nonzero
 value/scale padding while preserving partial-tile 2D scale repetition. It is
-a CPU format result only.
+a CPU format result only. Independent review is requested by
+`docs/fable-nvfp4-metadata-canonicality-v1-handoff.md`.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
