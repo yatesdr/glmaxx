@@ -620,6 +620,7 @@ verdicts:
 | nonblocking Linux HTTP transport r2 corrective design | `b7a2ac4` | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` |
 | quality, KLD, task, retrieval, and MTP numerical acceptance | `70222ab` | `docs/fable-quality-acceptance-v1-handoff.md` |
 | quarantined checkpoint load and four-rank adoption | `4bb0708` (r1 `737603b` superseded) | `docs/fable-checkpoint-load-transaction-v1-r2-handoff.md` |
+| consolidated checkpoint-load r3 contract and CPU/mock proof | `fc96d90` | `docs/fable-checkpoint-load-transaction-v1-r3-handoff.md` |
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
