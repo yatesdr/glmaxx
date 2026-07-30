@@ -8,27 +8,47 @@ use std::{
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum StartupState {
-    Cold = 0,
-    ContextReady = 1,
-    InventoryVerified = 2,
-    WeightsLoaded = 3,
-    MemoryProved = 4,
-    GraphsReady = 5,
-    CollectivesReady = 6,
-    Healthy = 7,
+    Created = 0,
+    HostValidated = 1,
+    CudaContextsReady = 2,
+    TopologyValidated = 3,
+    ModulesReady = 4,
+    MemoryPlanned = 5,
+    WeightsLoaded = 6,
+    GraphsCaptured = 7,
+    KvReady = 8,
+    CollectivesVoted = 9,
+    Healthy = 10,
     Failed = 255,
 }
 
 impl StartupState {
+    pub const NORMATIVE_ORDER: [Self; 11] = [
+        Self::Created,
+        Self::HostValidated,
+        Self::CudaContextsReady,
+        Self::TopologyValidated,
+        Self::ModulesReady,
+        Self::MemoryPlanned,
+        Self::WeightsLoaded,
+        Self::GraphsCaptured,
+        Self::KvReady,
+        Self::CollectivesVoted,
+        Self::Healthy,
+    ];
+
     const fn successor(self) -> Option<Self> {
         match self {
-            Self::Cold => Some(Self::ContextReady),
-            Self::ContextReady => Some(Self::InventoryVerified),
-            Self::InventoryVerified => Some(Self::WeightsLoaded),
-            Self::WeightsLoaded => Some(Self::MemoryProved),
-            Self::MemoryProved => Some(Self::GraphsReady),
-            Self::GraphsReady => Some(Self::CollectivesReady),
-            Self::CollectivesReady => Some(Self::Healthy),
+            Self::Created => Some(Self::HostValidated),
+            Self::HostValidated => Some(Self::CudaContextsReady),
+            Self::CudaContextsReady => Some(Self::TopologyValidated),
+            Self::TopologyValidated => Some(Self::ModulesReady),
+            Self::ModulesReady => Some(Self::MemoryPlanned),
+            Self::MemoryPlanned => Some(Self::WeightsLoaded),
+            Self::WeightsLoaded => Some(Self::GraphsCaptured),
+            Self::GraphsCaptured => Some(Self::KvReady),
+            Self::KvReady => Some(Self::CollectivesVoted),
+            Self::CollectivesVoted => Some(Self::Healthy),
             Self::Healthy | Self::Failed => None,
         }
     }
@@ -54,7 +74,7 @@ impl StartupCoordinator {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            state: StartupState::Cold,
+            state: StartupState::Created,
             consensus: None,
         }
     }
@@ -247,6 +267,58 @@ impl std::error::Error for StartupError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reports(reached: StartupState) -> Vec<Result<RankStartupReport, StartupError>> {
+        (0_u8..4)
+            .map(|rank| {
+                Ok(RankStartupReport {
+                    rank,
+                    reached,
+                    weight_policy_hash: [0x11; 32],
+                    graph_profile_hash: [0x22; 32],
+                    collective_route_hash: [0x33; 32],
+                    memory_plan_hash: [0x44; 32],
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn startup_order_exactly_matches_the_normative_engine_sequence() {
+        let mut observed = vec![StartupState::Created];
+        while let Some(next) = observed.last().copied().unwrap().successor() {
+            observed.push(next);
+        }
+        assert_eq!(observed, StartupState::NORMATIVE_ORDER);
+        assert!(
+            StartupState::NORMATIVE_ORDER
+                .iter()
+                .position(|state| *state == StartupState::MemoryPlanned)
+                .unwrap()
+                < StartupState::NORMATIVE_ORDER
+                    .iter()
+                    .position(|state| *state == StartupState::WeightsLoaded)
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn obsolete_weight_before_memory_sequence_fails_closed() {
+        let mut coordinator = StartupCoordinator::new();
+        for stage in [
+            StartupState::HostValidated,
+            StartupState::CudaContextsReady,
+            StartupState::TopologyValidated,
+            StartupState::ModulesReady,
+        ] {
+            coordinator.advance(reports(stage)).unwrap();
+        }
+        assert_eq!(
+            coordinator.advance(reports(StartupState::WeightsLoaded)),
+            Err(StartupError::RankAgreement)
+        );
+        assert_eq!(coordinator.state(), StartupState::Failed);
+    }
 
     #[test]
     fn four_rank_mock_reaches_healthy() {
