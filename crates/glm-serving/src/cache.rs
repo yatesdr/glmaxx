@@ -152,8 +152,11 @@ impl PrefixRestoreCoordinator {
             .zip(&self.ranks)
             .map(|(records, rank)| rank.plan_nvme_registrations(records))
             .collect::<Result<Vec<_>, _>>()?;
+        for (rank, plan) in self.ranks.iter().zip(&plans) {
+            rank.validate_nvme_registration_plan(plan)?;
+        }
         for (rank, plan) in self.ranks.iter_mut().zip(plans) {
-            rank.commit_nvme_registrations(plan);
+            rank.commit_nvme_registrations(plan)?;
         }
         self.index = candidate_index;
         Ok(keys)
@@ -582,6 +585,7 @@ impl From<RestoreError> for PrefixRestoreError {
 mod tests {
     use std::{
         fs,
+        sync::atomic::{AtomicU64, Ordering},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -592,14 +596,17 @@ mod tests {
 
     use super::*;
 
-    fn temporary_store() -> std::path::PathBuf {
-        let nonce = SystemTime::now()
+    static NEXT_TEMP_STORE: AtomicU64 = AtomicU64::new(1);
+
+    fn temporary_store(name: &str) -> std::path::PathBuf {
+        let wall_clock = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let sequence = NEXT_TEMP_STORE.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "glmaxx-async-prefix-{}-{nonce}",
-            std::process::id()
+            "glmaxx-async-prefix-{name}-{}-{wall_clock}-{sequence}",
+            std::process::id(),
         ))
     }
 
@@ -628,7 +635,7 @@ mod tests {
 
     #[test]
     fn prefix_registration_uses_the_monotonic_index_record_atomically() {
-        let root = temporary_store();
+        let root = temporary_store("monotonic-registration");
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [21; 32],
             tokenizer_sha256: [22; 32],
@@ -744,7 +751,7 @@ mod tests {
 
     #[test]
     fn multi_rank_mtp_upgrade_is_atomic_on_a_late_pinned_rank() {
-        let root = temporary_store();
+        let root = temporary_store("atomic-mtp-upgrade");
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [31; 32],
             tokenizer_sha256: [32; 32],
@@ -886,7 +893,7 @@ mod tests {
 
     #[test]
     fn multi_page_restore_is_submitted_without_blocking_admission() {
-        let root = temporary_store();
+        let root = temporary_store("multi-page-restore");
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [1; 32],
             tokenizer_sha256: [2; 32],
@@ -1054,7 +1061,7 @@ mod tests {
 
     #[test]
     fn submit_saturation_rolls_back_every_started_restore() {
-        let root = temporary_store();
+        let root = temporary_store("submit-saturation");
         let namespace = PrefixNamespace::new(NamespaceInputs {
             model_revision_sha256: [11; 32],
             tokenizer_sha256: [12; 32],

@@ -227,6 +227,7 @@ pub struct ResidencyManager {
     hbm_bytes: u64,
     dram_bytes: u64,
     clock: u64,
+    state_generation: u64,
 }
 
 struct HbmAdmissionPlan {
@@ -239,6 +240,7 @@ pub struct NvmeRegistrationPlan {
     records: Vec<TierRecord>,
     hbm_bytes: u64,
     dram_bytes: u64,
+    expected_state_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -259,13 +261,13 @@ impl ResidencyManager {
             hbm_bytes: 0,
             dram_bytes: 0,
             clock: 0,
+            state_generation: 0,
         })
     }
 
     pub fn register_nvme(&mut self, record: TierRecord) -> Result<(), ResidencyError> {
         let plan = self.plan_nvme_registrations(vec![record])?;
-        self.commit_nvme_registrations(plan);
-        Ok(())
+        self.commit_nvme_registrations(plan)
     }
 
     pub fn plan_nvme_registrations(
@@ -311,10 +313,30 @@ impl ResidencyManager {
             records: planned_records,
             hbm_bytes: next_hbm_bytes,
             dram_bytes: next_dram_bytes,
+            expected_state_generation: self.state_generation,
         })
     }
 
-    pub fn commit_nvme_registrations(&mut self, plan: NvmeRegistrationPlan) {
+    pub fn validate_nvme_registration_plan(
+        &self,
+        plan: &NvmeRegistrationPlan,
+    ) -> Result<(), ResidencyError> {
+        if plan.expected_state_generation != self.state_generation {
+            return Err(ResidencyError::Stale);
+        }
+        Ok(())
+    }
+
+    pub fn commit_nvme_registrations(
+        &mut self,
+        plan: NvmeRegistrationPlan,
+    ) -> Result<(), ResidencyError> {
+        self.validate_nvme_registration_plan(&plan)?;
+        let next_state_generation = if plan.records.is_empty() {
+            self.state_generation
+        } else {
+            self.next_state_generation()?
+        };
         for record in plan.records {
             self.entries.insert(
                 record.page_key,
@@ -330,6 +352,8 @@ impl ResidencyManager {
         }
         self.hbm_bytes = plan.hbm_bytes;
         self.dram_bytes = plan.dram_bytes;
+        self.state_generation = next_state_generation;
+        Ok(())
     }
 
     pub fn validate_nvme_registration(&self, record: &TierRecord) -> Result<(), ResidencyError> {
@@ -381,6 +405,7 @@ impl ResidencyManager {
         if request_id == 0 || worker_rank >= 4 || owner_rank(page_ordinal) != worker_rank {
             return Err(ResidencyError::Request);
         }
+        let next_state_generation = self.next_state_generation()?;
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -394,6 +419,7 @@ impl ResidencyManager {
             request_id,
             page_ordinal,
         });
+        self.state_generation = next_state_generation;
         Ok(RestoreRequest {
             request_id,
             page_key,
@@ -405,6 +431,7 @@ impl ResidencyManager {
     }
 
     pub fn abort_restore(&mut self, page_key: [u8; 32]) -> Result<(), ResidencyError> {
+        let next_state_generation = self.next_state_generation()?;
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -414,6 +441,7 @@ impl ResidencyManager {
         }
         entry.residency = Residency::Nvme;
         entry.pending_restore = None;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -443,12 +471,14 @@ impl ResidencyManager {
         page_ordinal: u64,
     ) -> Result<(), ResidencyError> {
         self.validate_abort_restore_identity(page_key, request_id, page_ordinal)?;
+        let next_state_generation = self.next_state_generation()?;
         let entry = self
             .entries
             .get_mut(&page_key)
             .ok_or(ResidencyError::Missing)?;
         entry.residency = Residency::Nvme;
         entry.pending_restore = None;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -467,6 +497,7 @@ impl ResidencyManager {
         }
         let bytes = entry_bytes(&entry.record)?;
         let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let next_state_generation = self.next_state_generation()?;
         let plan = self.plan_hbm_admission(bytes, 0, Some(page_key))?;
         let entry = self
             .entries
@@ -478,6 +509,7 @@ impl ResidencyManager {
         entry.last_touch = next_clock;
         self.apply_hbm_admission(plan);
         self.clock = next_clock;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -488,6 +520,7 @@ impl ResidencyManager {
         }
         let bytes = entry_bytes(&entry.record)?;
         let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let next_state_generation = self.next_state_generation()?;
         let plan = self.plan_hbm_admission(bytes, bytes, Some(page_key))?;
         let entry = self
             .entries
@@ -497,6 +530,7 @@ impl ResidencyManager {
         entry.last_touch = next_clock;
         self.apply_hbm_admission(plan);
         self.clock = next_clock;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -510,6 +544,7 @@ impl ResidencyManager {
             .checked_add(1)
             .ok_or(ResidencyError::Overflow)?;
         let next_clock = self.clock.checked_add(1).ok_or(ResidencyError::Overflow)?;
+        let next_state_generation = self.next_state_generation()?;
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -517,6 +552,7 @@ impl ResidencyManager {
         entry.pin_count = next_pin_count;
         entry.last_touch = next_clock;
         self.clock = next_clock;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -541,6 +577,7 @@ impl ResidencyManager {
 
     pub fn unpin_count(&mut self, page_key: [u8; 32], count: u32) -> Result<(), ResidencyError> {
         self.validate_unpin_count(page_key, count)?;
+        let next_state_generation = self.next_state_generation()?;
         let entry = self
             .entries
             .get_mut(&page_key)
@@ -549,6 +586,7 @@ impl ResidencyManager {
             .pin_count
             .checked_sub(count)
             .ok_or(ResidencyError::State)?;
+        self.state_generation = next_state_generation;
         Ok(())
     }
 
@@ -570,6 +608,12 @@ impl ResidencyManager {
     #[must_use]
     pub const fn dram_bytes(&self) -> u64 {
         self.dram_bytes
+    }
+
+    fn next_state_generation(&self) -> Result<u64, ResidencyError> {
+        self.state_generation
+            .checked_add(1)
+            .ok_or(ResidencyError::Overflow)
     }
 
     fn plan_hbm_admission(
@@ -720,6 +764,7 @@ impl std::error::Error for ResidencyError {}
 mod tests {
     use std::{
         fs,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -727,12 +772,18 @@ mod tests {
 
     use super::*;
 
+    static NEXT_TEMP_STORE: AtomicU64 = AtomicU64::new(1);
+
     fn temporary_store(name: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
+        let wall_clock = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("glmaxx-{name}-{}-{nonce}", std::process::id()))
+        let sequence = NEXT_TEMP_STORE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "glmaxx-{name}-{}-{wall_clock}-{sequence}",
+            std::process::id()
+        ))
     }
 
     fn page(key: u8) -> DurablePageRequest {
@@ -948,6 +999,47 @@ mod tests {
         manager.register_nvme(newer_target).unwrap();
         assert_eq!(manager.record(upgrade.page_key), Some(&upgrade));
         assert_eq!(manager.location([0x41; 32]), Some(Residency::Nvme));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_registration_plan_cannot_rewind_residency_accounting() {
+        let root = temporary_store("residency-stale-plan");
+        let mut store = FileTierStore::open(&root).unwrap();
+        let resident = store.publish(page(0x43)).unwrap();
+        let pending = store.publish(page(0x44)).unwrap();
+        let page_bytes = entry_bytes(&resident).unwrap();
+        let mut manager = ResidencyManager::new(ResidencyConfig {
+            hbm_bytes: page_bytes,
+            dram_bytes: page_bytes,
+        })
+        .unwrap();
+        manager.register_nvme(resident.clone()).unwrap();
+
+        let stale_plan = manager
+            .plan_nvme_registrations(vec![pending.clone()])
+            .unwrap();
+        manager
+            .begin_restore(1, resident.page_key, 0, owner_rank(0))
+            .unwrap();
+        let restored = store.restore(resident.page_key).unwrap().unwrap();
+        manager
+            .complete_restore(RestoreResult {
+                request_id: 1,
+                page_ordinal: 0,
+                page: restored,
+            })
+            .unwrap();
+        assert_eq!(manager.hbm_bytes(), page_bytes);
+
+        assert_eq!(
+            manager.commit_nvme_registrations(stale_plan),
+            Err(ResidencyError::Stale)
+        );
+        assert_eq!(manager.hbm_bytes(), page_bytes);
+        assert_eq!(manager.dram_bytes(), 0);
+        assert_eq!(manager.location(resident.page_key), Some(Residency::Hbm));
+        assert_eq!(manager.record(pending.page_key), None);
         fs::remove_dir_all(root).unwrap();
     }
 
