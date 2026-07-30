@@ -134,10 +134,12 @@ preallocated target, indexer, draft, and draft-indexer arenas without changing
 these ownership or transaction rules.
 
 The authoritative host table still uses clone-on-step rollback. Canonical
-delta delivery and CPU rank acknowledgments are now integrated, but
-fixed-capacity undo, device upload acknowledgments, physical-ID quarantine,
-and cache-only cleanup remain required before a CUDA executor consumes these
-IDs.
+delta delivery and CPU rank acknowledgments are integrated. `cd42ad4` adds
+generation-bound target/draft physical-ID quarantine and commits accepted
+tentative pages in place; an ID returns to the allocator only after exact
+four-rank acknowledgement of its bound removal generation. Fixed-capacity
+undo, device upload acknowledgments, and cache-only cleanup remain required
+before a CUDA executor consumes these IDs.
 
 The underlying committed-page append at `271d1f4` is now page-granular, and
 all 64 tail occupancies at tentative depths one through seven are exhausted.
@@ -155,8 +157,9 @@ publication failures issue an explicit successor rollback before retryable
 cleanup. The public non-test worker API has no plan-only submit route.
 
 This is still a host-metadata proof. Fixed-capacity undo storage, CUDA upload
-receipts and stream dependencies, physical-ID quarantine, probabilistic RNG
-output commit, and the cache-only contract conflict remain open.
+receipts and stream dependencies, probabilistic RNG output commit, and the
+cache-only contract conflict remain open. The implemented quarantine does
+not claim CUDA visibility or device payload teardown.
 
 ## Reproducible proof
 

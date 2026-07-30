@@ -3,7 +3,9 @@
 Date: 2026-07-29
 
 Status: CPU coordinator/rank-mirror integration implemented through
-`e1d51ce`; fixed-capacity hot path and device integration remain pending
+`e1d51ce`; generation-bound physical-ID reuse quarantine and in-place
+tentative commit implemented at `cd42ad4`; fixed-capacity hot path and device
+integration remain pending review and implementation
 review and implementation
 
 GPU claim: none
@@ -163,10 +165,21 @@ reachable by other sequences; private tails return both target and draft
 slots.
 
 Freed physical IDs are quarantined until every rank acknowledges the removal
-generation. If no compute step is ready to carry that delta, the coordinator
-submits a `CACHE_ONLY` page-table update with no CUDA graph or collective.
-An ID may not be reused while any rank could still resolve it to the prior
-sequence.
+generation. `cd42ad4` implements this rule in the CPU table and coordinator:
+target/draft IDs leave the active map but do not enter the free sets; binding
+the quarantine to a nonzero successor freezes mutation; and only exact
+four-rank delta acknowledgement releases the IDs. A retired worker generation
+does not receive a forged acknowledgement and leaves the host quarantine
+unreusable.
+
+The same correction commits accepted tentative pages in place. Rejected
+suffix pages enter quarantine; accepted target/draft page IDs are not freed
+and deterministically reacquired.
+
+If no compute step is ready to carry a cleanup delta, the final device path
+must submit a `CACHE_ONLY` page-table update with no CUDA graph or collective.
+That explicit plan ABI remains open. An ID may not be reused while any live
+rank could still resolve it to the prior sequence.
 
 ## Fixed-capacity hot-path API
 
@@ -229,5 +242,6 @@ proof must cover:
 - fixed-capacity C1 and C64 undo records at MTP0 through MTP6;
 - every tail occupancy 0–63 through the serving coordinator;
 - serving/worker delivery of the canonical rank delta and reservation digest;
-- rank acknowledgment, removal quarantine, and `CACHE_ONLY` cleanup; and
+- CUDA-visible rank acknowledgment and `CACHE_ONLY` cleanup (CPU
+  generation-bound removal quarantine is implemented); and
 - generation/digest disagreement across four rank consumers.

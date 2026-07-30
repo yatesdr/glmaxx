@@ -3,7 +3,7 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`e1d51ce57da7db163b82697a568ab2751602d832`
+`cd42ad4640f9d9d519ee970aaab07a4f51cad6d5`
 
 The complete local gate most recently ran against active-prefix record
 binding implementation
@@ -75,6 +75,10 @@ seed, RNG counter, context, and generation limits. Serving now constructs and
 delivers it with one reservation delta to four persistent rank mirrors.
 Admission/removal and post-output commit/rollback deltas receive exact
 global/rank-local receipts before host publication.
+Accepted tentative target/draft pages are now committed in place. Rejected
+or removed IDs enter an owner-rank quarantine bound to one successor
+generation and return to the allocator only after all four exact rank
+receipts.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -82,13 +86,16 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at integrated rank-mirror implementation `e1d51ce`
+The latest complete local run against page-reuse implementation `cd42ad4`
 passed:
 
-- `scripts/local-checks.sh` passes 284 Rust tests with zero failures,
+- `scripts/local-checks.sh` passes 286 Rust tests with zero failures,
   workspace formatting, Clippy with warnings denied, CUDA FFI type checks,
-  deterministic proof regeneration, and all 68 candidate-based review-handoff
-  hash proofs with 0/49 configured result artifacts;
+  deterministic proof regeneration, and all 69 candidate-based review-handoff
+  hash proofs with 0/50 configured result artifacts;
+- new cache regressions prove exact target/draft ID quarantine, wrong or
+  missing generation rejection, mutation freeze while bound, post-receipt
+  reuse, accepted-page identity preservation, and rejected-suffix retirement;
 - new worker/serving regressions prove persistent four-rank mirror
   initialization, exact reservation and commit receipts, uninitialized/stale
   rejection, input-derived CPU output, exact serving-to-rank sampling/context
