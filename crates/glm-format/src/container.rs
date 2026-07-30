@@ -892,31 +892,50 @@ pub(crate) fn validate_plain_padding(
     if logical_shape == padded_shape {
         return Ok(());
     }
-    let element_bytes =
-        usize::try_from(dtype.element_bytes()).map_err(|_| RankFileError::Overflow)?;
-    let padded_elements = usize::try_from(shape_elements(padded_shape, ndim)?)
-        .map_err(|_| RankFileError::Overflow)?;
-    for linear in 0..padded_elements {
+    validate_plain_padding_chunk(payload, 0, dtype, ndim, logical_shape, padded_shape)
+}
+
+pub(crate) fn validate_plain_padding_chunk(
+    bytes: &[u8],
+    plane_offset: u64,
+    dtype: PlainDtype,
+    ndim: u8,
+    logical_shape: [u32; 4],
+    padded_shape: [u32; 4],
+) -> Result<(), RankFileError> {
+    let element_bytes = dtype.element_bytes();
+    let total_bytes = shape_elements(padded_shape, ndim)?
+        .checked_mul(element_bytes)
+        .ok_or(RankFileError::Overflow)?;
+    let bytes_u64 = u64::try_from(bytes.len()).map_err(|_| RankFileError::Overflow)?;
+    let end = plane_offset
+        .checked_add(bytes_u64)
+        .ok_or(RankFileError::Overflow)?;
+    if !plane_offset.is_multiple_of(element_bytes)
+        || !bytes_u64.is_multiple_of(element_bytes)
+        || end > total_bytes
+    {
+        return Err(RankFileError::Descriptor);
+    }
+    if logical_shape == padded_shape {
+        return Ok(());
+    }
+    let first_element = plane_offset / element_bytes;
+    let element_bytes = usize::try_from(element_bytes).map_err(|_| RankFileError::Overflow)?;
+    for (local, element) in bytes.chunks_exact(element_bytes).enumerate() {
+        let linear = first_element
+            .checked_add(u64::try_from(local).map_err(|_| RankFileError::Overflow)?)
+            .ok_or(RankFileError::Overflow)?;
         let mut remainder = linear;
         let mut padding = false;
         for axis in (0..usize::from(ndim)).rev() {
-            let extent =
-                usize::try_from(padded_shape[axis]).map_err(|_| RankFileError::Overflow)?;
+            let extent = u64::from(padded_shape[axis]);
             let coordinate = remainder % extent;
             remainder /= extent;
-            padding |= coordinate
-                >= usize::try_from(logical_shape[axis]).map_err(|_| RankFileError::Overflow)?;
+            padding |= coordinate >= u64::from(logical_shape[axis]);
         }
-        if padding {
-            let start = linear
-                .checked_mul(element_bytes)
-                .ok_or(RankFileError::Overflow)?;
-            if payload[start..start + element_bytes]
-                .iter()
-                .any(|&byte| byte != 0)
-            {
-                return Err(RankFileError::NonCanonicalLayout);
-            }
+        if padding && element.iter().any(|&byte| byte != 0) {
+            return Err(RankFileError::NonCanonicalLayout);
         }
     }
     Ok(())
@@ -1493,6 +1512,30 @@ mod tests {
         assert_eq!(descriptor.aux_bytes, 0);
         assert_eq!(descriptor.codec_metadata_bytes, 0);
         assert_eq!(parsed.tensor_primary(0).unwrap().len(), 16);
+
+        let payload = parsed.tensor_primary(0).unwrap();
+        for (start, end) in [(0, 4), (4, 12), (12, 16)] {
+            validate_plain_padding_chunk(
+                &payload[start..end],
+                u64::try_from(start).unwrap(),
+                PlainDtype::Bf16,
+                2,
+                [2, 3, 1, 1],
+                [2, 4, 1, 1],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            validate_plain_padding_chunk(
+                &payload[2..4],
+                1,
+                PlainDtype::Bf16,
+                2,
+                [2, 3, 1, 1],
+                [2, 4, 1, 1],
+            ),
+            Err(RankFileError::Descriptor)
+        ));
 
         let mut invalid = plain_builder(0);
         let TensorPayload::Plain(plain) = &mut invalid.tensors[0].payload else {

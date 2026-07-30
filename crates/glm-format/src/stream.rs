@@ -18,7 +18,7 @@ use crate::{
         CODEC_FP32_ROW_MAJOR, DESCRIPTOR_BYTES, DESCRIPTOR_FLAG_AUX_REQUIRED, DTYPE_BF16,
         DTYPE_FP16, DTYPE_I16, DTYPE_PACKED_E2M1X2, PAYLOAD_ALIGNMENT, RankHeaderFields, align_up,
         derive_header_flags, encode_rank_header, first_16, sha256, validate_plain_geometry,
-        validate_plain_padding,
+        validate_plain_padding_chunk,
     },
     nvfp4::Nvfp4PlaneValidator,
 };
@@ -902,19 +902,30 @@ impl StreamingRankWriter {
                 if descriptor.logical_shape == descriptor.padded_shape {
                     return Ok(());
                 }
-                let primary = read_range_vec(
+                let mut primary_offset = 0_u64;
+                read_chunks(
                     &self.file,
                     descriptor.payload_offset,
                     descriptor.payload_bytes,
-                )?;
-                validate_plain_padding(
-                    &primary,
-                    dtype,
-                    descriptor.ndim,
-                    descriptor.logical_shape,
-                    descriptor.padded_shape,
+                    |chunk| {
+                        validate_plain_padding_chunk(
+                            chunk,
+                            primary_offset,
+                            dtype,
+                            descriptor.ndim,
+                            descriptor.logical_shape,
+                            descriptor.padded_shape,
+                        )
+                        .map_err(StreamRankError::RankFile)?;
+                        primary_offset = primary_offset
+                            .checked_add(
+                                u64::try_from(chunk.len())
+                                    .map_err(|_| StreamRankError::Overflow)?,
+                            )
+                            .ok_or(StreamRankError::Overflow)?;
+                        Ok(())
+                    },
                 )
-                .map_err(StreamRankError::RankFile)
             }
             0x0100 | 0x0101 => {
                 let metadata = Nvfp4Metadata::decode(&self.config.tensors[index].metadata)

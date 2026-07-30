@@ -18,6 +18,7 @@ use crate::{
         CODEC_FP32_ROW_MAJOR, CODEC_NVFP4_1D, CODEC_NVFP4_2D, DESCRIPTOR_BYTES,
         DESCRIPTOR_FLAG_AUX_REQUIRED, DTYPE_BF16, DTYPE_FP16, DTYPE_I16, DTYPE_PACKED_E2M1X2,
         PAYLOAD_ALIGNMENT, align_up, derive_header_flags, validate_plain_geometry,
+        validate_plain_padding_chunk,
     },
     crc32c,
     nvfp4::Nvfp4PlaneValidator,
@@ -418,7 +419,7 @@ impl NativeRankReader {
                 &mut whole,
                 &mut stream_chunks,
                 |chunk, offset| {
-                    validate_plain_padding_chunk(descriptor, chunk, offset)?;
+                    validate_plain_padding_stream_chunk(descriptor, chunk, offset)?;
                     if let Some(validator) = &mut nvfp4_validator {
                         validator.value_chunk(chunk, offset)?;
                     }
@@ -926,7 +927,7 @@ fn codec_semantics_match(
     }
 }
 
-fn validate_plain_padding_chunk(
+fn validate_plain_padding_stream_chunk(
     descriptor: &TensorDescriptor,
     bytes: &[u8],
     plane_offset: u64,
@@ -938,34 +939,22 @@ fn validate_plain_padding_chunk(
     {
         return Ok(());
     }
-    let element_bytes = if descriptor.codec_id == CODEC_FP32_ROW_MAJOR {
-        4
+    let dtype = if descriptor.codec_id == CODEC_FP32_ROW_MAJOR {
+        PlainDtype::Fp32
+    } else if descriptor.codec_id == CODEC_FP16_ROW_MAJOR {
+        PlainDtype::Fp16
     } else {
-        2
+        PlainDtype::Bf16
     };
-    if !plane_offset.is_multiple_of(element_bytes)
-        || !bytes.len().is_multiple_of(element_bytes as usize)
-    {
-        return Err(RankFileError::Descriptor.into());
-    }
-    let first_element = plane_offset / element_bytes;
-    for (local, element) in bytes.chunks_exact(element_bytes as usize).enumerate() {
-        let linear = first_element
-            .checked_add(u64::try_from(local).map_err(|_| RankFileError::Overflow)?)
-            .ok_or(RankFileError::Overflow)?;
-        let mut remainder = linear;
-        let mut padding = false;
-        for axis in (0..usize::from(descriptor.ndim)).rev() {
-            let extent = u64::from(descriptor.padded_shape[axis]);
-            let coordinate = remainder % extent;
-            remainder /= extent;
-            padding |= coordinate >= u64::from(descriptor.logical_shape[axis]);
-        }
-        if padding && element.iter().any(|&byte| byte != 0) {
-            return Err(RankFileError::NonCanonicalLayout.into());
-        }
-    }
-    Ok(())
+    validate_plain_padding_chunk(
+        bytes,
+        plane_offset,
+        dtype,
+        descriptor.ndim,
+        descriptor.logical_shape,
+        descriptor.padded_shape,
+    )
+    .map_err(Into::into)
 }
 
 fn stream_plane(
