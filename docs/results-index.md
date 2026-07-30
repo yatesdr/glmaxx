@@ -195,6 +195,15 @@ a layout-bound target record, and keeps laboratory/hybrid manifest support
 fail-closed behind separate gates. It supersedes the r2 and original
 projection-discriminator reviews. No implementation or hardware evidence is
 implied.
+The NVFP4 M4 laboratory-load boundary is pinned in
+`docs/nvfp4-laboratory-manifest-v1.md`. It defines a separate strict
+533-tensor manifest, 192-byte layout-bound semantic catalog, laboratory-only
+budget/load-plan domain/type state, and exact file/device byte accounting.
+The audit also found that the current builder omits format-v0's required
+protected-tensor header bit and that 65,536 packed metadata bytes require a
+130,944-byte device arena after per-record 256-byte alignment. This is an
+unreviewed design and defect record only; no format change, manifest,
+checkpoint, load, cn4, or model evidence exists.
 The NVFP4 canonical decoder correction is pinned in
 `docs/nvfp4-metadata-canonicality-proof-v1.md`. It rejects resigned
 rounding/dtype/global-scale-mode and reserved-field lies, inconsistent
