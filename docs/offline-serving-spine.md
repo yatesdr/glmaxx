@@ -102,16 +102,20 @@ partial tails and MTP6 tentative writes.
 
 Only complete sealed prefix pages can acquire shared references. A prefix key
 is bound to its logical page ordinal and therefore to one deterministic DCP4
-owner. Session forks share sealed pages and allocate a private physical copy
-for a mutable tail. MTP0–6 reservations transition target and draft
-attachments together, including a cross-page verifier tail, and commit or
-roll back atomically. Allocation failure restores the complete prior metadata
-state.
+owner. Active attachment also retains the validated tier namespace,
+generation, target-KV hash, target-indexer hash, and optional draft-sidecar
+hash. Exact reuse, MTP retention, and newer-generation MTP upgrade are legal;
+stale upgrades or target/draft identity collisions fail atomically. Session
+forks share sealed pages and allocate a private physical copy for a mutable
+tail. MTP0–6 reservations transition target and draft attachments together,
+including a cross-page verifier tail, and commit or roll back atomically.
+Allocation failure restores the complete prior metadata state.
 
-This is not an HBM allocation or payload-transfer claim. The physical IDs are
-bounded rank-local slot identities; the future CUDA rank executor must map
-them to preallocated target, indexer, draft, and draft-indexer arenas without
-changing these ownership or transaction rules.
+This is not an HBM allocation or payload-transfer claim. A validated logical
+attachment is not a device-upload receipt. The physical IDs are bounded
+rank-local slot identities; the future CUDA rank executor must map them to
+preallocated target, indexer, draft, and draft-indexer arenas without changing
+these ownership or transaction rules.
 
 ## Reproducible proof
 

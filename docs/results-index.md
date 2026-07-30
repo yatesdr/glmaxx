@@ -3,11 +3,11 @@
 Date: 2026-07-29
 
 Current CPU implementation baseline:
-`f56e0bc03dfd12fd2d5f8f03da1a57d5b66e5dcf`
+`6a5c574bf7a3d4060cb28ef78bc0425bd61f305a`
 
-The complete local gate most recently ran against queue-independent backend
-cancellation implementation
-`f56e0bc03dfd12fd2d5f8f03da1a57d5b66e5dcf`. The
+The complete local gate most recently ran against active-prefix record
+binding implementation
+`6a5c574bf7a3d4060cb28ef78bc0425bd61f305a`. The
 target CUDA/kernel and strict production-manifest baseline remains
 `4bf7bb5`; the later CPU candidates add review integrity, cache-lifecycle evidence,
 bit-exact indexer-scale handling, atomic publication, finite KV
@@ -57,6 +57,10 @@ The coordinator API backend now records authenticated cancellation in an
 owner-bound coalescing registry rather than the bounded submission channel.
 A queued request retains its marker until it becomes active, and the runtime
 dispatches cancellation before admission polling or another scheduler step.
+The active sequence table now consumes validated immutable prefix attachments
+instead of page keys plus caller-supplied draft booleans. Namespace,
+generation, target hashes, and optional draft hash follow the authoritative
+restored tier record; stale or colliding upgrades fail atomically.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
@@ -64,13 +68,12 @@ permission to convert a full checkpoint.
 
 ## Current local CPU/reference gate
 
-The latest local run at queue-independent backend cancellation implementation
-`f56e0bc` passed:
+The latest local run at active-prefix record binding implementation
+`6a5c574` passed:
 
-- `scripts/local-checks.sh`: 269 Rust tests, workspace formatting, Clippy with
+- `scripts/local-checks.sh`: 270 Rust tests, workspace formatting, Clippy with
   warnings denied, CUDA FFI type checks, deterministic proof regeneration,
-  and all 63 then-present candidate-based review-handoff hash proofs; the new
-  queue-independent cancellation handoff separately passes `review-proof`;
+  and all 64 then-present candidate-based review-handoff hash proofs;
 - review verifier v2 rejects handoff self-review and requires the exact
   candidate commit, every pinned SHA-256, and the declared result path before
   classifying a supplied token artifact as accepted; declared result files

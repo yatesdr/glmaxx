@@ -2,8 +2,9 @@
 
 Date: 2026-07-29
 
-Status: design candidate; implementation blocked on the active-page-table and
-`StepInput.v1` adversarial reviews
+Status: design candidate with a CPU prefix-identity correction; complete
+implementation remains blocked on the active-page-table and `StepInput.v1`
+adversarial reviews
 
 GPU claim: none
 
@@ -25,8 +26,9 @@ Token admission occurs in this order:
 
 1. retain the bounded prompt token bytes;
 2. restore the longest capability-compatible sealed prefix;
-3. validate every restored page key, ordinal, DCP owner, generation, payload
-   hash, and draft-sidecar capability;
+3. derive one immutable `PrefixPageAttachment` from every restored tier
+   record, binding namespace, key, generation, target hashes, and optional
+   draft-sidecar hash after residency validation;
 4. preflight all active target/draft page slots;
 5. attach the complete prefix to `SequencePageTable`;
 6. admit the identical prompt progress into `Scheduler`;
@@ -40,6 +42,16 @@ attached to an MTP-capable sequence.
 
 The prevalidated admission API cannot claim cached tokens without exact page
 keys and validated draft capabilities once the active table is mandatory.
+The retained implementation now makes that bypass crate-private and returns
+an opaque `RestoredPrefix` carrying exact validated attachments rather than
+caller-supplied capability booleans.
+
+An active shared page accepts only exact target identity, retains an existing
+MTP sidecar on a target-only candidate, or upgrades target-only to MTP when
+the target identity is unchanged and the MTP generation is newer. A target
+hash collision, stale draft claim, or changed draft hash fails atomically.
+This metadata relation does not replace the required rank payload-transfer
+acknowledgment.
 
 ## Step reservation
 
