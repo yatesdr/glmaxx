@@ -172,7 +172,14 @@ struct RequestReleasePlan {
     prefix: Option<PrefixReleasePlan>,
     active_pages: SequencePageTable,
     sequence_table_generation: u64,
-    rank_synchronized: bool,
+    rank_state: RankReleaseState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RankReleaseState {
+    Pending,
+    Acknowledged,
+    WorkerRetired,
 }
 
 struct SuccessfulStepPublication {
@@ -749,6 +756,16 @@ impl ServingCoordinator {
                         .fail_selected_step_after_worker_fatal(&batch, ServingError::Overflow);
                 }
             };
+            if let Err(error) =
+                bind_reuse_quarantine(&mut publication.releases.active_pages, commit_generation)
+            {
+                if let Err(rollback) =
+                    self.rollback_rank_reservation(&reserved_pages, reservation_generation)
+                {
+                    return self.fail_selected_step_after_worker_fatal(&batch, rollback);
+                }
+                return self.fail_selected_step(&batch, error);
+            }
             let commit_delta = match PageTableDelta::between(
                 &reserved_pages,
                 &publication.releases.active_pages,
@@ -772,7 +789,7 @@ impl ServingCoordinator {
             publication.releases.sequence_table_generation = commit_generation;
         }
         self.scheduler = committed_scheduler;
-        publication.releases.rank_synchronized = true;
+        publication.releases.rank_state = RankReleaseState::Acknowledged;
         self.commit_request_releases(publication.releases)?;
         self.events.extend(
             publication.events.entries[..publication.events.len]
@@ -1010,7 +1027,7 @@ impl ServingCoordinator {
         event_space?;
         // Rank state is no longer usable, so host cleanup must not attempt a
         // second command that could mask the original fatal worker error.
-        releases.rank_synchronized = true;
+        releases.rank_state = RankReleaseState::WorkerRetired;
         self.commit_request_releases(releases)?;
         self.events
             .extend(batch.rows.iter().map(|row| RequestEvent::Failed {
@@ -1121,21 +1138,36 @@ impl ServingCoordinator {
             } else {
                 self.sequence_table_generation
             },
-            rank_synchronized: false,
+            rank_state: RankReleaseState::Pending,
         })
     }
 
-    fn commit_request_releases(&mut self, plan: RequestReleasePlan) -> Result<(), ServingError> {
-        if !plan.rank_synchronized
-            && plan.sequence_table_generation != self.sequence_table_generation
-        {
-            let delta = Arc::new(PageTableDelta::between(
-                &self.active_pages,
-                &plan.active_pages,
-                self.sequence_table_generation,
-                plan.sequence_table_generation,
-            )?);
-            self.workers.apply_page_delta(delta)?;
+    fn commit_request_releases(
+        &mut self,
+        mut plan: RequestReleasePlan,
+    ) -> Result<(), ServingError> {
+        if plan.sequence_table_generation != self.sequence_table_generation {
+            bind_reuse_quarantine(&mut plan.active_pages, plan.sequence_table_generation)?;
+            if plan.rank_state == RankReleaseState::Pending {
+                let delta = Arc::new(PageTableDelta::between(
+                    &self.active_pages,
+                    &plan.active_pages,
+                    self.sequence_table_generation,
+                    plan.sequence_table_generation,
+                )?);
+                self.workers.apply_page_delta(delta)?;
+                plan.rank_state = RankReleaseState::Acknowledged;
+            }
+            if plan.rank_state == RankReleaseState::Acknowledged
+                && plan
+                    .active_pages
+                    .reuse_quarantine_stats()
+                    .bound_generation
+                    .is_some()
+            {
+                plan.active_pages
+                    .acknowledge_reuse_quarantine(plan.sequence_table_generation)?;
+            }
         }
         self.active_pages = plan.active_pages;
         self.sequence_table_generation = plan.sequence_table_generation;
@@ -1291,6 +1323,29 @@ fn prompt_bytes(token_count: usize) -> Result<u64, ServingError> {
         .ok()
         .and_then(|count| count.checked_mul(u64::from(u32::BITS / 8)))
         .ok_or(ServingError::Overflow)
+}
+
+fn bind_reuse_quarantine(
+    pages: &mut SequencePageTable,
+    generation: u64,
+) -> Result<(), ServingError> {
+    let quarantine = pages.reuse_quarantine_stats();
+    if quarantine.is_empty() {
+        if quarantine.bound_generation.is_some() {
+            return Err(ServingError::PageTable);
+        }
+        return Ok(());
+    }
+    match quarantine.bound_generation {
+        None => {
+            if !pages.bind_reuse_quarantine(generation)? {
+                return Err(ServingError::PageTable);
+            }
+        }
+        Some(bound) if bound == generation => {}
+        Some(_) => return Err(ServingError::PageTable),
+    }
+    Ok(())
 }
 
 const fn sampling_kind(collective: SamplingCollective) -> StepSamplingKind {

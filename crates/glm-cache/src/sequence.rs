@@ -123,6 +123,20 @@ pub struct PageTableStats {
     pub maximum_mtp_sequence_tokens: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageReuseQuarantineStats {
+    pub target_pages: [u32; 4],
+    pub draft_pages: [u32; 4],
+    pub bound_generation: Option<u64>,
+}
+
+impl PageReuseQuarantineStats {
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.target_pages == [0; 4] && self.draft_pages == [0; 4]
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PhysicalPage {
     draft_local_page_id: Option<u32>,
@@ -163,6 +177,9 @@ pub struct SequencePageTable {
     config: PageTableConfig,
     free_target: [BTreeSet<u32>; 4],
     free_draft: [BTreeSet<u32>; 4],
+    quarantined_target: [BTreeSet<u32>; 4],
+    quarantined_draft: [BTreeSet<u32>; 4],
+    quarantine_generation: Option<u64>,
     physical: BTreeMap<PhysicalPageId, PhysicalPage>,
     prefixes: BTreeMap<PrefixPageKey, PhysicalPageId>,
     sequences: BTreeMap<u64, Sequence>,
@@ -182,6 +199,9 @@ impl SequencePageTable {
             config,
             free_target,
             free_draft,
+            quarantined_target: std::array::from_fn(|_| BTreeSet::new()),
+            quarantined_draft: std::array::from_fn(|_| BTreeSet::new()),
+            quarantine_generation: None,
             physical: BTreeMap::new(),
             prefixes: BTreeMap::new(),
             sequences: BTreeMap::new(),
@@ -193,6 +213,54 @@ impl SequencePageTable {
         self.config
     }
 
+    #[must_use]
+    pub fn reuse_quarantine_stats(&self) -> PageReuseQuarantineStats {
+        PageReuseQuarantineStats {
+            target_pages: std::array::from_fn(|rank| {
+                u32::try_from(self.quarantined_target[rank].len())
+                    .expect("arena configuration bounds quarantine cardinality to u32")
+            }),
+            draft_pages: std::array::from_fn(|rank| {
+                u32::try_from(self.quarantined_draft[rank].len())
+                    .expect("arena configuration bounds quarantine cardinality to u32")
+            }),
+            bound_generation: self.quarantine_generation,
+        }
+    }
+
+    /// Binds every currently retired physical ID to the one page-table
+    /// generation whose four-rank acknowledgement permits allocator reuse.
+    ///
+    /// An empty quarantine needs no receipt and returns `false`.
+    pub fn bind_reuse_quarantine(&mut self, generation: u64) -> Result<bool, SequencePageError> {
+        if generation == 0 || self.quarantine_generation.is_some() {
+            return Err(SequencePageError::Transaction);
+        }
+        if self.reuse_quarantine_stats().is_empty() {
+            return Ok(false);
+        }
+        self.quarantine_generation = Some(generation);
+        Ok(true)
+    }
+
+    /// Makes retired IDs allocatable only after the caller has verified all
+    /// four rank acknowledgements for the exact bound generation.
+    pub fn acknowledge_reuse_quarantine(
+        &mut self,
+        generation: u64,
+    ) -> Result<PageReuseQuarantineStats, SequencePageError> {
+        if self.quarantine_generation != Some(generation) {
+            return Err(SequencePageError::Transaction);
+        }
+        let retired = self.reuse_quarantine_stats();
+        for rank in 0..4 {
+            self.free_target[rank].append(&mut self.quarantined_target[rank]);
+            self.free_draft[rank].append(&mut self.quarantined_draft[rank]);
+        }
+        self.quarantine_generation = None;
+        Ok(retired)
+    }
+
     /// Attaches only complete sealed pages. Missing keys allocate restored HBM
     /// slots; existing keys acquire another active reference.
     pub fn admit_with_prefix(
@@ -201,6 +269,7 @@ impl SequencePageTable {
         mtp: bool,
         prefix_pages: &[PrefixPageAttachment],
     ) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         if sequence_id == 0
             || self.sequences.contains_key(&sequence_id)
             || prefix_pages.len() > maximum_pages()
@@ -305,6 +374,7 @@ impl SequencePageTable {
         sequence_id: u64,
         token_count: u64,
     ) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         if token_count == 0 {
             return Ok(());
         }
@@ -324,6 +394,7 @@ impl SequencePageTable {
         source_id: u64,
         destination_id: u64,
     ) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         if destination_id == 0 || self.sequences.contains_key(&destination_id) {
             return Err(SequencePageError::Sequence);
         }
@@ -394,6 +465,7 @@ impl SequencePageTable {
         sequence_id: u64,
         requested_tokens: u8,
     ) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         if requested_tokens == 0 || requested_tokens > 7 {
             return Err(SequencePageError::Transaction);
         }
@@ -442,6 +514,7 @@ impl SequencePageTable {
         sequence_id: u64,
         committed_tokens: u8,
     ) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         let transaction = self
             .sequences
             .get(&sequence_id)
@@ -451,9 +524,7 @@ impl SequencePageTable {
             return Err(SequencePageError::Transaction);
         }
         let snapshot = self.clone();
-        let result = self
-            .rollback_tentative_inner(sequence_id)
-            .and_then(|()| self.append_committed_inner(sequence_id, u64::from(committed_tokens)));
+        let result = self.commit_tentative_inner(sequence_id, committed_tokens, transaction);
         if let Err(error) = result {
             *self = snapshot;
             return Err(error);
@@ -462,6 +533,7 @@ impl SequencePageTable {
     }
 
     pub fn rollback_tentative(&mut self, sequence_id: u64) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         let snapshot = self.clone();
         let result = self.rollback_tentative_inner(sequence_id);
         if let Err(error) = result {
@@ -472,6 +544,7 @@ impl SequencePageTable {
     }
 
     pub fn remove_sequence(&mut self, sequence_id: u64) -> Result<(), SequencePageError> {
+        self.require_unbound_quarantine()?;
         let snapshot = self.clone();
         let result = (|| {
             let sequence = self
@@ -743,6 +816,88 @@ impl SequencePageTable {
         Ok(())
     }
 
+    fn commit_tentative_inner(
+        &mut self,
+        sequence_id: u64,
+        committed_tokens: u8,
+        transaction: TentativeTail,
+    ) -> Result<(), SequencePageError> {
+        let new_committed_tokens = transaction
+            .original_committed_tokens
+            .checked_add(u64::from(committed_tokens))
+            .filter(|&tokens| tokens <= MAXIMUM_CONTEXT_TOKENS)
+            .ok_or(SequencePageError::Transaction)?;
+        let desired_page_count = usize::try_from(new_committed_tokens.div_ceil(PAGE_TOKENS))
+            .map_err(|_| SequencePageError::Overflow)?;
+        let sequence = self
+            .sequences
+            .get_mut(&sequence_id)
+            .ok_or(SequencePageError::Sequence)?;
+        let retained_transaction = sequence
+            .tentative
+            .take()
+            .ok_or(SequencePageError::Transaction)?;
+        if retained_transaction.original_committed_tokens != transaction.original_committed_tokens
+            || retained_transaction.original_page_count != transaction.original_page_count
+            || retained_transaction.original_tail_tokens != transaction.original_tail_tokens
+            || retained_transaction.reserved_tokens != transaction.reserved_tokens
+            || desired_page_count > sequence.pages.len()
+        {
+            return Err(SequencePageError::Invariant);
+        }
+        while self
+            .sequences
+            .get(&sequence_id)
+            .ok_or(SequencePageError::Sequence)?
+            .pages
+            .len()
+            > desired_page_count
+        {
+            let page = self
+                .sequences
+                .get_mut(&sequence_id)
+                .ok_or(SequencePageError::Sequence)?
+                .pages
+                .pop()
+                .ok_or(SequencePageError::Invariant)?;
+            self.release_page(page.physical)?;
+        }
+        for ordinal in 0..desired_page_count {
+            let entry = self.sequences[&sequence_id].pages[ordinal];
+            let is_tail = ordinal + 1 == desired_page_count;
+            let expected_valid = if is_tail {
+                let tail = new_committed_tokens % PAGE_TOKENS;
+                if tail == 0 {
+                    PAGE_TOKENS as u8
+                } else {
+                    u8::try_from(tail).map_err(|_| SequencePageError::Overflow)?
+                }
+            } else {
+                PAGE_TOKENS as u8
+            };
+            let expected_state = if expected_valid == PAGE_TOKENS as u8 {
+                PageState::HbmSealed
+            } else {
+                PageState::HbmMutable
+            };
+            let page = self
+                .physical
+                .get_mut(&entry.physical)
+                .ok_or(SequencePageError::Invariant)?;
+            if page.state == PageState::HbmTentative {
+                page.state = page.state.transition(expected_state)?;
+                page.valid_tokens = expected_valid;
+            } else if page.state != expected_state || page.valid_tokens != expected_valid {
+                return Err(SequencePageError::State);
+            }
+        }
+        self.sequences
+            .get_mut(&sequence_id)
+            .ok_or(SequencePageError::Sequence)?
+            .committed_tokens = new_committed_tokens;
+        Ok(())
+    }
+
     fn allocate_page(
         &mut self,
         ordinal: u64,
@@ -807,11 +962,27 @@ impl SequencePageTable {
         {
             return Err(SequencePageError::Invariant);
         }
-        self.free_target[usize::from(physical.owner_rank)].insert(physical.target_local_page_id);
-        if let Some(draft) = page.draft_local_page_id {
-            self.free_draft[usize::from(physical.owner_rank)].insert(draft);
+        let rank = usize::from(physical.owner_rank);
+        if self.free_target[rank].contains(&physical.target_local_page_id)
+            || !self.quarantined_target[rank].insert(physical.target_local_page_id)
+        {
+            return Err(SequencePageError::Invariant);
+        }
+        if let Some(draft) = page.draft_local_page_id
+            && (self.free_draft[rank].contains(&draft)
+                || !self.quarantined_draft[rank].insert(draft))
+        {
+            return Err(SequencePageError::Invariant);
         }
         Ok(())
+    }
+
+    fn require_unbound_quarantine(&self) -> Result<(), SequencePageError> {
+        if self.quarantine_generation.is_some() {
+            Err(SequencePageError::Transaction)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1132,12 +1303,135 @@ mod tests {
         assert!(!table.physical.contains_key(&first));
         assert!(!table.physical.contains_key(&second));
         assert!(
+            table.quarantined_target[usize::from(first.owner_rank)]
+                .contains(&first.target_local_page_id)
+        );
+        assert!(
+            table.quarantined_target[usize::from(second.owner_rank)]
+                .contains(&second.target_local_page_id)
+        );
+        assert_eq!(
+            table.acknowledge_reuse_quarantine(9),
+            Err(SequencePageError::Transaction)
+        );
+        assert!(table.bind_reuse_quarantine(9).unwrap());
+        assert_eq!(
+            table.append_committed(1, 1),
+            Err(SequencePageError::Transaction)
+        );
+        let retired = table.acknowledge_reuse_quarantine(9).unwrap();
+        assert_eq!(retired.bound_generation, Some(9));
+        assert!(
             table.free_target[usize::from(first.owner_rank)].contains(&first.target_local_page_id)
         );
         assert!(
             table.free_target[usize::from(second.owner_rank)]
                 .contains(&second.target_local_page_id)
         );
+    }
+
+    #[test]
+    fn tentative_commit_keeps_accepted_ids_and_quarantines_only_rejected_pages() {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 2,
+            draft_pages_per_rank: 2,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, true, &[]).unwrap();
+        table.append_committed(1, 63).unwrap();
+        table.begin_tentative(1, 7).unwrap();
+        let reserved = table.pages(1).unwrap();
+        assert_eq!(reserved.len(), 2);
+        let accepted_tail = reserved[1];
+
+        table.commit_tentative(1, 3).unwrap();
+        let committed = table.pages(1).unwrap();
+        assert_eq!(committed.len(), 2);
+        assert_eq!(committed[1].physical, accepted_tail.physical);
+        assert_eq!(
+            committed[1].draft_local_page_id,
+            accepted_tail.draft_local_page_id
+        );
+        assert!(table.reuse_quarantine_stats().is_empty());
+
+        table.begin_tentative(1, 7).unwrap();
+        let second_reservation = table.pages(1).unwrap();
+        assert_eq!(second_reservation.len(), 2);
+        table.commit_tentative(1, 1).unwrap();
+        assert_eq!(
+            table.pages(1).unwrap()[1].physical,
+            second_reservation[1].physical
+        );
+        assert!(table.reuse_quarantine_stats().is_empty());
+
+        table.append_committed(1, 59).unwrap();
+        table.begin_tentative(1, 7).unwrap();
+        let third_reservation = table.pages(1).unwrap();
+        assert_eq!(third_reservation.len(), 3);
+        let rejected_page = third_reservation[2];
+        table.commit_tentative(1, 1).unwrap();
+        assert_eq!(table.pages(1).unwrap().len(), 2);
+        let quarantine = table.reuse_quarantine_stats();
+        assert_eq!(
+            quarantine.target_pages[usize::from(rejected_page.physical.owner_rank)],
+            1
+        );
+        assert_eq!(
+            quarantine.draft_pages[usize::from(rejected_page.physical.owner_rank)],
+            1
+        );
+        assert!(table.bind_reuse_quarantine(12).unwrap());
+        assert_eq!(
+            table.acknowledge_reuse_quarantine(11),
+            Err(SequencePageError::Transaction)
+        );
+        table.acknowledge_reuse_quarantine(12).unwrap();
+        assert!(table.reuse_quarantine_stats().is_empty());
+    }
+
+    #[test]
+    fn removed_target_and_draft_ids_cannot_aba_before_exact_generation_ack() {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 1,
+            draft_pages_per_rank: 1,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, true, &[]).unwrap();
+        table.append_committed(1, 1).unwrap();
+        let retired = table.pages(1).unwrap()[0];
+        table.remove_sequence(1).unwrap();
+        assert_eq!(
+            table.reuse_quarantine_stats(),
+            PageReuseQuarantineStats {
+                target_pages: [1, 0, 0, 0],
+                draft_pages: [1, 0, 0, 0],
+                bound_generation: None,
+            }
+        );
+
+        table.admit_with_prefix(2, true, &[]).unwrap();
+        assert_eq!(
+            table.append_committed(2, 1),
+            Err(SequencePageError::Capacity)
+        );
+        table.remove_sequence(2).unwrap();
+
+        assert!(table.bind_reuse_quarantine(44).unwrap());
+        assert_eq!(
+            table.acknowledge_reuse_quarantine(43),
+            Err(SequencePageError::Transaction)
+        );
+        assert_eq!(
+            table.admit_with_prefix(3, true, &[]),
+            Err(SequencePageError::Transaction)
+        );
+        table.acknowledge_reuse_quarantine(44).unwrap();
+
+        table.admit_with_prefix(3, true, &[]).unwrap();
+        table.append_committed(3, 1).unwrap();
+        let reused = table.pages(3).unwrap()[0];
+        assert_eq!(reused.physical, retired.physical);
+        assert_eq!(reused.draft_local_page_id, retired.draft_local_page_id);
     }
 
     #[test]
