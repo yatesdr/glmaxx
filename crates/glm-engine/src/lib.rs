@@ -60,5 +60,7 @@ pub use weight::{
 };
 pub use worker::{
     MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankExecutorFactory,
-    RankStepAck, StepHandle, StepOutcome, Tp4WorkerPool, WorkerError,
+    RankStepAck, RankWeightCleanupAck, RankWeightFinalizeAck, RankWeightPhase, StepHandle,
+    StepOutcome, Tp4WorkerPool, WeightLoadFailure, WeightLoadFailureCause, WeightLoadOutcome,
+    WorkerError,
 };

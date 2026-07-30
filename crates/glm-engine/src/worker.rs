@@ -6,15 +6,17 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use glm_cache::{PageTableDelta, PageTableDeltaError, PageTableMirror, SequencePageTable};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CollectiveSchedule, CommittedTokens, GLM_52_OUTPUT_VOCABULARY, OutputError, PlanError,
-    StepInput, StepInputError, StepMode, StepOutput, StepPlan,
+    AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule, CommittedTokens,
+    GLM_52_OUTPUT_VOCABULARY, LoadPlanError, OutputError, PlanError, PreparedRankReceipt,
+    PreparedRankSet, RANK_SET_SIZE, RankSetAbortCommand, RankSetLoadAction, RankSetLoadCoordinator,
+    RankSetLoadPlan, StepInput, StepInputError, StepMode, StepOutput, StepPlan,
 };
 
 const CPU_TOKEN_DOMAIN: &[u8] = b"glmaxx.cpu-worker-token.v1\0";
@@ -43,6 +45,49 @@ pub trait RankExecutor: 'static {
         schedule: &CollectiveSchedule,
         input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError>;
+
+    /// Prepares this rank's authenticated checkpoint in quarantined storage.
+    fn prepare_weights(
+        &mut self,
+        _rank: u8,
+        _plan: &RankSetLoadPlan,
+        _load_attempt_generation: u64,
+        _owner_allocation_generation: u64,
+    ) -> Result<PreparedRankReceipt, LoadPlanError> {
+        Err(LoadPlanError::Transition)
+    }
+
+    /// Retains quarantine while acknowledging one process-common rank set.
+    fn acknowledge_weight_adoption(
+        &mut self,
+        _rank: u8,
+        _prepared: &PreparedRankSet,
+    ) -> Result<AdoptionAcknowledgement, LoadPlanError> {
+        Err(LoadPlanError::Transition)
+    }
+
+    /// Makes the already-acknowledged arena executable after global adoption.
+    fn finalize_weights(
+        &mut self,
+        _rank: u8,
+        _adopted: AdoptedRankSetReceipt,
+    ) -> Result<(), LoadPlanError> {
+        Err(LoadPlanError::Transition)
+    }
+
+    /// Synchronizes and releases any state owned by the named load attempt.
+    ///
+    /// This must be idempotent for a rank whose prepare phase failed before
+    /// allocating an arena. Returning success means no resource from the
+    /// attempt remains live.
+    fn abort_weight_load(
+        &mut self,
+        _rank: u8,
+        _command: RankSetAbortCommand,
+        _owner_allocation_generation: u64,
+    ) -> Result<(), LoadPlanError> {
+        Err(LoadPlanError::Transition)
+    }
 }
 
 /// Constructs a thread-affine executor after the persistent rank thread has
@@ -70,6 +115,155 @@ pub enum RankExecutionError {
     Backend(i32),
     Invariant,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum RankWeightPhase {
+    Prepare = 1,
+    Acknowledge = 2,
+    Finalize = 3,
+    Abort = 4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeightLoadFailureCause {
+    Config,
+    Saturated,
+    Closed,
+    Timeout {
+        phase: RankWeightPhase,
+    },
+    RankSet {
+        phase: RankWeightPhase,
+    },
+    Rank {
+        rank: u8,
+        phase: RankWeightPhase,
+        error: LoadPlanError,
+    },
+    Coordinator(LoadPlanError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RankWeightFinalizeAck {
+    rank: u8,
+    plan_sha256: [u8; 32],
+    owner_allocation_generation: u64,
+    adopted_rank_set_sha256: [u8; 32],
+}
+
+impl RankWeightFinalizeAck {
+    fn new(
+        rank: u8,
+        plan_sha256: [u8; 32],
+        owner_allocation_generation: u64,
+        adopted: AdoptedRankSetReceipt,
+    ) -> Result<Self, LoadPlanError> {
+        if usize::from(rank) >= RANK_SET_SIZE
+            || owner_allocation_generation == 0
+            || plan_sha256 != adopted.plan_sha256()
+        {
+            return Err(LoadPlanError::Adoption);
+        }
+        Ok(Self {
+            rank,
+            plan_sha256,
+            owner_allocation_generation,
+            adopted_rank_set_sha256: adopted.adopted_rank_set_sha256(),
+        })
+    }
+
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        self.rank
+    }
+
+    #[must_use]
+    pub const fn plan_sha256(self) -> [u8; 32] {
+        self.plan_sha256
+    }
+
+    #[must_use]
+    pub const fn owner_allocation_generation(self) -> u64 {
+        self.owner_allocation_generation
+    }
+
+    #[must_use]
+    pub const fn adopted_rank_set_sha256(self) -> [u8; 32] {
+        self.adopted_rank_set_sha256
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RankWeightCleanupAck {
+    rank: u8,
+    plan_sha256: [u8; 32],
+    load_attempt_generation: u64,
+    owner_allocation_generation: u64,
+}
+
+impl RankWeightCleanupAck {
+    fn new(
+        rank: u8,
+        command: RankSetAbortCommand,
+        owner_allocation_generation: u64,
+    ) -> Result<Self, LoadPlanError> {
+        if usize::from(rank) >= RANK_SET_SIZE || owner_allocation_generation == 0 {
+            return Err(LoadPlanError::Transition);
+        }
+        Ok(Self {
+            rank,
+            plan_sha256: command.plan_sha256(),
+            load_attempt_generation: command.load_attempt_generation(),
+            owner_allocation_generation,
+        })
+    }
+
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        self.rank
+    }
+
+    #[must_use]
+    pub const fn plan_sha256(self) -> [u8; 32] {
+        self.plan_sha256
+    }
+
+    #[must_use]
+    pub const fn load_attempt_generation(self) -> u64 {
+        self.load_attempt_generation
+    }
+
+    #[must_use]
+    pub const fn owner_allocation_generation(self) -> u64 {
+        self.owner_allocation_generation
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightLoadOutcome {
+    pub plan_sha256: [u8; 32],
+    pub load_attempt_generation: u64,
+    pub prepared_receipts: [PreparedRankReceipt; RANK_SET_SIZE],
+    pub adoption_acknowledgements: [AdoptionAcknowledgement; RANK_SET_SIZE],
+    pub adopted_receipt: AdoptedRankSetReceipt,
+    pub finalize_acknowledgements: [RankWeightFinalizeAck; RANK_SET_SIZE],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightLoadFailure {
+    pub cause: WeightLoadFailureCause,
+    pub cleanup_failure: Option<WeightLoadFailureCause>,
+    pub cleanup_acknowledgements: Box<[Option<RankWeightCleanupAck>; RANK_SET_SIZE]>,
+}
+
+impl fmt::Display for WeightLoadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for WeightLoadFailure {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MockWorkerFault {
@@ -171,6 +365,21 @@ struct OutstandingPermit {
     outstanding: Arc<AtomicUsize>,
 }
 
+struct ExclusivePermit {
+    outstanding: Arc<AtomicUsize>,
+}
+
+impl Drop for ExclusivePermit {
+    fn drop(&mut self) {
+        let prior = self.outstanding.swap(0, Ordering::AcqRel);
+        debug_assert_eq!(
+            prior,
+            usize::MAX,
+            "exclusive worker operation lost ownership"
+        );
+    }
+}
+
 impl Drop for OutstandingPermit {
     fn drop(&mut self) {
         let released =
@@ -204,6 +413,15 @@ struct StepBinding {
     delta: Arc<PageTableDelta>,
 }
 
+struct WeightLoadCommand {
+    plan: Arc<RankSetLoadPlan>,
+    load_attempt_generation: u64,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+    response: SyncSender<Result<WeightLoadOutcome, WeightLoadFailure>>,
+    permit: ExclusivePermit,
+}
+
 enum PoolCommand {
     Initialize {
         table: Arc<SequencePageTable>,
@@ -214,6 +432,7 @@ enum PoolCommand {
         delta: Arc<PageTableDelta>,
         response: SyncSender<Result<[PageDeltaAck; 4], WorkerError>>,
     },
+    LoadWeights(WeightLoadCommand),
     Execute(DispatchCommand),
 }
 
@@ -228,7 +447,47 @@ enum RankCommandEnvelope {
         delta: Arc<PageTableDelta>,
         response: SyncSender<Result<PageDeltaAck, WorkerError>>,
     },
+    PrepareWeights {
+        plan: Arc<RankSetLoadPlan>,
+        load_attempt_generation: u64,
+        owner_allocation_generation: u64,
+        response: SyncSender<RankPreparedResult>,
+    },
+    AcknowledgeWeights {
+        prepared: Arc<PreparedRankSet>,
+        response: SyncSender<RankAdoptionResult>,
+    },
+    FinalizeWeights {
+        adopted: AdoptedRankSetReceipt,
+        owner_allocation_generation: u64,
+        response: SyncSender<RankFinalizeResult>,
+    },
+    AbortWeights {
+        command: RankSetAbortCommand,
+        owner_allocation_generation: u64,
+        response: SyncSender<RankCleanupResult>,
+    },
     Execute(RankCommand),
+}
+
+struct RankPreparedResult {
+    rank: u8,
+    result: Result<PreparedRankReceipt, LoadPlanError>,
+}
+
+struct RankAdoptionResult {
+    rank: u8,
+    result: Result<AdoptionAcknowledgement, LoadPlanError>,
+}
+
+struct RankFinalizeResult {
+    rank: u8,
+    result: Result<RankWeightFinalizeAck, LoadPlanError>,
+}
+
+struct RankCleanupResult {
+    rank: u8,
+    result: Result<RankWeightCleanupAck, LoadPlanError>,
 }
 
 enum RankExecutorSource {
@@ -421,18 +680,83 @@ impl Tp4WorkerPool {
         receiver.recv().map_err(|_| WorkerError::Closed)?
     }
 
+    pub fn load_weights(
+        &self,
+        plan: Arc<RankSetLoadPlan>,
+        load_attempt_generation: u64,
+        owner_allocation_generations: [u64; RANK_SET_SIZE],
+        phase_timeout: Duration,
+    ) -> Result<WeightLoadOutcome, WeightLoadFailure> {
+        if load_attempt_generation == 0
+            || owner_allocation_generations.contains(&0)
+            || phase_timeout.is_zero()
+        {
+            return Err(WeightLoadFailure {
+                cause: WeightLoadFailureCause::Config,
+                cleanup_failure: None,
+                cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+            });
+        }
+        let permit = self.reserve_exclusive()?;
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or(WeightLoadFailure {
+                cause: WeightLoadFailureCause::Closed,
+                cleanup_failure: None,
+                cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+            })?
+            .send(PoolCommand::LoadWeights(WeightLoadCommand {
+                plan,
+                load_attempt_generation,
+                owner_allocation_generations,
+                phase_timeout,
+                response,
+                permit,
+            }))
+            .map_err(|_| WeightLoadFailure {
+                cause: WeightLoadFailureCause::Closed,
+                cleanup_failure: None,
+                cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+            })?;
+        receiver.recv().map_err(|_| WeightLoadFailure {
+            cause: WeightLoadFailureCause::Closed,
+            cleanup_failure: None,
+            cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+        })?
+    }
+
     #[must_use]
     pub fn outstanding(&self) -> usize {
-        self.outstanding.load(Ordering::Acquire)
+        self.outstanding
+            .load(Ordering::Acquire)
+            .min(self.maximum_outstanding)
     }
 
     fn reserve_slot(&self) -> Result<(), WorkerError> {
         self.outstanding
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < self.maximum_outstanding).then_some(current + 1)
+                if current < self.maximum_outstanding {
+                    current.checked_add(1)
+                } else {
+                    None
+                }
             })
             .map(|_| ())
             .map_err(|_| WorkerError::Saturated)
+    }
+
+    fn reserve_exclusive(&self) -> Result<ExclusivePermit, WeightLoadFailure> {
+        self.outstanding
+            .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| WeightLoadFailure {
+                cause: WeightLoadFailureCause::Saturated,
+                cleanup_failure: None,
+                cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+            })?;
+        Ok(ExclusivePermit {
+            outstanding: Arc::clone(&self.outstanding),
+        })
     }
 }
 
@@ -547,6 +871,7 @@ fn dispatch_loop(
 
     let mut last_step_id = 0_u64;
     let mut initialized = false;
+    let mut weights_loaded = false;
     while let Ok(command) = receiver.recv() {
         let (failed, terminal) = match command {
             PoolCommand::Initialize {
@@ -571,6 +896,36 @@ fn dispatch_loop(
                     Err(WorkerError::PageTableUninitialized)
                 };
                 let failed = result.is_err();
+                let _ = response.send(result);
+                (failed, failed)
+            }
+            PoolCommand::LoadWeights(command) => {
+                let WeightLoadCommand {
+                    plan,
+                    load_attempt_generation,
+                    owner_allocation_generations,
+                    phase_timeout,
+                    response,
+                    permit,
+                } = command;
+                let result = if weights_loaded {
+                    Err(WeightLoadFailure {
+                        cause: WeightLoadFailureCause::Coordinator(LoadPlanError::Transition),
+                        cleanup_failure: None,
+                        cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+                    })
+                } else {
+                    load_rank_weights(
+                        &rank_senders,
+                        plan,
+                        load_attempt_generation,
+                        owner_allocation_generations,
+                        phase_timeout,
+                    )
+                };
+                weights_loaded |= result.is_ok();
+                let failed = result.is_err();
+                drop(permit);
                 let _ = response.send(result);
                 (failed, failed)
             }
@@ -703,6 +1058,488 @@ fn apply_page_delta_on_rank(
     })
 }
 
+fn load_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    plan: Arc<RankSetLoadPlan>,
+    load_attempt_generation: u64,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> Result<WeightLoadOutcome, WeightLoadFailure> {
+    let mut coordinator =
+        RankSetLoadCoordinator::new(&plan, load_attempt_generation, owner_allocation_generations)
+            .map_err(|error| WeightLoadFailure {
+            cause: WeightLoadFailureCause::Coordinator(error),
+            cleanup_failure: None,
+            cleanup_acknowledgements: Box::new([None; RANK_SET_SIZE]),
+        })?;
+    let abort_command = coordinator.abort_command();
+
+    let prepared_messages = match prepare_rank_weights(
+        rank_senders,
+        Arc::clone(&plan),
+        load_attempt_generation,
+        owner_allocation_generations,
+        phase_timeout,
+    ) {
+        Ok(messages) => messages,
+        Err(cause) => {
+            return Err(abort_weight_load(
+                rank_senders,
+                cause,
+                abort_command,
+                owner_allocation_generations,
+                phase_timeout,
+            ));
+        }
+    };
+    let mut prepared_receipts = Vec::with_capacity(RANK_SET_SIZE);
+    let mut prepare_failure = None;
+    let mut prepare_route = RankSetLoadAction::Wait;
+    for message in prepared_messages {
+        match message.result {
+            Ok(receipt) => {
+                prepare_route = coordinator.report_prepared(receipt);
+                prepared_receipts.push(receipt);
+            }
+            Err(error) => {
+                prepare_failure.get_or_insert(WeightLoadFailureCause::Rank {
+                    rank: message.rank,
+                    phase: RankWeightPhase::Prepare,
+                    error,
+                });
+                prepare_route = coordinator.report_rank_failure(message.rank, error);
+            }
+        }
+    }
+    if let Some(cause) = prepare_failure {
+        return Err(abort_weight_load(
+            rank_senders,
+            cause,
+            abort_command,
+            owner_allocation_generations,
+            phase_timeout,
+        ));
+    }
+    let prepared_receipts: [PreparedRankReceipt; RANK_SET_SIZE] = match prepared_receipts.try_into()
+    {
+        Ok(receipts) => receipts,
+        Err(_) => {
+            return Err(abort_weight_load(
+                rank_senders,
+                WeightLoadFailureCause::RankSet {
+                    phase: RankWeightPhase::Prepare,
+                },
+                abort_command,
+                owner_allocation_generations,
+                phase_timeout,
+            ));
+        }
+    };
+    let prepared = match PreparedRankSet::new(&plan, prepared_receipts) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Err(abort_weight_load(
+                rank_senders,
+                WeightLoadFailureCause::Coordinator(error),
+                abort_command,
+                owner_allocation_generations,
+                phase_timeout,
+            ));
+        }
+    };
+    if prepare_route != RankSetLoadAction::Adopt(prepared.adoption_command()) {
+        let cause = WeightLoadFailureCause::Coordinator(
+            coordinator
+                .terminal_error()
+                .unwrap_or(LoadPlanError::Transition),
+        );
+        return Err(abort_weight_load(
+            rank_senders,
+            cause,
+            abort_command,
+            owner_allocation_generations,
+            phase_timeout,
+        ));
+    }
+
+    let adoption_messages =
+        match acknowledge_rank_weights(rank_senders, Arc::new(prepared), phase_timeout) {
+            Ok(messages) => messages,
+            Err(cause) => {
+                return Err(abort_weight_load(
+                    rank_senders,
+                    cause,
+                    abort_command,
+                    owner_allocation_generations,
+                    phase_timeout,
+                ));
+            }
+        };
+    let mut adoption_acknowledgements = Vec::with_capacity(RANK_SET_SIZE);
+    let mut adoption_failure = None;
+    let mut adoption_route = RankSetLoadAction::Wait;
+    for message in adoption_messages {
+        match message.result {
+            Ok(acknowledgement) => {
+                adoption_route = coordinator.report_adoption_acknowledgement(acknowledgement);
+                adoption_acknowledgements.push(acknowledgement);
+            }
+            Err(error) => {
+                adoption_failure.get_or_insert(WeightLoadFailureCause::Rank {
+                    rank: message.rank,
+                    phase: RankWeightPhase::Acknowledge,
+                    error,
+                });
+                adoption_route = coordinator.report_rank_failure(message.rank, error);
+            }
+        }
+    }
+    if let Some(cause) = adoption_failure {
+        return Err(abort_weight_load(
+            rank_senders,
+            cause,
+            abort_command,
+            owner_allocation_generations,
+            phase_timeout,
+        ));
+    }
+    let adoption_acknowledgements: [AdoptionAcknowledgement; RANK_SET_SIZE] =
+        match adoption_acknowledgements.try_into() {
+            Ok(acknowledgements) => acknowledgements,
+            Err(_) => {
+                return Err(abort_weight_load(
+                    rank_senders,
+                    WeightLoadFailureCause::RankSet {
+                        phase: RankWeightPhase::Acknowledge,
+                    },
+                    abort_command,
+                    owner_allocation_generations,
+                    phase_timeout,
+                ));
+            }
+        };
+    let RankSetLoadAction::Complete(adopted_receipt) = adoption_route else {
+        let cause = WeightLoadFailureCause::Coordinator(
+            coordinator
+                .terminal_error()
+                .unwrap_or(LoadPlanError::Transition),
+        );
+        return Err(abort_weight_load(
+            rank_senders,
+            cause,
+            abort_command,
+            owner_allocation_generations,
+            phase_timeout,
+        ));
+    };
+
+    let finalize_messages = match finalize_rank_weights(
+        rank_senders,
+        adopted_receipt,
+        owner_allocation_generations,
+        phase_timeout,
+    ) {
+        Ok(messages) => messages,
+        Err(cause) => {
+            let _ = coordinator.report_rank_failure(0, LoadPlanError::Transition);
+            return Err(abort_weight_load(
+                rank_senders,
+                cause,
+                abort_command,
+                owner_allocation_generations,
+                phase_timeout,
+            ));
+        }
+    };
+    let mut finalize_acknowledgements = Vec::with_capacity(RANK_SET_SIZE);
+    let mut finalize_failure = None;
+    for message in finalize_messages {
+        match message.result {
+            Ok(acknowledgement) => {
+                if acknowledgement.rank() != message.rank
+                    || acknowledgement.plan_sha256() != plan.plan_sha256()
+                    || acknowledgement.owner_allocation_generation()
+                        != owner_allocation_generations[usize::from(message.rank)]
+                    || acknowledgement.adopted_rank_set_sha256()
+                        != adopted_receipt.adopted_rank_set_sha256()
+                {
+                    finalize_failure.get_or_insert(WeightLoadFailureCause::RankSet {
+                        phase: RankWeightPhase::Finalize,
+                    });
+                } else {
+                    finalize_acknowledgements.push(acknowledgement);
+                }
+            }
+            Err(error) => {
+                finalize_failure.get_or_insert(WeightLoadFailureCause::Rank {
+                    rank: message.rank,
+                    phase: RankWeightPhase::Finalize,
+                    error,
+                });
+                let _ = coordinator.report_rank_failure(message.rank, error);
+            }
+        }
+    }
+    if let Some(cause) = finalize_failure {
+        return Err(abort_weight_load(
+            rank_senders,
+            cause,
+            abort_command,
+            owner_allocation_generations,
+            phase_timeout,
+        ));
+    }
+    let finalize_acknowledgements: [RankWeightFinalizeAck; RANK_SET_SIZE] =
+        match finalize_acknowledgements.try_into() {
+            Ok(acknowledgements) => acknowledgements,
+            Err(_) => {
+                return Err(abort_weight_load(
+                    rank_senders,
+                    WeightLoadFailureCause::RankSet {
+                        phase: RankWeightPhase::Finalize,
+                    },
+                    abort_command,
+                    owner_allocation_generations,
+                    phase_timeout,
+                ));
+            }
+        };
+    Ok(WeightLoadOutcome {
+        plan_sha256: plan.plan_sha256(),
+        load_attempt_generation,
+        prepared_receipts,
+        adoption_acknowledgements,
+        adopted_receipt,
+        finalize_acknowledgements,
+    })
+}
+
+fn prepare_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    plan: Arc<RankSetLoadPlan>,
+    load_attempt_generation: u64,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> Result<Vec<RankPreparedResult>, WeightLoadFailureCause> {
+    let (response, receiver) = mpsc::sync_channel(RANK_SET_SIZE);
+    let mut send_failed = false;
+    for (rank, sender) in rank_senders.iter().enumerate() {
+        send_failed |= sender
+            .send(RankCommandEnvelope::PrepareWeights {
+                plan: Arc::clone(&plan),
+                load_attempt_generation,
+                owner_allocation_generation: owner_allocation_generations[rank],
+                response: response.clone(),
+            })
+            .is_err();
+    }
+    drop(response);
+    if send_failed {
+        return Err(WeightLoadFailureCause::Closed);
+    }
+    collect_rank_messages(
+        receiver,
+        RankWeightPhase::Prepare,
+        phase_timeout,
+        |message| message.rank,
+    )
+}
+
+fn acknowledge_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    prepared: Arc<PreparedRankSet>,
+    phase_timeout: Duration,
+) -> Result<Vec<RankAdoptionResult>, WeightLoadFailureCause> {
+    let (response, receiver) = mpsc::sync_channel(RANK_SET_SIZE);
+    let mut send_failed = false;
+    for sender in rank_senders {
+        send_failed |= sender
+            .send(RankCommandEnvelope::AcknowledgeWeights {
+                prepared: Arc::clone(&prepared),
+                response: response.clone(),
+            })
+            .is_err();
+    }
+    drop(response);
+    if send_failed {
+        return Err(WeightLoadFailureCause::Closed);
+    }
+    collect_rank_messages(
+        receiver,
+        RankWeightPhase::Acknowledge,
+        phase_timeout,
+        |message| message.rank,
+    )
+}
+
+fn finalize_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    adopted: AdoptedRankSetReceipt,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> Result<Vec<RankFinalizeResult>, WeightLoadFailureCause> {
+    let (response, receiver) = mpsc::sync_channel(RANK_SET_SIZE);
+    let mut send_failed = false;
+    for (rank, sender) in rank_senders.iter().enumerate() {
+        send_failed |= sender
+            .send(RankCommandEnvelope::FinalizeWeights {
+                adopted,
+                owner_allocation_generation: owner_allocation_generations[rank],
+                response: response.clone(),
+            })
+            .is_err();
+    }
+    drop(response);
+    if send_failed {
+        return Err(WeightLoadFailureCause::Closed);
+    }
+    collect_rank_messages(
+        receiver,
+        RankWeightPhase::Finalize,
+        phase_timeout,
+        |message| message.rank,
+    )
+}
+
+fn abort_weight_load(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    cause: WeightLoadFailureCause,
+    command: RankSetAbortCommand,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> WeightLoadFailure {
+    let (cleanup_acknowledgements, cleanup_failure) = cleanup_rank_weights(
+        rank_senders,
+        command,
+        owner_allocation_generations,
+        phase_timeout,
+    );
+    WeightLoadFailure {
+        cause,
+        cleanup_failure,
+        cleanup_acknowledgements: Box::new(cleanup_acknowledgements),
+    }
+}
+
+fn cleanup_rank_weights(
+    rank_senders: &[SyncSender<RankCommandEnvelope>],
+    command: RankSetAbortCommand,
+    owner_allocation_generations: [u64; RANK_SET_SIZE],
+    phase_timeout: Duration,
+) -> (
+    [Option<RankWeightCleanupAck>; RANK_SET_SIZE],
+    Option<WeightLoadFailureCause>,
+) {
+    let (response, receiver) = mpsc::sync_channel(RANK_SET_SIZE);
+    let mut send_failed = false;
+    for (rank, sender) in rank_senders.iter().enumerate() {
+        send_failed |= sender
+            .send(RankCommandEnvelope::AbortWeights {
+                command,
+                owner_allocation_generation: owner_allocation_generations[rank],
+                response: response.clone(),
+            })
+            .is_err();
+    }
+    drop(response);
+    let mut cleanup_failure = send_failed.then_some(WeightLoadFailureCause::Closed);
+    let Some(deadline) = Instant::now().checked_add(phase_timeout) else {
+        return ([None; RANK_SET_SIZE], Some(WeightLoadFailureCause::Config));
+    };
+    let mut messages = Vec::with_capacity(RANK_SET_SIZE);
+    for _ in 0..RANK_SET_SIZE {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            cleanup_failure.get_or_insert(WeightLoadFailureCause::Timeout {
+                phase: RankWeightPhase::Abort,
+            });
+            break;
+        };
+        match receiver.recv_timeout(remaining) {
+            Ok(message) => messages.push(message),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                cleanup_failure.get_or_insert(WeightLoadFailureCause::Timeout {
+                    phase: RankWeightPhase::Abort,
+                });
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                cleanup_failure.get_or_insert(WeightLoadFailureCause::Closed);
+                break;
+            }
+        }
+    }
+    messages.sort_by_key(|message| message.rank);
+    let mut acknowledgements = [None; RANK_SET_SIZE];
+    for message in messages {
+        let rank = usize::from(message.rank);
+        if rank >= RANK_SET_SIZE || acknowledgements[rank].is_some() {
+            cleanup_failure.get_or_insert(WeightLoadFailureCause::RankSet {
+                phase: RankWeightPhase::Abort,
+            });
+            continue;
+        }
+        let acknowledgement = match message.result {
+            Ok(acknowledgement) => acknowledgement,
+            Err(error) => {
+                cleanup_failure.get_or_insert(WeightLoadFailureCause::Rank {
+                    rank: message.rank,
+                    phase: RankWeightPhase::Abort,
+                    error,
+                });
+                continue;
+            }
+        };
+        if acknowledgement.rank() != message.rank
+            || acknowledgement.plan_sha256() != command.plan_sha256()
+            || acknowledgement.load_attempt_generation() != command.load_attempt_generation()
+            || acknowledgement.owner_allocation_generation() != owner_allocation_generations[rank]
+        {
+            cleanup_failure.get_or_insert(WeightLoadFailureCause::RankSet {
+                phase: RankWeightPhase::Abort,
+            });
+            continue;
+        }
+        acknowledgements[rank] = Some(acknowledgement);
+    }
+    if acknowledgements.iter().any(Option::is_none) && cleanup_failure.is_none() {
+        cleanup_failure = Some(WeightLoadFailureCause::RankSet {
+            phase: RankWeightPhase::Abort,
+        });
+    }
+    (acknowledgements, cleanup_failure)
+}
+
+fn collect_rank_messages<T>(
+    receiver: Receiver<T>,
+    phase: RankWeightPhase,
+    phase_timeout: Duration,
+    rank: impl Fn(&T) -> u8,
+) -> Result<Vec<T>, WeightLoadFailureCause> {
+    let deadline = Instant::now()
+        .checked_add(phase_timeout)
+        .ok_or(WeightLoadFailureCause::Config)?;
+    let mut messages = Vec::with_capacity(RANK_SET_SIZE);
+    for _ in 0..RANK_SET_SIZE {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(WeightLoadFailureCause::Timeout { phase })?;
+        let message = receiver
+            .recv_timeout(remaining)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => WeightLoadFailureCause::Timeout { phase },
+                mpsc::RecvTimeoutError::Disconnected => WeightLoadFailureCause::Closed,
+            })?;
+        messages.push(message);
+    }
+    messages.sort_by_key(&rank);
+    for (expected_rank, message) in messages.iter().enumerate() {
+        if usize::from(rank(message)) != expected_rank {
+            return Err(WeightLoadFailureCause::RankSet { phase });
+        }
+    }
+    Ok(messages)
+}
+
 fn dispatch_one(
     rank_senders: &[SyncSender<RankCommandEnvelope>],
     plan: &StepPlan,
@@ -809,6 +1646,55 @@ fn rank_loop(
                 let result = apply_page_delta_on_rank(rank, page_table.as_mut(), &delta);
                 let failed = result.is_err();
                 let _ = response.send(result);
+                if failed {
+                    break;
+                }
+            }
+            RankCommandEnvelope::PrepareWeights {
+                plan,
+                load_attempt_generation,
+                owner_allocation_generation,
+                response,
+            } => {
+                let result = executor.prepare_weights(
+                    rank,
+                    &plan,
+                    load_attempt_generation,
+                    owner_allocation_generation,
+                );
+                let _ = response.send(RankPreparedResult { rank, result });
+            }
+            RankCommandEnvelope::AcknowledgeWeights { prepared, response } => {
+                let result = executor.acknowledge_weight_adoption(rank, &prepared);
+                let _ = response.send(RankAdoptionResult { rank, result });
+            }
+            RankCommandEnvelope::FinalizeWeights {
+                adopted,
+                owner_allocation_generation,
+                response,
+            } => {
+                let result = executor.finalize_weights(rank, adopted).and_then(|()| {
+                    RankWeightFinalizeAck::new(
+                        rank,
+                        adopted.plan_sha256(),
+                        owner_allocation_generation,
+                        adopted,
+                    )
+                });
+                let _ = response.send(RankFinalizeResult { rank, result });
+            }
+            RankCommandEnvelope::AbortWeights {
+                command,
+                owner_allocation_generation,
+                response,
+            } => {
+                let result = executor
+                    .abort_weight_load(rank, command, owner_allocation_generation)
+                    .and_then(|()| {
+                        RankWeightCleanupAck::new(rank, command, owner_allocation_generation)
+                    });
+                let failed = result.is_err();
+                let _ = response.send(RankCleanupResult { rank, result });
                 if failed {
                     break;
                 }
@@ -1004,7 +1890,7 @@ mod tests {
     use std::{
         rc::Rc,
         sync::{
-            Arc, Barrier,
+            Arc, Barrier, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         thread::ThreadId,
@@ -1014,8 +1900,9 @@ mod tests {
     use glm_cache::{PageTableConfig, PageTableDelta, SequencePageTable};
 
     use crate::{
-        AttentionTransport, CollectiveKind, CollectiveOp, SequenceStepInput, StepMode,
-        StepPlanRequest, StepSampling, TP_RANK_MASK,
+        AttentionTransport, CollectiveKind, CollectiveOp, LoadProfile, LoadVerificationMode,
+        READER_CHUNK_BYTES, RankLoadEntry, RankSetLoadPlanHeader, SequenceStepInput, StepMode,
+        StepPlanRequest, StepSampling, TP_RANK_MASK, TensorArenaEntry, arena_layout_sha256,
     };
 
     use super::*;
@@ -1069,6 +1956,103 @@ mod tests {
         (plan, schedule)
     }
 
+    fn weight_load_plan() -> RankSetLoadPlan {
+        let tensor = TensorArenaEntry {
+            tensor_id: 0,
+            role_id: 1,
+            codec_id: 1,
+            descriptor_flags: 0,
+            metadata_destination_offset: 0,
+            metadata_bytes: 256,
+            primary_destination_offset: 0,
+            primary_bytes: 1024,
+            auxiliary_destination_offset: 0,
+            auxiliary_bytes: 0,
+            required_device_alignment: 256,
+        };
+        let tensors = std::array::from_fn(|_| vec![tensor]);
+        let ranks = std::array::from_fn(|rank| {
+            let rank = u8::try_from(rank).unwrap();
+            RankLoadEntry {
+                rank,
+                device_identity_sha256: [rank + 1; 32],
+                file_uuid: [rank + 1; 16],
+                manifest_sha256: [11; 32],
+                descriptor_sha256: [12; 32],
+                payload_sha256: [13; 32],
+                tensor_count: 1,
+                file_payload_bytes: 1024,
+                device_weight_arena_bytes: 1024,
+                device_metadata_arena_bytes: 256,
+                arena_layout_sha256: arena_layout_sha256(
+                    rank,
+                    1024,
+                    256,
+                    &tensors[usize::from(rank)],
+                ),
+                tensor_contract_sha256: [14 + rank; 32],
+            }
+        });
+        RankSetLoadPlan::new(
+            RankSetLoadPlanHeader {
+                verification_mode: LoadVerificationMode::FullSha256,
+                profile: LoadProfile::Nvfp4Laboratory,
+                tensor_count: 1,
+                conversion_uuid: [1; 16],
+                weight_policy_sha256: [2; 32],
+                kernel_abi_sha256: [3; 32],
+                memory_plan_sha256: [4; 32],
+                codec_capability_sha256: [5; 32],
+                model_config_sha256: [6; 32],
+                tokenizer_bundle_sha256: [7; 32],
+                chat_template_sha256: [8; 32],
+                operation_manifest_sha256: [9; 32],
+                tensor_catalog_sha256: [10; 32],
+                profile_budget_sha256: [11; 32],
+                staging_slot_bytes: READER_CHUNK_BYTES,
+                staging_slots_per_rank: 2,
+            },
+            ranks,
+            tensors,
+        )
+        .unwrap()
+    }
+
+    type TransactionalWeightPoolHarness = (
+        Tp4WorkerPool,
+        Arc<Mutex<[MockWeightState; RANK_SET_SIZE]>>,
+        Arc<[AtomicUsize; RANK_SET_SIZE]>,
+    );
+
+    fn transactional_weight_pool(fault: MockWeightFaultConfig) -> TransactionalWeightPoolHarness {
+        let states = Arc::new(Mutex::new([MockWeightState::Empty; RANK_SET_SIZE]));
+        let cleanup_counts = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+        let factories = std::array::from_fn(|expected_rank| {
+            let states = Arc::clone(&states);
+            let cleanup_counts = Arc::clone(&cleanup_counts);
+            Box::new(move |rank| {
+                if usize::from(rank) != expected_rank {
+                    return Err(WorkerError::RankStartup);
+                }
+                Ok(Box::new(TransactionalWeightExecutor {
+                    rank,
+                    fault,
+                    states,
+                    cleanup_counts,
+                    receipt: None,
+                    plan_sha256: [0; 32],
+                    load_attempt_generation: 0,
+                    owner_allocation_generation: 0,
+                }) as Box<dyn RankExecutor>)
+            }) as Box<dyn RankExecutorFactory>
+        });
+        (
+            Tp4WorkerPool::spawn_factories(1, factories).unwrap(),
+            states,
+            cleanup_counts,
+        )
+    }
+
     fn active_table() -> SequencePageTable {
         let mut table = SequencePageTable::new(PageTableConfig {
             target_pages_per_rank: 8,
@@ -1104,6 +2088,34 @@ mod tests {
         owner: ThreadId,
         calls: u64,
         _not_send: Rc<()>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum MockWeightState {
+        Empty,
+        Preparing,
+        Prepared,
+        Acknowledged,
+        Resident,
+        Aborted,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MockWeightFaultConfig {
+        phase: Option<(u8, RankWeightPhase)>,
+        cleanup_rank: Option<u8>,
+        delayed_prepare: Option<(u8, Duration)>,
+    }
+
+    struct TransactionalWeightExecutor {
+        rank: u8,
+        fault: MockWeightFaultConfig,
+        states: Arc<Mutex<[MockWeightState; RANK_SET_SIZE]>>,
+        cleanup_counts: Arc<[AtomicUsize; RANK_SET_SIZE]>,
+        receipt: Option<PreparedRankReceipt>,
+        plan_sha256: [u8; 32],
+        load_attempt_generation: u64,
+        owner_allocation_generation: u64,
     }
 
     impl RankExecutor for InvalidOutputExecutor {
@@ -1239,6 +2251,149 @@ mod tests {
             }
             self.calls += 1;
             cpu_bound_output(plan, schedule, input)
+        }
+    }
+
+    impl TransactionalWeightExecutor {
+        fn set_state(&self, state: MockWeightState) {
+            self.states.lock().unwrap()[usize::from(self.rank)] = state;
+        }
+
+        fn state(&self) -> MockWeightState {
+            self.states.lock().unwrap()[usize::from(self.rank)]
+        }
+
+        fn fails(&self, phase: RankWeightPhase) -> bool {
+            self.fault.phase == Some((self.rank, phase))
+        }
+    }
+
+    impl RankExecutor for TransactionalWeightExecutor {
+        fn execute(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if rank != self.rank || self.state() != MockWeightState::Resident {
+                return Err(RankExecutionError::Invariant);
+            }
+            cpu_output(plan, schedule)
+        }
+
+        fn execute_bound(
+            &mut self,
+            rank: u8,
+            plan: &StepPlan,
+            schedule: &CollectiveSchedule,
+            input: &StepInput,
+        ) -> Result<StepOutput, RankExecutionError> {
+            if rank != self.rank || self.state() != MockWeightState::Resident {
+                return Err(RankExecutionError::Invariant);
+            }
+            cpu_bound_output(plan, schedule, input)
+        }
+
+        fn prepare_weights(
+            &mut self,
+            rank: u8,
+            plan: &RankSetLoadPlan,
+            load_attempt_generation: u64,
+            owner_allocation_generation: u64,
+        ) -> Result<PreparedRankReceipt, LoadPlanError> {
+            if rank != self.rank
+                || self.state() != MockWeightState::Empty
+                || plan.rank(rank).is_none()
+                || load_attempt_generation == 0
+                || owner_allocation_generation == 0
+            {
+                return Err(LoadPlanError::Transition);
+            }
+            self.plan_sha256 = plan.plan_sha256();
+            self.load_attempt_generation = load_attempt_generation;
+            self.owner_allocation_generation = owner_allocation_generation;
+            self.set_state(MockWeightState::Preparing);
+            if let Some((delayed_rank, delay)) = self.fault.delayed_prepare
+                && delayed_rank == rank
+            {
+                thread::sleep(delay);
+            }
+            if self.fails(RankWeightPhase::Prepare) {
+                return Err(LoadPlanError::Writer);
+            }
+            let receipt = PreparedRankReceipt::test_only(
+                plan,
+                rank,
+                owner_allocation_generation,
+                [0x80 + rank; 32],
+            )?;
+            self.receipt = Some(receipt);
+            self.set_state(MockWeightState::Prepared);
+            Ok(receipt)
+        }
+
+        fn acknowledge_weight_adoption(
+            &mut self,
+            rank: u8,
+            prepared: &PreparedRankSet,
+        ) -> Result<AdoptionAcknowledgement, LoadPlanError> {
+            if rank != self.rank
+                || self.state() != MockWeightState::Prepared
+                || prepared.plan_sha256 != self.plan_sha256
+            {
+                return Err(LoadPlanError::Transition);
+            }
+            self.set_state(MockWeightState::Acknowledged);
+            if self.fails(RankWeightPhase::Acknowledge) {
+                return Err(LoadPlanError::Adoption);
+            }
+            AdoptionAcknowledgement::new(
+                prepared.adoption_command(),
+                self.receipt.ok_or(LoadPlanError::Receipt)?,
+            )
+        }
+
+        fn finalize_weights(
+            &mut self,
+            rank: u8,
+            adopted: AdoptedRankSetReceipt,
+        ) -> Result<(), LoadPlanError> {
+            if rank != self.rank
+                || self.state() != MockWeightState::Acknowledged
+                || adopted.plan_sha256() != self.plan_sha256
+            {
+                return Err(LoadPlanError::Transition);
+            }
+            // Model the hardest partial failure: the rank has made its arena
+            // resident before reporting a failed final acknowledgement.
+            self.set_state(MockWeightState::Resident);
+            if self.fails(RankWeightPhase::Finalize) {
+                return Err(LoadPlanError::Adoption);
+            }
+            Ok(())
+        }
+
+        fn abort_weight_load(
+            &mut self,
+            rank: u8,
+            command: RankSetAbortCommand,
+            owner_allocation_generation: u64,
+        ) -> Result<(), LoadPlanError> {
+            if rank != self.rank
+                || command.plan_sha256() != self.plan_sha256
+                || command.load_attempt_generation() != self.load_attempt_generation
+                || owner_allocation_generation != self.owner_allocation_generation
+            {
+                return Err(LoadPlanError::Transition);
+            }
+            if self.fault.cleanup_rank == Some(rank) || self.fails(RankWeightPhase::Abort) {
+                return Err(LoadPlanError::Writer);
+            }
+            if self.state() != MockWeightState::Aborted {
+                self.set_state(MockWeightState::Aborted);
+                self.cleanup_counts[usize::from(rank)].fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
         }
     }
 
@@ -1495,6 +2650,233 @@ mod tests {
         let (plan, schedule) = step(1);
         let outcome = pool.try_submit(plan, schedule).unwrap().receive().unwrap();
         assert_eq!(outcome.step_id, 1);
+    }
+
+    #[test]
+    fn weight_load_requires_all_four_finalize_acks_before_execution() {
+        let (pool, states, cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+            phase: None,
+            cleanup_rank: None,
+            delayed_prepare: None,
+        });
+        let plan = Arc::new(weight_load_plan());
+        let owner_generations = [41, 42, 43, 44];
+        let outcome = pool
+            .load_weights(
+                Arc::clone(&plan),
+                17,
+                owner_generations,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(outcome.plan_sha256, plan.plan_sha256());
+        assert_eq!(outcome.load_attempt_generation, 17);
+        for rank in 0..RANK_SET_SIZE {
+            assert_eq!(usize::from(outcome.prepared_receipts[rank].rank), rank);
+            assert_eq!(
+                outcome.prepared_receipts[rank].owner_allocation_generation,
+                owner_generations[rank]
+            );
+            assert_eq!(
+                usize::from(outcome.adoption_acknowledgements[rank].rank),
+                rank
+            );
+            assert_eq!(
+                usize::from(outcome.finalize_acknowledgements[rank].rank()),
+                rank
+            );
+            assert_eq!(
+                outcome.finalize_acknowledgements[rank].adopted_rank_set_sha256(),
+                outcome.adopted_receipt.adopted_rank_set_sha256()
+            );
+            assert_eq!(cleanup_counts[rank].load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(
+            *states.lock().unwrap(),
+            [MockWeightState::Resident; RANK_SET_SIZE]
+        );
+
+        let (step, schedule) = step(1);
+        assert_eq!(
+            pool.try_submit(step, schedule)
+                .unwrap()
+                .receive()
+                .unwrap()
+                .step_id,
+            1
+        );
+    }
+
+    #[test]
+    fn weight_load_owns_exclusive_pool_capacity_until_transaction_completion() {
+        let (pool, _states, _cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+            phase: None,
+            cleanup_rank: None,
+            delayed_prepare: Some((2, Duration::from_millis(75))),
+        });
+        let pool = Arc::new(pool);
+        let loading_pool = Arc::clone(&pool);
+        let loader = thread::spawn(move || {
+            loading_pool.load_weights(
+                Arc::new(weight_load_plan()),
+                17,
+                [41, 42, 43, 44],
+                Duration::from_secs(1),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while pool.outstanding() == 0 {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let (step, schedule) = step(1);
+        assert!(matches!(
+            pool.try_submit(step, schedule),
+            Err(WorkerError::Saturated)
+        ));
+        loader.join().unwrap().unwrap();
+        assert_eq!(pool.outstanding(), 0);
+    }
+
+    #[test]
+    fn every_prepare_adoption_and_finalize_rank_failure_gets_four_cleanup_acks() {
+        for phase in [
+            RankWeightPhase::Prepare,
+            RankWeightPhase::Acknowledge,
+            RankWeightPhase::Finalize,
+        ] {
+            for failed_rank in 0..u8::try_from(RANK_SET_SIZE).unwrap() {
+                let (pool, states, cleanup_counts) =
+                    transactional_weight_pool(MockWeightFaultConfig {
+                        phase: Some((failed_rank, phase)),
+                        cleanup_rank: None,
+                        delayed_prepare: None,
+                    });
+                let failure = pool
+                    .load_weights(
+                        Arc::new(weight_load_plan()),
+                        17,
+                        [41, 42, 43, 44],
+                        Duration::from_secs(1),
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    failure.cause,
+                    WeightLoadFailureCause::Rank {
+                        rank: failed_rank,
+                        phase,
+                        error: if phase == RankWeightPhase::Prepare {
+                            LoadPlanError::Writer
+                        } else {
+                            LoadPlanError::Adoption
+                        },
+                    }
+                );
+                assert_eq!(failure.cleanup_failure, None);
+                let cleanup = failure.cleanup_acknowledgements;
+                for rank in 0..RANK_SET_SIZE {
+                    let acknowledgement = cleanup[rank].unwrap();
+                    assert_eq!(usize::from(acknowledgement.rank()), rank);
+                    assert_eq!(acknowledgement.load_attempt_generation(), 17);
+                    assert_eq!(
+                        acknowledgement.owner_allocation_generation(),
+                        41 + u64::try_from(rank).unwrap()
+                    );
+                    assert_eq!(cleanup_counts[rank].load(Ordering::SeqCst), 1);
+                }
+                assert_eq!(
+                    *states.lock().unwrap(),
+                    [MockWeightState::Aborted; RANK_SET_SIZE]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_cleanup_rank_failure_is_explicit_and_never_forges_four_acks() {
+        for cleanup_rank in 0..u8::try_from(RANK_SET_SIZE).unwrap() {
+            let primary_rank = (cleanup_rank + 1) % u8::try_from(RANK_SET_SIZE).unwrap();
+            let (pool, states, cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+                phase: Some((primary_rank, RankWeightPhase::Prepare)),
+                cleanup_rank: Some(cleanup_rank),
+                delayed_prepare: None,
+            });
+            let failure = pool
+                .load_weights(
+                    Arc::new(weight_load_plan()),
+                    17,
+                    [41, 42, 43, 44],
+                    Duration::from_secs(1),
+                )
+                .unwrap_err();
+            assert_eq!(
+                failure.cause,
+                WeightLoadFailureCause::Rank {
+                    rank: primary_rank,
+                    phase: RankWeightPhase::Prepare,
+                    error: LoadPlanError::Writer,
+                }
+            );
+            assert_eq!(
+                failure.cleanup_failure,
+                Some(WeightLoadFailureCause::Rank {
+                    rank: cleanup_rank,
+                    phase: RankWeightPhase::Abort,
+                    error: LoadPlanError::Writer,
+                })
+            );
+            for rank in 0..RANK_SET_SIZE {
+                assert_eq!(
+                    failure.cleanup_acknowledgements[rank].is_some(),
+                    rank != usize::from(cleanup_rank)
+                );
+                assert_eq!(
+                    cleanup_counts[rank].load(Ordering::SeqCst),
+                    usize::from(rank != usize::from(cleanup_rank))
+                );
+            }
+            assert_ne!(
+                states.lock().unwrap()[usize::from(cleanup_rank)],
+                MockWeightState::Aborted
+            );
+        }
+    }
+
+    #[test]
+    fn phase_timeout_triggers_common_abort_and_reports_incomplete_cleanup() {
+        let (pool, _states, _cleanup_counts) = transactional_weight_pool(MockWeightFaultConfig {
+            phase: None,
+            cleanup_rank: None,
+            delayed_prepare: Some((2, Duration::from_millis(75))),
+        });
+        let failure = pool
+            .load_weights(
+                Arc::new(weight_load_plan()),
+                17,
+                [41, 42, 43, 44],
+                Duration::from_millis(5),
+            )
+            .unwrap_err();
+        assert_eq!(
+            failure.cause,
+            WeightLoadFailureCause::Timeout {
+                phase: RankWeightPhase::Prepare
+            }
+        );
+        assert_eq!(
+            failure.cleanup_failure,
+            Some(WeightLoadFailureCause::Timeout {
+                phase: RankWeightPhase::Abort
+            })
+        );
+        assert_eq!(
+            failure
+                .cleanup_acknowledgements
+                .iter()
+                .filter(|acknowledgement| acknowledgement.is_some())
+                .count(),
+            RANK_SET_SIZE - 1
+        );
     }
 
     #[test]
