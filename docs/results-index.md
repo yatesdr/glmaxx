@@ -85,6 +85,12 @@ for C64/3,072-row prefill, a 128-page bound for MTP6 verification, separates
 large admission/removal from the compute journal, and makes the standalone
 four-rank delta command the cache-only ABI. It is a design candidate, not an
 implementation or performance result.
+The sustained serving qualification design is pinned in
+`docs/sustained-serving-load-fault-v1.md`. It specifies one bounded
+black-box Rust driver, deterministic open/closed-loop arrivals, multi-tenant
+fairness, cancellation/slow-client/rank/tier/restart faults, raw per-request
+evidence, the complete SM120 posture matrix, and a six-hour soak. No driver
+or load result exists yet.
 
 This index separates proved results from preparation artifacts and missing
 evidence. An entry here is not an acceptance token, GPU authorization, or
