@@ -99,6 +99,7 @@ result path; follow the output instructions in that handoff.
 | 77 | `docs/fable-tp4-step-operation-quota-v1-handoff.md` | `da46a30a5df430e35d4a9d23aa6a449923494660` | `fable-tp4-step-operation-quota-v1.md` | `tp4-step-operation-quota-v1-accepted` |
 | 78 | `docs/fable-small-checkpoint-runner-v1-handoff.md` | `2b3318176d34eded55cc97e49998423ad4e902ce` | `docs/reviews/fable-small-checkpoint-runner-v1.md` | `small-checkpoint-runner-v1-design-accepted` |
 | 79 | `docs/fable-checkpoint-load-cpu-core-v1-handoff.md` | `d29ce96a0d6037e045c359fd1116187ca0722c42` | `docs/reviews/fable-checkpoint-load-cpu-core-v1.md` | `checkpoint-load-cpu-core-v1-accepted` |
+| 80 | `docs/fable-native-rank-load-plan-v1-handoff.md` | `7681210af6c93d7a2cb644a80d8aa001e8e8cc02` | `docs/reviews/fable-native-rank-load-plan-v1.md` | `native-rank-load-plan-v1-accepted` |
 
 ## Verification command
 
@@ -109,5 +110,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 79 current handoffs and two
+The expected queue count for this document is 80 current handoffs and two
 explicitly skipped historical umbrella handoffs.
