@@ -2,7 +2,8 @@
 
 Date: 2026-07-29
 
-Status: design candidate; adversarial review required before ABI promotion
+Status: CPU implementation candidate; adversarial review required before
+worker/serving promotion
 
 GPU evidence: none
 
@@ -58,6 +59,7 @@ four persistent rank threads. It contains:
 ```text
 schema                         glmaxx.step-input.v1
 sequence_table_generation      u64
+page_table_delta_digest        SHA-256
 rows                           1..64 SequenceInput records
 prompt_token_ids               0..scheduled_prompt_tokens u32 values
 canonical_hash                 SHA-256
@@ -72,7 +74,8 @@ generated_tokens_before        u32
 maximum_new_tokens             u32
 prompt_payload_offset          u32
 prompt_tokens_this_step        u32
-mtp_depth                      u8
+configured_mtp_depth           u8
+effective_mtp_depth            u8
 sampling_kind                  GREEDY, TOP_K, or MASS
 temperature_bits               canonical finite f32 bits
 top_p_bits                     canonical finite f32 bits
@@ -89,6 +92,13 @@ range must be contiguous, nonoverlapping, and collectively cover the payload.
 this step. For prefill it equals the request's `prompt_done`; for decode and
 verify it equals `prompt_tokens + generated_tokens_before`. The sum of
 context plus scheduled/maximum output work may never exceed 1,048,576.
+
+The two MTP fields are deliberately distinct. `configured_mtp_depth` binds
+the request's immutable target-plus-draft page posture. `effective_mtp_depth`
+binds the graph selected for this step after the scheduler clamps speculation
+to remaining output capacity. A request configured for MTP6 can therefore
+execute a final MTP0 decode without losing or silently changing its draft
+attachments.
 
 The sampling tuple is canonical:
 
@@ -118,13 +128,15 @@ For DECODE:
 
 - row count equals `active_sequences`;
 - every prompt count and the prompt payload are zero;
-- every row has MTP depth zero and remaining output capacity;
+- every row has effective MTP depth zero, while configured depth may remain
+  nonzero, and every row has remaining output capacity;
 - its sampling kind matches the plan's collective route; and
 - exactly one target token is returned per row.
 
 For VERIFY:
 
-- the DECODE rules hold except every row has the plan's common depth 1–6;
+- the DECODE rules hold except every row's effective depth equals the plan's
+  common depth 1–6 and configured depth is at least that value;
 - query rows remain `active_sequences * (depth + 1)`; and
 - result provenance contains zero through `depth` accepted draft tokens plus
   either one target residual/bonus token or a final accepted draft EOS.
@@ -133,15 +145,28 @@ MIXED remains rejected. CACHE_ONLY has zero rows and no prompt payload.
 
 ## Binding and consensus
 
-The canonical input hash covers the schema, generation, every row field, and
-every prompt token in explicit little-endian order. `StepInput` must be
-verified before queue admission and again on each rank thread.
+The canonical input hash covers the schema, generation, the exact canonical
+`PageTableDelta` global digest, every row field, and every prompt token in
+explicit little-endian order. `StepInput` must be verified before queue
+admission and again on each rank thread.
 
 The existing `sequence_table_generation` in `StepPlan` must equal the input
-generation. A generation is immutable and cannot be reused with a different
-input hash. The dispatcher sends the same `Arc<StepInput>` to all ranks and
-each rank acknowledgment includes the input hash alongside plan, schedule,
-and output hashes. Any mismatch kills the entire worker generation.
+generation and the delta's successor generation. The delta must contain
+exactly one update for every input row and no removals. Each update binds the
+request ID, configured MTP posture, committed count after prefill or before
+decode/verify, and an exact tentative reservation of zero, one, or
+`effective_mtp_depth + 1`. A generation is immutable and cannot be reused
+with a different input or delta hash.
+
+For decode and verify, the unique logits collective in the verified schedule
+must map to every row's sampling kind and use the plan's sampling route.
+Prefill contains no logits collective.
+
+The dispatcher will send the same `Arc<StepInput>` and
+`Arc<PageTableDelta>` to all ranks. Each rank acknowledgment will include the
+input hash, global delta digest, and its rank-local delta digest alongside
+plan, schedule, and output hashes. Any mismatch kills the entire worker
+generation.
 
 This does not claim that a host hash proves a CUDA upload. The SM120 executor
 must additionally make its sequence-table upload completion part of the rank
@@ -195,4 +220,23 @@ After adversarial review, the CPU gate must prove:
    unchanged; and
 8. the one-million-token prompt-vector bound uses checked arithmetic.
 
-No CUDA launch or serving claim follows from this CPU proof.
+## Current implementation boundary
+
+`glm-engine::StepInput` implements the canonical row/prompt/sampling hash,
+checked 1,048,576-token arithmetic, configured-versus-effective MTP
+distinction, schedule-to-sampling validation, and exact
+`PageTableDelta.v1` binding. The CPU regressions cover deterministic
+multi-row prompt hashing, an MTP6 request clamped to an MTP0 tail step,
+MTP5 verification, all three sampling forms, invalid floats/filters,
+schedule mismatch, context/output bounds, hash tampering, and a different
+delta digest.
+
+It is not yet dispatched by `Tp4WorkerPool` or constructed by
+`ServingCoordinator`. `CACHE_ONLY` remains outside this object because the
+reviewed `StepPlan` contract requires generation zero for that mode while a
+real page delta necessarily advances a nonzero generation. Rank-mirror
+initial synchronization, admission/removal deltas, post-output commit
+deltas, device upload receipts, RNG-counter output/commit, and fixed-capacity
+hot-path storage remain required before promotion.
+
+No CUDA launch or serving claim follows from this CPU implementation.

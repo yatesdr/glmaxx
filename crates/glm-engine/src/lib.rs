@@ -5,6 +5,7 @@
 //! must prove before any of the four device workers may enter a step.
 
 mod graph;
+mod input;
 mod memory;
 mod output;
 mod startup;
@@ -13,6 +14,9 @@ mod weight;
 mod worker;
 
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
+pub use input::{
+    STEP_INPUT_SCHEMA, SequenceStepInput, StepInput, StepInputError, StepSampling, StepSamplingKind,
+};
 pub use memory::{
     CAPACITY_EXL3_RANK_WEIGHT_BYTES, CacheArenaLayout, GIB, MAXIMUM_ACTIVE_SEQUENCES,
     MAXIMUM_VERIFIER_ROWS, MIN_MTP_TENTATIVE_SLOTS_PER_RANK, MIN_MTP0_TENTATIVE_SLOTS_PER_RANK,
