@@ -61,6 +61,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 mod cache_proof;
+mod profile;
 mod review;
 
 const ACTUAL_PACKED_SHA256: &str =
@@ -357,6 +358,83 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .into());
             }
         }
+        Some("profile-plan") => {
+            if arguments.len() > 3 {
+                return Err("profile-plan accepts only an optional output path".into());
+            }
+            let plan = profile::ProfilePlan::deterministic()?;
+            let mut json = serde_json::to_vec_pretty(&plan)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
+        Some("profile-plan-validate") => {
+            if arguments.len() != 3 {
+                return Err("profile-plan-validate requires exactly one plan path".into());
+            }
+            let path = arguments
+                .get(2)
+                .ok_or("profile-plan-validate requires a plan path")?;
+            let bytes = fs::read(path)?;
+            let actual: profile::ProfilePlan = serde_json::from_slice(&bytes)?;
+            let expected = profile::ProfilePlan::deterministic()?;
+            if actual != expected {
+                return Err("profile plan differs from the deterministic in-tree contract".into());
+            }
+            println!("profile-plan-valid cases={}", actual.cases.len());
+        }
+        Some("profile-evidence-manifest") => {
+            if arguments.len() != 4 {
+                return Err(
+                    "profile-evidence-manifest requires evidence-root source-commit".into(),
+                );
+            }
+            let root = Path::new(
+                arguments
+                    .get(2)
+                    .ok_or("profile-evidence-manifest requires an evidence root")?,
+            );
+            validate_external_profile_evidence_root(root)?;
+            let output = root.join(profile::EVIDENCE_MANIFEST_NAME);
+            if output.exists() {
+                return Err("evidence manifest already exists".into());
+            }
+            let manifest = profile::build_evidence_manifest(
+                root,
+                arguments
+                    .get(3)
+                    .ok_or("profile-evidence-manifest requires a source commit")?,
+            )?;
+            let mut json = serde_json::to_vec_pretty(&manifest)?;
+            json.push(b'\n');
+            fs::write(&output, &json)?;
+            println!(
+                "profile-evidence-manifest artifacts={} path={}",
+                manifest.artifacts.len(),
+                output.display()
+            );
+        }
+        Some("profile-evidence-validate") => {
+            if arguments.len() != 3 {
+                return Err("profile-evidence-validate requires one evidence-root".into());
+            }
+            let root = Path::new(
+                arguments
+                    .get(2)
+                    .ok_or("profile-evidence-validate requires an evidence root")?,
+            );
+            validate_external_profile_evidence_root(root)?;
+            let manifest = profile::validate_evidence_manifest(root)?;
+            println!(
+                "profile-evidence-valid source_commit={} artifacts={}",
+                manifest.source_commit,
+                manifest.artifacts.len()
+            );
+        }
         Some("review-proof-all") => {
             if arguments.len() > 4 {
                 return Err(
@@ -485,9 +563,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("gpu-bench requires an external evidence directory")?;
             gpu_bench(Path::new(path))?;
         }
+        #[cfg(feature = "cuda-ffi")]
+        Some("gpu-time-case") => {
+            let (case, evidence) = parse_gpu_profile_case(&arguments)?;
+            gpu_profile_case(case, &evidence, false)?;
+        }
+        #[cfg(feature = "cuda-ffi")]
+        Some("gpu-profile-case") => {
+            let (case, evidence) = parse_gpu_profile_case(&arguments)?;
+            gpu_profile_case(case, &evidence, true)?;
+        }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
                     .into(),
             );
         }
@@ -3633,11 +3721,11 @@ struct GpuBenchmarkCase {
     output_sha256: String,
     warmup_iterations: u32,
     measured_iterations: u32,
-    activation_quantization_us: f32,
-    core_swiglu_us: f32,
-    inclusive_operator_us: f32,
-    graph_inclusive_us: f32,
-    host_enqueue_us: f64,
+    activation_quantization: profile::LatencyDistribution,
+    core_swiglu: profile::LatencyDistribution,
+    inclusive_operator: profile::LatencyDistribution,
+    graph_inclusive: profile::LatencyDistribution,
+    host_enqueue: profile::LatencyDistribution,
     route_compaction: &'static str,
     runtime_weight_repack_bytes: u64,
     persistent_dequant_bytes: u64,
@@ -3671,15 +3759,638 @@ struct GpuGroupedBenchmarkCase {
     output_sha256: String,
     warmup_iterations: u32,
     measured_iterations: u32,
-    activation_quantization_us: f32,
-    grouped_core_swiglu_us: f32,
-    inclusive_operator_us: f32,
-    host_enqueue_us: f64,
+    activation_quantization: profile::LatencyDistribution,
+    grouped_core_swiglu: profile::LatencyDistribution,
+    inclusive_operator: profile::LatencyDistribution,
+    host_enqueue: profile::LatencyDistribution,
     route_compaction: &'static str,
     grouped_metadata_preparation: &'static str,
     runtime_weight_repack_bytes: u64,
     persistent_dequant_bytes: u64,
     materialized_gate_up_control: bool,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuProfileCaseReport {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    case: profile::ProfileCaseSpec,
+    execution: &'static str,
+    assignments: usize,
+    active_experts: usize,
+    output_sha256: String,
+    routing_host: Option<profile::LatencyDistribution>,
+    latency: Option<profile::LatencyDistribution>,
+    byte_ledger: profile::ByteLedger,
+    p50_contract_gib_per_second: Option<f64>,
+    nvtx_root_range: &'static str,
+    cuda_profiler_api_capture: bool,
+    runtime_weight_repack_bytes: u64,
+    persistent_dequant_bytes: u64,
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn parse_gpu_profile_case(
+    arguments: &[String],
+) -> Result<(profile::ProfileCaseSpec, PathBuf), Box<dyn std::error::Error>> {
+    if arguments.len() != 10 {
+        return Err("GPU profile case requires backend mode phase routing rows warmups iterations evidence-dir".into());
+    }
+    let case = profile::ProfileCaseSpec {
+        backend: arguments.get(2).ok_or("missing profile backend")?.parse()?,
+        mode: arguments.get(3).ok_or("missing profile mode")?.parse()?,
+        phase: arguments.get(4).ok_or("missing profile phase")?.parse()?,
+        routing: arguments.get(5).ok_or("missing profile routing")?.parse()?,
+        rows: parse_argument(arguments, 6, "profile rows")?,
+        warmup_iterations: parse_argument(arguments, 7, "profile warmups")?,
+        measured_iterations: parse_argument(arguments, 8, "profile iterations")?,
+    }
+    .validate()?;
+    Ok((
+        case,
+        PathBuf::from(
+            arguments
+                .get(9)
+                .ok_or("missing profile evidence directory")?,
+        ),
+    ))
+}
+
+#[cfg(feature = "cuda-ffi")]
+struct PreparedProfileRoutes {
+    experts: Vec<u16>,
+    tokens: Vec<u32>,
+    slots: Vec<u8>,
+    weights: Vec<f32>,
+    active_experts: Vec<u16>,
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn prepare_profile_routes(
+    routing: profile::ProfileRouting,
+    rows: u32,
+) -> Result<PreparedProfileRoutes, Box<dyn std::error::Error>> {
+    let rows_usize = usize::try_from(rows)?;
+    let mut routes = match routing {
+        profile::ProfileRouting::OneHot => generate_routes(RoutingCase::OneHotExpert0, rows_usize)?,
+        profile::ProfileRouting::Uniform => {
+            generate_routes(RoutingCase::UniformAllExperts, rows_usize)?
+        }
+        profile::ProfileRouting::Zipf => generate_routes(RoutingCase::ZipfSkew, rows_usize)?,
+        profile::ProfileRouting::EmptyExperts => {
+            generate_routes(RoutingCase::EmptyExperts, rows_usize)?
+        }
+        profile::ProfileRouting::MaximallySkewed => {
+            let mut routes = Vec::with_capacity(
+                rows_usize
+                    .checked_mul(8)
+                    .ok_or("profile route capacity overflow")?,
+            );
+            for token in 0..rows {
+                for slot in 0_u8..8 {
+                    routes.push(Route {
+                        token,
+                        expert: u16::from(slot),
+                        slot,
+                        weight: 0.125,
+                    });
+                }
+            }
+            routes
+        }
+        profile::ProfileRouting::NotApplicable => {
+            return Err("EXL3 does not have routed-expert metadata".into());
+        }
+    };
+    if routing != profile::ProfileRouting::OneHot {
+        for route in &mut routes {
+            route.weight = 0.125;
+        }
+    }
+    routes.sort_by_key(|route| (route.expert, route.token, route.slot));
+    let compacted = compact_routes(&routes, rows_usize)?;
+    if compacted.len() != routes.len()
+        || compacted.iter().zip(&routes).any(|(compact, route)| {
+            (compact.expert, compact.token, compact.slot) != (route.expert, route.token, route.slot)
+        })
+    {
+        return Err("profile route compaction was not deterministic".into());
+    }
+    let mut active_experts = Vec::new();
+    for route in &routes {
+        if active_experts.last().copied() != Some(route.expert) {
+            active_experts.push(route.expert);
+        }
+    }
+    Ok(PreparedProfileRoutes {
+        experts: routes.iter().map(|route| route.expert).collect(),
+        tokens: routes.iter().map(|route| route.token).collect(),
+        slots: routes.iter().map(|route| route.slot).collect(),
+        weights: routes.iter().map(|route| route.weight).collect(),
+        active_experts,
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn time_profile_routing(
+    case: profile::ProfileCaseSpec,
+) -> Result<profile::LatencyDistribution, Box<dyn std::error::Error>> {
+    for _ in 0..case.warmup_iterations {
+        std::hint::black_box(prepare_profile_routes(case.routing, case.rows)?);
+    }
+    let mut samples = Vec::with_capacity(usize::try_from(case.measured_iterations)?);
+    for _ in 0..case.measured_iterations {
+        let start = Instant::now();
+        std::hint::black_box(prepare_profile_routes(case.routing, case.rows)?);
+        samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    Ok(profile::LatencyDistribution::from_microseconds(samples)?)
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_profile_case(
+    case: profile::ProfileCaseSpec,
+    evidence_directory: &Path,
+    profiler_capture: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_empty_external_gpu_directory(
+        evidence_directory,
+        if profiler_capture {
+            "gpu-profile-case"
+        } else {
+            "gpu-time-case"
+        },
+    )?;
+    let report = if case.backend.is_exl3() {
+        execute_exl3_profile_case(case, profiler_capture)?
+    } else if matches!(
+        case.backend,
+        profile::ProfileBackend::Nvfp4DirectFc1 | profile::ProfileBackend::Nvfp4GroupedFc1
+    ) {
+        execute_fc1_profile_case(case, profiler_capture)?
+    } else {
+        execute_fc2_profile_case(case, profiler_capture)?
+    };
+    let mut json = serde_json::to_vec_pretty(&report)?;
+    json.push(b'\n');
+    fs::write(evidence_directory.join("case.json"), &json)?;
+    println!("{}", String::from_utf8(json)?);
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn execute_fc1_profile_case(
+    case: profile::ProfileCaseSpec,
+    profiler_capture: bool,
+) -> Result<GpuProfileCaseReport, Box<dyn std::error::Error>> {
+    let rows = usize::try_from(case.rows)?;
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let numerical = generate_numerical_fixture(NumericalCase::DeterministicRandom, rows, n, k)?;
+    let packed = PackedNvfp4::pack(&numerical.weights, n, k, Codec::OneDimensional)?;
+    let input = to_bf16_bits(&numerical.activations);
+    let routes = prepare_profile_routes(case.routing, case.rows)?;
+    let routing_host = if profiler_capture {
+        None
+    } else {
+        Some(time_profile_routing(case)?)
+    };
+    let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &routes.active_experts)?;
+    let config = glm_cuda::Fc1BenchmarkConfig {
+        warmup_iterations: case.warmup_iterations,
+        measured_iterations: case.measured_iterations,
+    };
+    let phase = match case.phase {
+        profile::ProfilePhase::Quantize => glm_cuda::Fc1ProfilePhase::Quantize,
+        profile::ProfilePhase::Core => glm_cuda::Fc1ProfilePhase::CoreSwiglu,
+        profile::ProfilePhase::Inclusive => glm_cuda::Fc1ProfilePhase::Inclusive,
+        profile::ProfilePhase::GraphInclusive => glm_cuda::Fc1ProfilePhase::GraphInclusive,
+        profile::ProfilePhase::Reduce | profile::ProfilePhase::Projection => {
+            return Err("invalid FC1 profile phase".into());
+        }
+    };
+    let latency = if profiler_capture {
+        if case.backend.is_grouped() {
+            device.profile_grouped_control(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                phase,
+                config,
+            )?;
+        } else {
+            device.profile_direct(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                phase,
+                config,
+            )?;
+        }
+        None
+    } else {
+        let samples = if case.backend.is_grouped() {
+            device.time_grouped_phase(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                phase,
+                config,
+            )?
+        } else {
+            device.time_direct_phase(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                phase,
+                config,
+            )?
+        };
+        Some(profile::LatencyDistribution::from_microseconds(samples)?)
+    };
+    let output = if case.backend.is_grouped() {
+        device.run_grouped_control(
+            &input,
+            case.rows,
+            &routes.experts,
+            &routes.tokens,
+            &routes.slots,
+        )?
+    } else {
+        device.run(
+            &input,
+            case.rows,
+            &routes.experts,
+            &routes.tokens,
+            &routes.slots,
+        )?
+    };
+    let byte_ledger = nvfp4_profile_byte_ledger(
+        &input,
+        &packed,
+        routes.experts.len(),
+        routes.active_experts.len(),
+        output.len().checked_mul(2).ok_or("output byte overflow")?,
+        usize::try_from(glm_cuda::grouped_workspace_bytes(u32::try_from(
+            routes.experts.len(),
+        )?)?)?,
+    )?;
+    build_profile_report(
+        case,
+        profiler_capture,
+        routes.experts.len(),
+        routes.active_experts.len(),
+        u16_hash(&output),
+        routing_host,
+        latency,
+        byte_ledger,
+        KERNEL_ABI,
+    )
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn execute_fc2_profile_case(
+    case: profile::ProfileCaseSpec,
+    profiler_capture: bool,
+) -> Result<GpuProfileCaseReport, Box<dyn std::error::Error>> {
+    let routes = prepare_profile_routes(case.routing, case.rows)?;
+    let routing_host = if profiler_capture {
+        None
+    } else {
+        Some(time_profile_routing(case)?)
+    };
+    let assignments = routes.experts.len();
+    let n = usize::try_from(glm_cuda::HIDDEN)?;
+    let k = usize::try_from(glm_cuda::LOCAL_INTERMEDIATE)?;
+    let numerical =
+        generate_numerical_fixture(NumericalCase::DeterministicRandom, assignments, n, k)?;
+    let packed = PackedNvfp4::pack(&numerical.weights, n, k, Codec::OneDimensional)?;
+    let input = to_bf16_bits(&numerical.activations);
+    let device = glm_cuda::NativeFc2Fixture::replicated(&packed, &routes.active_experts)?;
+    let config = glm_cuda::Fc1BenchmarkConfig {
+        warmup_iterations: case.warmup_iterations,
+        measured_iterations: case.measured_iterations,
+    };
+    let phase = match case.phase {
+        profile::ProfilePhase::Quantize => glm_cuda::Fc2ProfilePhase::Quantize,
+        profile::ProfilePhase::Core => glm_cuda::Fc2ProfilePhase::Core,
+        profile::ProfilePhase::Reduce => glm_cuda::Fc2ProfilePhase::Reduce,
+        profile::ProfilePhase::Inclusive => glm_cuda::Fc2ProfilePhase::Inclusive,
+        profile::ProfilePhase::GraphInclusive | profile::ProfilePhase::Projection => {
+            return Err("invalid FC2 profile phase".into());
+        }
+    };
+    let latency = if profiler_capture {
+        if case.backend.is_grouped() {
+            device.profile_grouped_control(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                &routes.weights,
+                phase,
+                config,
+            )?;
+        } else {
+            device.profile(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                &routes.weights,
+                phase,
+                config,
+            )?;
+        }
+        None
+    } else {
+        let samples = if case.backend.is_grouped() {
+            device.time_grouped_phase(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                &routes.weights,
+                phase,
+                config,
+            )?
+        } else {
+            device.time_phase(
+                &input,
+                case.rows,
+                &routes.experts,
+                &routes.tokens,
+                &routes.slots,
+                &routes.weights,
+                phase,
+                config,
+            )?
+        };
+        Some(profile::LatencyDistribution::from_microseconds(samples)?)
+    };
+    let output = if case.backend.is_grouped() {
+        device.run_grouped_control(
+            &input,
+            case.rows,
+            &routes.experts,
+            &routes.tokens,
+            &routes.slots,
+            &routes.weights,
+        )?
+    } else {
+        device.run(
+            &input,
+            case.rows,
+            &routes.experts,
+            &routes.tokens,
+            &routes.slots,
+            &routes.weights,
+        )?
+    };
+    let byte_ledger = nvfp4_profile_byte_ledger(
+        &input,
+        &packed,
+        assignments,
+        routes.active_experts.len(),
+        output.len().checked_mul(4).ok_or("output byte overflow")?,
+        usize::try_from(fc2_grouped_workspace_bytes(
+            case.rows,
+            u32::try_from(assignments)?,
+        )?)?,
+    )?;
+    build_profile_report(
+        case,
+        profiler_capture,
+        assignments,
+        routes.active_experts.len(),
+        f32_hash(&output),
+        routing_host,
+        latency,
+        byte_ledger,
+        KERNEL_ABI,
+    )
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn execute_exl3_profile_case(
+    case: profile::ProfileCaseSpec,
+    profiler_capture: bool,
+) -> Result<GpuProfileCaseReport, Box<dyn std::error::Error>> {
+    let projection = match case.backend {
+        profile::ProfileBackend::Exl3Gate => Exl3Projection::Gate,
+        profile::ProfileBackend::Exl3Up => Exl3Projection::Up,
+        profile::ProfileBackend::Exl3Down => Exl3Projection::Down,
+        _ => return Err("non-EXL3 backend passed to EXL3 runner".into()),
+    };
+    let (logical_k, logical_n) = match projection {
+        Exl3Projection::Gate | Exl3Projection::Up => (6_144_u32, 512_u32),
+        Exl3Projection::Down => (512_u32, 6_144_u32),
+    };
+    let metadata = Exl3Metadata::new(projection, 3, 0, 0, 3, logical_k, logical_n)?;
+    let mut state =
+        0x0002_c026_0721_u64 ^ u64::from(projection as u8) ^ (u64::from(case.rows) << 32);
+    let mut trellis = Vec::with_capacity(usize::try_from(metadata.trellis_words)?);
+    for _ in 0..metadata.trellis_words {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        trellis.push(state as u16);
+    }
+    let suh: Vec<u16> = (0..logical_k)
+        .map(|index| {
+            let offset = i32::try_from((index * 13 + 5) % 17).expect("bounded offset") - 8;
+            glm_format::f32_to_f16_bits(1.0 + offset as f32 / 64.0)
+        })
+        .collect();
+    let svh: Vec<u16> = (0..logical_n)
+        .map(|index| {
+            let offset = i32::try_from((index * 7 + 3) % 13).expect("bounded offset") - 6;
+            glm_format::f32_to_f16_bits(1.0 + offset as f32 / 64.0)
+        })
+        .collect();
+    let tensor = Exl3Trellis {
+        metadata,
+        trellis,
+        suh,
+        svh,
+        mcg_marker: glm_format::EXL3_MCG_MULTIPLIER,
+    };
+    tensor.validate()?;
+    let input_elements = usize::try_from(case.rows)?
+        .checked_mul(usize::try_from(logical_k)?)
+        .ok_or("EXL3 input length overflow")?;
+    let input: Vec<u16> = (0..input_elements)
+        .map(|index| {
+            let signed = i32::try_from((index * 29 + 17) % 257).expect("bounded input") - 128;
+            glm_format::f32_to_f16_bits(signed as f32 / 512.0)
+        })
+        .collect();
+    let fixture = glm_cuda::NativeExl3Fixture::from_source(&tensor)?;
+    let config = glm_cuda::Fc1BenchmarkConfig {
+        warmup_iterations: case.warmup_iterations,
+        measured_iterations: case.measured_iterations,
+    };
+    let latency = if profiler_capture {
+        fixture.profile(&input, case.rows, config)?;
+        None
+    } else {
+        Some(profile::LatencyDistribution::from_microseconds(
+            fixture
+                .benchmark(&input, case.rows, config)?
+                .projection_samples_us,
+        )?)
+    };
+    let output = fixture.run(&input, case.rows)?;
+    let input_bytes = bytes_for_elements(input.len(), 2)?;
+    let packed_value_bytes = bytes_for_elements(tensor.trellis.len(), 2)?;
+    let packed_scale_bytes = bytes_for_elements(
+        tensor
+            .suh
+            .len()
+            .checked_add(tensor.svh.len())
+            .ok_or("EXL3 rotation length overflow")?,
+        2,
+    )?;
+    let output_bytes = bytes_for_elements(output.len(), 2)?;
+    let temporary_bytes = exl3_workspace_bytes(case.rows, logical_k, logical_n)?;
+    let contract_read_bytes = checked_sum(&[
+        input_bytes,
+        packed_value_bytes,
+        packed_scale_bytes,
+        temporary_bytes,
+    ])?;
+    let contract_write_bytes = checked_sum(&[output_bytes, temporary_bytes])?;
+    let ledger = profile::ByteLedger {
+        input_bytes,
+        packed_value_bytes,
+        packed_scale_bytes,
+        metadata_bytes: 0,
+        output_bytes,
+        temporary_bytes,
+        contract_read_bytes,
+        contract_write_bytes,
+    };
+    build_profile_report(
+        case,
+        profiler_capture,
+        usize::try_from(case.rows)?,
+        1,
+        u16_hash(&output),
+        None,
+        latency,
+        ledger,
+        EXL3_KERNEL_ABI,
+    )
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn nvfp4_profile_byte_ledger(
+    input: &[u16],
+    packed: &PackedNvfp4,
+    assignments: usize,
+    active_experts: usize,
+    output_bytes: usize,
+    temporary_bytes: usize,
+) -> Result<profile::ByteLedger, Box<dyn std::error::Error>> {
+    let input_bytes = bytes_for_elements(input.len(), 2)?;
+    let packed_value_bytes = bytes_for_elements(packed.values.len(), active_experts)?;
+    let packed_scale_bytes = bytes_for_elements(packed.scales.len(), active_experts)?;
+    let metadata_bytes = bytes_for_elements(assignments, 11)?
+        .checked_add(bytes_for_elements(257, 4)?)
+        .ok_or("route metadata byte overflow")?;
+    let output_bytes = u64::try_from(output_bytes)?;
+    let temporary_bytes = u64::try_from(temporary_bytes)?;
+    let contract_read_bytes = checked_sum(&[
+        input_bytes,
+        packed_value_bytes,
+        packed_scale_bytes,
+        metadata_bytes,
+        temporary_bytes,
+    ])?;
+    let contract_write_bytes = checked_sum(&[output_bytes, temporary_bytes])?;
+    Ok(profile::ByteLedger {
+        input_bytes,
+        packed_value_bytes,
+        packed_scale_bytes,
+        metadata_bytes,
+        output_bytes,
+        temporary_bytes,
+        contract_read_bytes,
+        contract_write_bytes,
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn bytes_for_elements(
+    elements: usize,
+    bytes_each: usize,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(u64::try_from(
+        elements
+            .checked_mul(bytes_each)
+            .ok_or("profile byte multiplication overflow")?,
+    )?)
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn checked_sum(values: &[u64]) -> Result<u64, Box<dyn std::error::Error>> {
+    values.iter().try_fold(0_u64, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or_else(|| "profile byte addition overflow".into())
+    })
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[allow(clippy::too_many_arguments)]
+fn build_profile_report(
+    case: profile::ProfileCaseSpec,
+    profiler_capture: bool,
+    assignments: usize,
+    active_experts: usize,
+    output_sha256: String,
+    routing_host: Option<profile::LatencyDistribution>,
+    latency: Option<profile::LatencyDistribution>,
+    byte_ledger: profile::ByteLedger,
+    kernel_abi: &'static str,
+) -> Result<GpuProfileCaseReport, Box<dyn std::error::Error>> {
+    let p50_contract_gib_per_second = latency
+        .as_ref()
+        .map(|distribution| byte_ledger.p50_gib_per_second(distribution))
+        .transpose()?;
+    Ok(GpuProfileCaseReport {
+        schema: "glmaxx.sm120-profile-case.v1",
+        kernel_abi,
+        case,
+        execution: if profiler_capture {
+            "counter-or-trace-replay-without-CUDA-event-timing"
+        } else {
+            "retained-per-launch-CUDA-event-timing-without-profiler"
+        },
+        assignments,
+        active_experts,
+        output_sha256,
+        routing_host,
+        latency,
+        byte_ledger,
+        p50_contract_gib_per_second,
+        nvtx_root_range: "glmaxx-profile",
+        cuda_profiler_api_capture: profiler_capture,
+        runtime_weight_repack_bytes: 0,
+        persistent_dequant_bytes: 0,
+    })
 }
 
 #[cfg(feature = "cuda-ffi")]
@@ -3730,8 +4441,16 @@ fn gpu_matrix(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error
     let constants = ModelConstants::default();
     let n = constants.local_gate_up_rows as usize;
     let k = constants.hidden as usize;
-    let max_rows = *PREFILL_ROWS.last().ok_or("no prefill row bucket")?;
-    let row_buckets: Vec<usize> = DECODE_ROWS.into_iter().chain(PREFILL_ROWS).collect();
+    let max_rows = usize::try_from(
+        *profile::PROFILE_PREFILL_ROWS
+            .last()
+            .ok_or("no prefill row bucket")?,
+    )?;
+    let row_buckets: Vec<usize> = profile::PROFILE_DECODE_ROWS
+        .into_iter()
+        .chain(profile::PROFILE_PREFILL_ROWS)
+        .map(|rows| usize::try_from(rows).expect("profile rows fit usize"))
+        .collect();
     let mut positive_cases = 0_usize;
     let mut negative_route_cases = 0_usize;
     let mut failed_elements = 0_usize;
@@ -4181,7 +4900,7 @@ fn gpu_grouped_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error
                 &route_slots,
             )?;
             let report = GpuGroupedBenchmarkCase {
-                schema: "glmaxx.sm120-fc1-grouped-benchmark-case.v1",
+                schema: "glmaxx.sm120-fc1-grouped-benchmark-case.v2",
                 kernel_abi: KERNEL_ABI,
                 backend: "cutlass-sm120-nvfp4-expert-grouped-materialized-gate-up-control",
                 rows,
@@ -4192,10 +4911,18 @@ fn gpu_grouped_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error
                 output_sha256: u16_hash(&output),
                 warmup_iterations: timing.warmup_iterations,
                 measured_iterations: timing.measured_iterations,
-                activation_quantization_us: timing.activation_quantization_us,
-                grouped_core_swiglu_us: timing.grouped_core_swiglu_us,
-                inclusive_operator_us: timing.inclusive_operator_us,
-                host_enqueue_us: timing.host_enqueue_us,
+                activation_quantization: profile::LatencyDistribution::from_microseconds(
+                    timing.activation_quantization_samples_us,
+                )?,
+                grouped_core_swiglu: profile::LatencyDistribution::from_microseconds(
+                    timing.grouped_core_swiglu_samples_us,
+                )?,
+                inclusive_operator: profile::LatencyDistribution::from_microseconds(
+                    timing.inclusive_operator_samples_us,
+                )?,
+                host_enqueue: profile::LatencyDistribution::from_microseconds(
+                    timing.host_enqueue_samples_us,
+                )?,
                 route_compaction: "CPU fixture control outside timed CUDA boundary",
                 grouped_metadata_preparation: "one host-to-device active-expert copy and device metadata build before warmup",
                 runtime_weight_repack_bytes: 0,
@@ -4210,7 +4937,7 @@ fn gpu_grouped_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error
     }
 
     let summary = GpuGroupedBenchmarkSummary {
-        schema: "glmaxx.sm120-fc1-grouped-benchmark-summary.v1",
+        schema: "glmaxx.sm120-fc1-grouped-benchmark-summary.v2",
         kernel_abi: KERNEL_ABI,
         backend: "cutlass-sm120-nvfp4-expert-grouped-materialized-gate-up-control",
         cases: row_buckets.len() * BENCHMARK_ROUTES.len(),
@@ -4248,8 +4975,16 @@ fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
     let constants = ModelConstants::default();
     let n = constants.local_gate_up_rows as usize;
     let k = constants.hidden as usize;
-    let max_rows = *PREFILL_ROWS.last().ok_or("no prefill row bucket")?;
-    let row_buckets: Vec<usize> = DECODE_ROWS.into_iter().chain(PREFILL_ROWS).collect();
+    let max_rows = usize::try_from(
+        *profile::PROFILE_PREFILL_ROWS
+            .last()
+            .ok_or("no prefill row bucket")?,
+    )?;
+    let row_buckets: Vec<usize> = profile::PROFILE_DECODE_ROWS
+        .into_iter()
+        .chain(profile::PROFILE_PREFILL_ROWS)
+        .map(|rows| usize::try_from(rows).expect("profile rows fit usize"))
+        .collect();
     let fixture = generate_numerical_fixture(NumericalCase::DeterministicRandom, max_rows, n, k)?;
     let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
     let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
@@ -4281,7 +5016,7 @@ fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
             &route_slots,
         )?;
         let report = GpuBenchmarkCase {
-            schema: "glmaxx.sm120-fc1-benchmark-case.v1",
+            schema: "glmaxx.sm120-fc1-benchmark-case.v2",
             kernel_abi: KERNEL_ABI,
             backend: "direct-nvfp4-cuda-core-baseline",
             rows,
@@ -4291,11 +5026,21 @@ fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
             output_sha256: u16_hash(&output),
             warmup_iterations: timing.warmup_iterations,
             measured_iterations: timing.measured_iterations,
-            activation_quantization_us: timing.activation_quantization_us,
-            core_swiglu_us: timing.core_swiglu_us,
-            inclusive_operator_us: timing.inclusive_operator_us,
-            graph_inclusive_us: timing.graph_inclusive_us,
-            host_enqueue_us: timing.host_enqueue_us,
+            activation_quantization: profile::LatencyDistribution::from_microseconds(
+                timing.activation_quantization_samples_us,
+            )?,
+            core_swiglu: profile::LatencyDistribution::from_microseconds(
+                timing.core_swiglu_samples_us,
+            )?,
+            inclusive_operator: profile::LatencyDistribution::from_microseconds(
+                timing.inclusive_operator_samples_us,
+            )?,
+            graph_inclusive: profile::LatencyDistribution::from_microseconds(
+                timing.graph_inclusive_samples_us,
+            )?,
+            host_enqueue: profile::LatencyDistribution::from_microseconds(
+                timing.host_enqueue_samples_us,
+            )?,
             route_compaction: "CPU fixture control outside timed CUDA boundary",
             runtime_weight_repack_bytes: 0,
             persistent_dequant_bytes: 0,
@@ -4307,7 +5052,7 @@ fn gpu_bench(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>
     }
 
     let summary = GpuBenchmarkSummary {
-        schema: "glmaxx.sm120-fc1-benchmark-summary.v1",
+        schema: "glmaxx.sm120-fc1-benchmark-summary.v2",
         kernel_abi: KERNEL_ABI,
         backend: "direct-nvfp4-cuda-core-baseline",
         cases: row_buckets.len(),
@@ -4641,6 +5386,23 @@ fn validate_empty_external_gpu_directory(
         .canonicalize()?;
     if evidence_directory.canonicalize()?.starts_with(repository) {
         return Err("raw GPU evidence must be outside the Git repository".into());
+    }
+    Ok(())
+}
+
+fn validate_external_profile_evidence_root(
+    evidence_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !evidence_root.is_dir() {
+        return Err("profile evidence root must already be a directory".into());
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("cannot resolve repository root")?
+        .canonicalize()?;
+    if evidence_root.canonicalize()?.starts_with(repository) {
+        return Err("profile evidence root must be outside the Git repository".into());
     }
     Ok(())
 }

@@ -30,6 +30,7 @@ set_target_properties(glmaxx_sm120 PROPERTIES
   CUDA_ARCHITECTURES OFF
   CUDA_SEPARABLE_COMPILATION OFF
   POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(glmaxx_sm120 PRIVATE ${CMAKE_DL_LIBS})
 
 add_executable(glmaxx_cutlass_layout_probe tools/cutlass_layout_probe.cu)
 target_include_directories(glmaxx_cutlass_layout_probe PRIVATE

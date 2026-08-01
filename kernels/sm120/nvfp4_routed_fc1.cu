@@ -7,7 +7,9 @@
 #include "glmaxx_kernel.h"
 
 #include <cuda_bf16.h>
+#include <cuda_profiler_api.h>
 #include <cuda_runtime_api.h>
+#include <nvtx3/nvToolsExt.h>
 
 #include <cutlass/float8.h>
 #include <cutlass/float_subbyte.h>
@@ -754,4 +756,26 @@ extern "C" int32_t glmaxx_event_destroy(uint64_t event) {
   }
   return static_cast<int32_t>(
       cudaEventDestroy(reinterpret_cast<cudaEvent_t>(event)));
+}
+
+extern "C" int32_t glmaxx_profiler_start(void) {
+  return static_cast<int32_t>(cudaProfilerStart());
+}
+
+extern "C" int32_t glmaxx_profiler_stop(void) {
+  return static_cast<int32_t>(cudaProfilerStop());
+}
+
+extern "C" int32_t glmaxx_nvtx_range_push(const char* message) {
+  if (message == nullptr || message[0] == '\0') {
+    return static_cast<int32_t>(cudaErrorInvalidValue);
+  }
+  return nvtxRangePushA(message) < 0
+             ? static_cast<int32_t>(cudaErrorInvalidValue)
+             : static_cast<int32_t>(cudaSuccess);
+}
+
+extern "C" int32_t glmaxx_nvtx_range_pop(void) {
+  return nvtxRangePop() < 0 ? static_cast<int32_t>(cudaErrorInvalidValue)
+                            : static_cast<int32_t>(cudaSuccess);
 }

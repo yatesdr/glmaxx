@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::ThreadId;
@@ -81,6 +81,17 @@ unsafe extern "C" {
         stream: *mut c_void,
         error_code: *mut i32,
     ) -> i32;
+    fn glmaxx_nvfp4_fc2_quantize_launch(
+        descriptor: *const Fc2Descriptor,
+        stream: *mut c_void,
+    ) -> i32;
+    fn glmaxx_nvfp4_fc2_grouped_quantize_launch(
+        descriptor: *const Fc2Descriptor,
+        stream: *mut c_void,
+    ) -> i32;
+    fn glmaxx_nvfp4_fc2_core_launch(descriptor: *const Fc2Descriptor, stream: *mut c_void) -> i32;
+    fn glmaxx_nvfp4_fc2_reduce_launch(descriptor: *const Fc2Descriptor, stream: *mut c_void)
+    -> i32;
     fn glmaxx_nvfp4_fc2_dense_control_launch(
         descriptor: *const Fc2Descriptor,
         expert: u32,
@@ -106,6 +117,10 @@ unsafe extern "C" {
     fn glmaxx_event_synchronize(event: u64) -> i32;
     fn glmaxx_event_elapsed_ms(start: u64, end: u64, milliseconds: *mut f32) -> i32;
     fn glmaxx_event_destroy(event: u64) -> i32;
+    fn glmaxx_profiler_start() -> i32;
+    fn glmaxx_profiler_stop() -> i32;
+    fn glmaxx_nvtx_range_push(message: *const c_char) -> i32;
+    fn glmaxx_nvtx_range_pop() -> i32;
     fn glmaxx_nvfp4_routed_fc1_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_grouped_workspace_bytes(assignments: u32) -> u64;
     fn glmaxx_nvfp4_routed_fc2_workspace_bytes(rows: u32, assignments: u32) -> u64;
@@ -922,11 +937,11 @@ pub struct GraphReplay {
 pub struct Fc1Timing {
     pub warmup_iterations: u32,
     pub measured_iterations: u32,
-    pub activation_quantization_us: f32,
-    pub core_swiglu_us: f32,
-    pub inclusive_operator_us: f32,
-    pub graph_inclusive_us: f32,
-    pub host_enqueue_us: f64,
+    pub activation_quantization_samples_us: Vec<f64>,
+    pub core_swiglu_samples_us: Vec<f64>,
+    pub inclusive_operator_samples_us: Vec<f64>,
+    pub graph_inclusive_samples_us: Vec<f64>,
+    pub host_enqueue_samples_us: Vec<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -934,10 +949,45 @@ pub struct GroupedFc1Timing {
     pub warmup_iterations: u32,
     pub measured_iterations: u32,
     pub active_experts: u32,
-    pub activation_quantization_us: f32,
-    pub grouped_core_swiglu_us: f32,
-    pub inclusive_operator_us: f32,
-    pub host_enqueue_us: f64,
+    pub activation_quantization_samples_us: Vec<f64>,
+    pub grouped_core_swiglu_samples_us: Vec<f64>,
+    pub inclusive_operator_samples_us: Vec<f64>,
+    pub host_enqueue_samples_us: Vec<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Fc1ProfilePhase {
+    Quantize,
+    CoreSwiglu,
+    Inclusive,
+    GraphInclusive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Fc2ProfilePhase {
+    Quantize,
+    Core,
+    Reduce,
+    Inclusive,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fc2Timing {
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+    pub activation_quantization_samples_us: Vec<f64>,
+    pub core_samples_us: Vec<f64>,
+    pub reduce_samples_us: Vec<f64>,
+    pub inclusive_operator_samples_us: Vec<f64>,
+    pub host_enqueue_samples_us: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Exl3Timing {
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+    pub projection_samples_us: Vec<f64>,
+    pub host_enqueue_samples_us: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1174,7 +1224,9 @@ impl NativeFc1Fixture {
         launch_native_grouped_control(&execution.descriptor, &active_experts, self.stream.0, true)?;
         execution.download(self.stream.0)
     }
+}
 
+impl NativeFc1Fixture {
     pub fn benchmark(
         &self,
         input_bf16: &[u16],
@@ -1207,7 +1259,7 @@ impl NativeFc1Fixture {
         }
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
-        let activation_quantization_us =
+        let activation_quantization_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 // SAFETY: the descriptor and all referenced allocations are
                 // live for the complete benchmark.
@@ -1218,17 +1270,18 @@ impl NativeFc1Fixture {
                     )
                 })
             })?;
-        let core_swiglu_us = time_cuda_launches(self.stream.0, config.measured_iterations, || {
-            // SAFETY: quantization above populated the activation buffers and
-            // the descriptor remains live.
-            check(unsafe {
-                glmaxx_nvfp4_core_swiglu_launch(
-                    std::ptr::from_ref(&execution.descriptor),
-                    self.stream.0 as *mut c_void,
-                )
-            })
-        })?;
-        let inclusive_operator_us =
+        let core_swiglu_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                // SAFETY: quantization above populated the activation buffers and
+                // the descriptor remains live.
+                check(unsafe {
+                    glmaxx_nvfp4_core_swiglu_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                })
+            })?;
+        let inclusive_operator_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 launch_native_fc1(&execution.descriptor, self.stream.0)
             })?;
@@ -1247,28 +1300,25 @@ impl NativeFc1Fixture {
             return Err(KernelError::Driver(-1));
         }
         let graph = NativeGraph(graph_exec);
-        let graph_inclusive_us =
+        let graph_inclusive_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 // SAFETY: graph and stream are caller-owned and live.
                 check(unsafe { glmaxx_graph_exec_launch(graph.0, self.stream.0) })
             })?;
 
-        let enqueue_start = Instant::now();
-        for _ in 0..config.measured_iterations {
-            launch_native_fc1(&execution.descriptor, self.stream.0)?;
-        }
-        let host_enqueue_us = enqueue_start.elapsed().as_secs_f64() * 1_000_000.0
-            / f64::from(config.measured_iterations);
+        let host_enqueue_samples_us = time_host_launches(config.measured_iterations, || {
+            launch_native_fc1(&execution.descriptor, self.stream.0)
+        })?;
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
         Ok(Fc1Timing {
             warmup_iterations: config.warmup_iterations,
             measured_iterations: config.measured_iterations,
-            activation_quantization_us,
-            core_swiglu_us,
-            inclusive_operator_us,
-            graph_inclusive_us,
-            host_enqueue_us,
+            activation_quantization_samples_us,
+            core_swiglu_samples_us,
+            inclusive_operator_samples_us,
+            graph_inclusive_samples_us,
+            host_enqueue_samples_us,
         })
     }
 
@@ -1314,7 +1364,7 @@ impl NativeFc1Fixture {
         }
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
-        let activation_quantization_us =
+        let activation_quantization_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 // SAFETY: the descriptor and all referenced allocations are
                 // live for the complete benchmark.
@@ -1325,7 +1375,7 @@ impl NativeFc1Fixture {
                     )
                 })
             })?;
-        let grouped_core_swiglu_us =
+        let grouped_core_swiglu_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 launch_native_grouped_prepared(
                     &execution.descriptor,
@@ -1334,7 +1384,7 @@ impl NativeFc1Fixture {
                     false,
                 )
             })?;
-        let inclusive_operator_us =
+        let inclusive_operator_samples_us =
             time_cuda_launches(self.stream.0, config.measured_iterations, || {
                 launch_native_grouped_prepared(
                     &execution.descriptor,
@@ -1344,27 +1394,298 @@ impl NativeFc1Fixture {
                 )
             })?;
 
-        let enqueue_start = Instant::now();
-        for _ in 0..config.measured_iterations {
+        let host_enqueue_samples_us = time_host_launches(config.measured_iterations, || {
             launch_native_grouped_prepared(
                 &execution.descriptor,
                 active_expert_count,
                 self.stream.0,
                 true,
-            )?;
-        }
-        let host_enqueue_us = enqueue_start.elapsed().as_secs_f64() * 1_000_000.0
-            / f64::from(config.measured_iterations);
+            )
+        })?;
         check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
 
         Ok(GroupedFc1Timing {
             warmup_iterations: config.warmup_iterations,
             measured_iterations: config.measured_iterations,
             active_experts: active_expert_count,
-            activation_quantization_us,
-            grouped_core_swiglu_us,
-            inclusive_operator_us,
-            host_enqueue_us,
+            activation_quantization_samples_us,
+            grouped_core_swiglu_samples_us,
+            inclusive_operator_samples_us,
+            host_enqueue_samples_us,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn profile_direct(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        phase: Fc1ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<(), KernelError> {
+        validate_benchmark_config(config)?;
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        let graph = if phase == Fc1ProfilePhase::GraphInclusive {
+            let mut graph_exec = 0_u64;
+            // SAFETY: the descriptor and every allocation referenced by the
+            // captured graph remain live for the complete profile call.
+            check(unsafe {
+                glmaxx_nvfp4_routed_fc1_graph_instantiate(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                    std::ptr::from_mut(&mut graph_exec),
+                )
+            })?;
+            if graph_exec == 0 {
+                return Err(KernelError::Driver(-1));
+            }
+            Some(NativeGraph(graph_exec))
+        } else {
+            None
+        };
+        if phase == Fc1ProfilePhase::CoreSwiglu {
+            // Populate the activation quantization buffers outside the
+            // profiler capture so the selected range contains only the core.
+            check(unsafe {
+                glmaxx_nvfp4_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+            check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        }
+        let range_name = match phase {
+            Fc1ProfilePhase::Quantize => "glmaxx.fc1.quantize",
+            Fc1ProfilePhase::CoreSwiglu => "glmaxx.fc1.core-swiglu",
+            Fc1ProfilePhase::Inclusive => "glmaxx.fc1.inclusive",
+            Fc1ProfilePhase::GraphInclusive => "glmaxx.fc1.graph-inclusive",
+        };
+        capture_cuda_launches(self.stream.0, config, range_name, || match phase {
+            Fc1ProfilePhase::Quantize => check(unsafe {
+                glmaxx_nvfp4_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::CoreSwiglu => check(unsafe {
+                glmaxx_nvfp4_core_swiglu_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::Inclusive => launch_native_fc1(&execution.descriptor, self.stream.0),
+            Fc1ProfilePhase::GraphInclusive => check(unsafe {
+                glmaxx_graph_exec_launch(graph.as_ref().ok_or(KernelError::Shape)?.0, self.stream.0)
+            }),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn profile_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        phase: Fc1ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<(), KernelError> {
+        validate_benchmark_config(config)?;
+        if phase == Fc1ProfilePhase::GraphInclusive {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let active_experts = active_experts_for_grouped(route_experts, &expert_offsets)?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        prepare_native_grouped_control(&execution.descriptor, &active_experts, self.stream.0)?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        if phase == Fc1ProfilePhase::CoreSwiglu {
+            check(unsafe {
+                glmaxx_nvfp4_grouped_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+            check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        }
+        let range_name = match phase {
+            Fc1ProfilePhase::Quantize => "glmaxx.fc1.grouped-quantize",
+            Fc1ProfilePhase::CoreSwiglu => "glmaxx.fc1.grouped-core-swiglu",
+            Fc1ProfilePhase::Inclusive => "glmaxx.fc1.grouped-inclusive",
+            Fc1ProfilePhase::GraphInclusive => return Err(KernelError::Shape),
+        };
+        capture_cuda_launches(self.stream.0, config, range_name, || match phase {
+            Fc1ProfilePhase::Quantize => check(unsafe {
+                glmaxx_nvfp4_grouped_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::CoreSwiglu => launch_native_grouped_prepared(
+                &execution.descriptor,
+                active_expert_count,
+                self.stream.0,
+                false,
+            ),
+            Fc1ProfilePhase::Inclusive => launch_native_grouped_prepared(
+                &execution.descriptor,
+                active_expert_count,
+                self.stream.0,
+                true,
+            ),
+            Fc1ProfilePhase::GraphInclusive => Err(KernelError::Shape),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn time_direct_phase(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        phase: Fc1ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Vec<f64>, KernelError> {
+        validate_benchmark_config(config)?;
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        let graph = if phase == Fc1ProfilePhase::GraphInclusive {
+            let mut graph_exec = 0_u64;
+            check(unsafe {
+                glmaxx_nvfp4_routed_fc1_graph_instantiate(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                    std::ptr::from_mut(&mut graph_exec),
+                )
+            })?;
+            if graph_exec == 0 {
+                return Err(KernelError::Driver(-1));
+            }
+            Some(NativeGraph(graph_exec))
+        } else {
+            None
+        };
+        if phase == Fc1ProfilePhase::CoreSwiglu {
+            check(unsafe {
+                glmaxx_nvfp4_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+            check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        }
+        time_cuda_case(self.stream.0, config, || match phase {
+            Fc1ProfilePhase::Quantize => check(unsafe {
+                glmaxx_nvfp4_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::CoreSwiglu => check(unsafe {
+                glmaxx_nvfp4_core_swiglu_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::Inclusive => launch_native_fc1(&execution.descriptor, self.stream.0),
+            Fc1ProfilePhase::GraphInclusive => check(unsafe {
+                glmaxx_graph_exec_launch(graph.as_ref().ok_or(KernelError::Shape)?.0, self.stream.0)
+            }),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn time_grouped_phase(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        phase: Fc1ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Vec<f64>, KernelError> {
+        validate_benchmark_config(config)?;
+        if phase == Fc1ProfilePhase::GraphInclusive {
+            return Err(KernelError::Shape);
+        }
+        let expert_offsets =
+            self.validate_case(input_bf16, rows, route_experts, route_tokens, route_slots)?;
+        let active_experts = active_experts_for_grouped(route_experts, &expert_offsets)?;
+        let active_expert_count =
+            u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            &expert_offsets,
+        )?;
+        prepare_native_grouped_control(&execution.descriptor, &active_experts, self.stream.0)?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        if phase == Fc1ProfilePhase::CoreSwiglu {
+            check(unsafe {
+                glmaxx_nvfp4_grouped_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+            check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        }
+        time_cuda_case(self.stream.0, config, || match phase {
+            Fc1ProfilePhase::Quantize => check(unsafe {
+                glmaxx_nvfp4_grouped_quantize_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc1ProfilePhase::CoreSwiglu => launch_native_grouped_prepared(
+                &execution.descriptor,
+                active_expert_count,
+                self.stream.0,
+                false,
+            ),
+            Fc1ProfilePhase::Inclusive => launch_native_grouped_prepared(
+                &execution.descriptor,
+                active_expert_count,
+                self.stream.0,
+                true,
+            ),
+            Fc1ProfilePhase::GraphInclusive => Err(KernelError::Shape),
         })
     }
 
@@ -1460,7 +1781,427 @@ impl NativeFc1Fixture {
         }
         execution.download(self.stream.0)
     }
+}
 
+impl NativeFc2Fixture {
+    #[allow(clippy::too_many_arguments)]
+    pub fn benchmark(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Fc2Timing, KernelError> {
+        self.benchmark_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            config,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn benchmark_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Fc2Timing, KernelError> {
+        self.benchmark_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            config,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn benchmark_impl(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        config: Fc1BenchmarkConfig,
+        grouped: bool,
+    ) -> Result<Fc2Timing, KernelError> {
+        validate_benchmark_config(config)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let active_experts = grouped
+            .then(|| fc2_active_experts(route_experts))
+            .transpose()?;
+        for _ in 0..config.warmup_iterations {
+            launch_fc2_selected(
+                &execution.descriptor,
+                active_experts.as_deref(),
+                self.stream.0,
+            )?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+
+        let activation_quantization_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                check(unsafe {
+                    if grouped {
+                        glmaxx_nvfp4_fc2_grouped_quantize_launch(
+                            std::ptr::from_ref(&execution.descriptor),
+                            self.stream.0 as *mut c_void,
+                        )
+                    } else {
+                        glmaxx_nvfp4_fc2_quantize_launch(
+                            std::ptr::from_ref(&execution.descriptor),
+                            self.stream.0 as *mut c_void,
+                        )
+                    }
+                })
+            })?;
+        let core_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                check(unsafe {
+                    glmaxx_nvfp4_fc2_core_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                })
+            })?;
+        let reduce_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                check(unsafe {
+                    glmaxx_nvfp4_fc2_reduce_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                })
+            })?;
+        let inclusive_operator_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                launch_fc2_selected(
+                    &execution.descriptor,
+                    active_experts.as_deref(),
+                    self.stream.0,
+                )
+            })?;
+        let host_enqueue_samples_us = time_host_launches(config.measured_iterations, || {
+            launch_fc2_selected(
+                &execution.descriptor,
+                active_experts.as_deref(),
+                self.stream.0,
+            )
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        Ok(Fc2Timing {
+            warmup_iterations: config.warmup_iterations,
+            measured_iterations: config.measured_iterations,
+            activation_quantization_samples_us,
+            core_samples_us,
+            reduce_samples_us,
+            inclusive_operator_samples_us,
+            host_enqueue_samples_us,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn profile(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<(), KernelError> {
+        self.profile_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            phase,
+            config,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn profile_grouped_control(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<(), KernelError> {
+        self.profile_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            phase,
+            config,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn profile_impl(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+        grouped: bool,
+    ) -> Result<(), KernelError> {
+        validate_benchmark_config(config)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let active_experts = grouped
+            .then(|| fc2_active_experts(route_experts))
+            .transpose()?;
+        if phase != Fc2ProfilePhase::Quantize {
+            check(unsafe {
+                if grouped {
+                    glmaxx_nvfp4_fc2_grouped_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                } else {
+                    glmaxx_nvfp4_fc2_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                }
+            })?;
+        }
+        if phase == Fc2ProfilePhase::Reduce {
+            check(unsafe {
+                glmaxx_nvfp4_fc2_core_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        let range_name = match (grouped, phase) {
+            (false, Fc2ProfilePhase::Quantize) => "glmaxx.fc2.quantize",
+            (true, Fc2ProfilePhase::Quantize) => "glmaxx.fc2.grouped-quantize",
+            (false, Fc2ProfilePhase::Core) => "glmaxx.fc2.core",
+            (true, Fc2ProfilePhase::Core) => "glmaxx.fc2.grouped-core",
+            (false, Fc2ProfilePhase::Reduce) => "glmaxx.fc2.reduce",
+            (true, Fc2ProfilePhase::Reduce) => "glmaxx.fc2.grouped-reduce",
+            (false, Fc2ProfilePhase::Inclusive) => "glmaxx.fc2.inclusive",
+            (true, Fc2ProfilePhase::Inclusive) => "glmaxx.fc2.grouped-inclusive",
+        };
+        capture_cuda_launches(self.stream.0, config, range_name, || match phase {
+            Fc2ProfilePhase::Quantize => check(unsafe {
+                if grouped {
+                    glmaxx_nvfp4_fc2_grouped_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                } else {
+                    glmaxx_nvfp4_fc2_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                }
+            }),
+            Fc2ProfilePhase::Core => check(unsafe {
+                glmaxx_nvfp4_fc2_core_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc2ProfilePhase::Reduce => check(unsafe {
+                glmaxx_nvfp4_fc2_reduce_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc2ProfilePhase::Inclusive => launch_fc2_selected(
+                &execution.descriptor,
+                active_experts.as_deref(),
+                self.stream.0,
+            ),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn time_phase(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Vec<f64>, KernelError> {
+        self.time_phase_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            phase,
+            config,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn time_grouped_phase(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Vec<f64>, KernelError> {
+        self.time_phase_impl(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+            phase,
+            config,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn time_phase_impl(
+        &self,
+        input_bf16: &[u16],
+        rows: u32,
+        route_experts: &[u16],
+        route_tokens: &[u32],
+        route_slots: &[u8],
+        route_weights: &[f32],
+        phase: Fc2ProfilePhase,
+        config: Fc1BenchmarkConfig,
+        grouped: bool,
+    ) -> Result<Vec<f64>, KernelError> {
+        validate_benchmark_config(config)?;
+        let execution = self.prepare_case(
+            input_bf16,
+            rows,
+            route_experts,
+            route_tokens,
+            route_slots,
+            route_weights,
+        )?;
+        let active_experts = grouped
+            .then(|| fc2_active_experts(route_experts))
+            .transpose()?;
+        if phase != Fc2ProfilePhase::Quantize {
+            check(unsafe {
+                if grouped {
+                    glmaxx_nvfp4_fc2_grouped_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                } else {
+                    glmaxx_nvfp4_fc2_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                }
+            })?;
+        }
+        if phase == Fc2ProfilePhase::Reduce {
+            check(unsafe {
+                glmaxx_nvfp4_fc2_core_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            })?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        time_cuda_case(self.stream.0, config, || match phase {
+            Fc2ProfilePhase::Quantize => check(unsafe {
+                if grouped {
+                    glmaxx_nvfp4_fc2_grouped_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                } else {
+                    glmaxx_nvfp4_fc2_quantize_launch(
+                        std::ptr::from_ref(&execution.descriptor),
+                        self.stream.0 as *mut c_void,
+                    )
+                }
+            }),
+            Fc2ProfilePhase::Core => check(unsafe {
+                glmaxx_nvfp4_fc2_core_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc2ProfilePhase::Reduce => check(unsafe {
+                glmaxx_nvfp4_fc2_reduce_launch(
+                    std::ptr::from_ref(&execution.descriptor),
+                    self.stream.0 as *mut c_void,
+                )
+            }),
+            Fc2ProfilePhase::Inclusive => launch_fc2_selected(
+                &execution.descriptor,
+                active_experts.as_deref(),
+                self.stream.0,
+            ),
+        })
+    }
+}
+
+impl NativeFc1Fixture {
     fn prepare_case(
         &self,
         input_bf16: &[u16],
@@ -1960,6 +2701,47 @@ impl NativeExl3Fixture {
         })
     }
 
+    pub fn benchmark(
+        &self,
+        input_f16: &[u16],
+        rows: u32,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<Exl3Timing, KernelError> {
+        validate_benchmark_config(config)?;
+        let execution = self.prepare_case(input_f16, rows)?;
+        for _ in 0..config.warmup_iterations {
+            launch_native_exl3(&execution.descriptor, self.stream.0)?;
+        }
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        let projection_samples_us =
+            time_cuda_launches(self.stream.0, config.measured_iterations, || {
+                launch_native_exl3(&execution.descriptor, self.stream.0)
+            })?;
+        let host_enqueue_samples_us = time_host_launches(config.measured_iterations, || {
+            launch_native_exl3(&execution.descriptor, self.stream.0)
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })?;
+        Ok(Exl3Timing {
+            warmup_iterations: config.warmup_iterations,
+            measured_iterations: config.measured_iterations,
+            projection_samples_us,
+            host_enqueue_samples_us,
+        })
+    }
+
+    pub fn profile(
+        &self,
+        input_f16: &[u16],
+        rows: u32,
+        config: Fc1BenchmarkConfig,
+    ) -> Result<(), KernelError> {
+        validate_benchmark_config(config)?;
+        let execution = self.prepare_case(input_f16, rows)?;
+        capture_cuda_launches(self.stream.0, config, "glmaxx.exl3.projection", || {
+            launch_native_exl3(&execution.descriptor, self.stream.0)
+        })
+    }
+
     fn prepare_case(&self, input_f16: &[u16], rows: u32) -> Result<NativeExl3Case, KernelError> {
         let expected_input = usize::try_from(rows)
             .map_err(|_| KernelError::Overflow)?
@@ -2115,6 +2897,54 @@ fn launch_native_fc2(descriptor: &Fc2Descriptor, stream: u64) -> Result<(), Kern
     }
 }
 
+fn fc2_active_experts(route_experts: &[u16]) -> Result<Vec<u16>, KernelError> {
+    let mut active = Vec::new();
+    let mut previous = None;
+    for &expert in route_experts {
+        if previous.is_some_and(|prior| prior > expert) {
+            return Err(KernelError::Shape);
+        }
+        if previous != Some(expert) {
+            active.push(expert);
+        }
+        previous = Some(expert);
+    }
+    if active.is_empty() {
+        Err(KernelError::Shape)
+    } else {
+        Ok(active)
+    }
+}
+
+fn launch_fc2_selected(
+    descriptor: &Fc2Descriptor,
+    active_experts: Option<&[u16]>,
+    stream: u64,
+) -> Result<(), KernelError> {
+    let Some(active_experts) = active_experts else {
+        return launch_native_fc2(descriptor, stream);
+    };
+    let active_expert_count =
+        u32::try_from(active_experts.len()).map_err(|_| KernelError::Overflow)?;
+    let mut async_error = 0_i32;
+    // SAFETY: caller keeps the sorted active-expert slice, descriptor
+    // allocations, and stream alive through synchronization.
+    check(unsafe {
+        glmaxx_nvfp4_fc2_grouped_control_launch(
+            std::ptr::from_ref(descriptor),
+            active_experts.as_ptr(),
+            active_expert_count,
+            stream as *mut c_void,
+            std::ptr::from_mut(&mut async_error),
+        )
+    })?;
+    if async_error == 0 {
+        Ok(())
+    } else {
+        Err(KernelError::Async(async_error))
+    }
+}
+
 fn launch_native_exl3(descriptor: &Exl3Descriptor, stream: u64) -> Result<(), KernelError> {
     let mut async_error = 0_i32;
     // SAFETY: the caller keeps the descriptor allocations and stream live.
@@ -2228,16 +3058,113 @@ fn time_cuda_launches(
     stream: u64,
     iterations: u32,
     mut launch: impl FnMut() -> Result<(), KernelError>,
-) -> Result<f32, KernelError> {
-    let start = NativeEvent::create()?;
-    let end = NativeEvent::create()?;
-    start.record(stream)?;
+) -> Result<Vec<f64>, KernelError> {
+    if iterations == 0 || iterations > 10_000 {
+        return Err(KernelError::Shape);
+    }
+    let mut pairs = Vec::with_capacity(iterations as usize);
     for _ in 0..iterations {
+        let start = NativeEvent::create()?;
+        let end = NativeEvent::create()?;
+        start.record(stream)?;
+        launch()?;
+        end.record(stream)?;
+        pairs.push((start, end));
+    }
+    pairs.last().ok_or(KernelError::Shape)?.1.synchronize()?;
+    pairs
+        .iter()
+        .map(|(start, end)| Ok(f64::from(start.elapsed_ms(end)?) * 1_000.0))
+        .collect()
+}
+
+fn time_host_launches(
+    iterations: u32,
+    mut launch: impl FnMut() -> Result<(), KernelError>,
+) -> Result<Vec<f64>, KernelError> {
+    if iterations == 0 || iterations > 10_000 {
+        return Err(KernelError::Shape);
+    }
+    let mut samples = Vec::with_capacity(iterations as usize);
+    for _ in 0..iterations {
+        let start = Instant::now();
+        launch()?;
+        samples.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    Ok(samples)
+}
+
+fn time_cuda_case(
+    stream: u64,
+    config: Fc1BenchmarkConfig,
+    mut launch: impl FnMut() -> Result<(), KernelError>,
+) -> Result<Vec<f64>, KernelError> {
+    validate_benchmark_config(config)?;
+    for _ in 0..config.warmup_iterations {
         launch()?;
     }
-    end.record(stream)?;
-    end.synchronize()?;
-    Ok(start.elapsed_ms(&end)? * 1_000.0 / iterations as f32)
+    check(unsafe { glmaxx_stream_synchronize(stream) })?;
+    time_cuda_launches(stream, config.measured_iterations, launch)
+}
+
+fn validate_benchmark_config(config: Fc1BenchmarkConfig) -> Result<(), KernelError> {
+    if config.warmup_iterations == 0
+        || config.warmup_iterations > 100
+        || config.measured_iterations == 0
+        || config.measured_iterations > 10_000
+    {
+        Err(KernelError::Shape)
+    } else {
+        Ok(())
+    }
+}
+
+fn capture_cuda_launches(
+    stream: u64,
+    config: Fc1BenchmarkConfig,
+    phase_range: &str,
+    mut launch: impl FnMut() -> Result<(), KernelError>,
+) -> Result<(), KernelError> {
+    validate_benchmark_config(config)?;
+    for _ in 0..config.warmup_iterations {
+        launch()?;
+    }
+    // Keep every warmup completion outside both profiler capture and NVTX.
+    check(unsafe { glmaxx_stream_synchronize(stream) })?;
+
+    let root = CString::new("glmaxx-profile").map_err(|_| KernelError::Shape)?;
+    let phase = CString::new(phase_range).map_err(|_| KernelError::Shape)?;
+    check(unsafe { glmaxx_profiler_start() })?;
+    if let Err(error) = check(unsafe { glmaxx_nvtx_range_push(root.as_ptr()) }) {
+        let _ = check(unsafe { glmaxx_profiler_stop() });
+        return Err(error);
+    }
+    if let Err(error) = check(unsafe { glmaxx_nvtx_range_push(phase.as_ptr()) }) {
+        let _ = check(unsafe { glmaxx_nvtx_range_pop() });
+        let _ = check(unsafe { glmaxx_profiler_stop() });
+        return Err(error);
+    }
+
+    let mut result = Ok(());
+    for _ in 0..config.measured_iterations {
+        if let Err(error) = launch() {
+            result = Err(error);
+            break;
+        }
+    }
+    if result.is_ok() {
+        result = check(unsafe { glmaxx_stream_synchronize(stream) });
+    }
+    for cleanup in [
+        check(unsafe { glmaxx_nvtx_range_pop() }),
+        check(unsafe { glmaxx_nvtx_range_pop() }),
+        check(unsafe { glmaxx_profiler_stop() }),
+    ] {
+        if result.is_ok() {
+            result = cleanup;
+        }
+    }
+    result
 }
 
 fn check(status: i32) -> Result<(), KernelError> {

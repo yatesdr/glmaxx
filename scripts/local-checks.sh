@@ -8,7 +8,7 @@ proof_dir="$(mktemp -d "${TMPDIR:-/tmp}/glmaxx-local-proof.XXXXXX")"
 trap 'rm -rf "${proof_dir}"' EXIT
 
 cargo fmt --all -- --check
-cargo test --workspace --offline
+cargo test --workspace --release --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
 GLMAXX_KERNEL_LIB_DIR="${proof_dir}" \
   cargo check --offline -p glm-cli --features cuda-ffi
@@ -50,6 +50,13 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
 cargo run --offline -p glm-cli --bin glmaxx -- budget
 cargo run --offline -p glm-cli --bin glmaxx -- abi-check
 cargo run --offline -p glm-cli --bin glmaxx -- \
+  profile-plan "${proof_dir}/profile-plan-a.json"
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  profile-plan "${proof_dir}/profile-plan-b.json"
+cmp "${proof_dir}/profile-plan-a.json" "${proof_dir}/profile-plan-b.json"
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  profile-plan-validate "${proof_dir}/profile-plan-a.json"
+cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . "${proof_dir}/review-provenance.json"
 cargo run --offline -p glm-cli --bin glmaxx -- \
   engine-proof "${proof_dir}/engine-proof.json"
@@ -80,6 +87,10 @@ clang++ -std=c++17 -x c++ \
 clang -std=c11 -x c \
   -include docs/sm120-rank-executor-native-abi-v1.h \
   -fsyntax-only /dev/null
+
+for script in scripts/*.sh; do
+  bash -n "${script}"
+done
 
 if command -v nvcc >/dev/null 2>&1; then
   echo "nvcc is present; CUDA execution still requires explicit cn4 authorization"

@@ -208,6 +208,10 @@ int32_t glmaxx_event_synchronize(uint64_t event);
 int32_t glmaxx_event_elapsed_ms(uint64_t start, uint64_t end,
                                 float* milliseconds);
 int32_t glmaxx_event_destroy(uint64_t event);
+int32_t glmaxx_profiler_start(void);
+int32_t glmaxx_profiler_stop(void);
+int32_t glmaxx_nvtx_range_push(const char* message);
+int32_t glmaxx_nvtx_range_pop(void);
 
 uint64_t glmaxx_nvfp4_routed_fc1_workspace_bytes(uint32_t assignments);
 uint64_t glmaxx_nvfp4_grouped_workspace_bytes(uint32_t assignments);
