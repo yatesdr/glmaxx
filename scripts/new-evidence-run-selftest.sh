@@ -5,6 +5,7 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 allocator="${repo_dir}/scripts/new-evidence-run.sh"
 begin_runner="${repo_dir}/scripts/begin-evidence-run.sh"
 finish_runner="${repo_dir}/scripts/finish-evidence-run.sh"
+verify_run="${repo_dir}/scripts/verify-evidence-run.sh"
 
 test_parent="${TMPDIR:-/tmp}"
 test_root="$(mktemp -d "${test_parent%/}/glmaxx-evidence-selftest.XXXXXX")"
@@ -117,6 +118,7 @@ if [[ "$(<"${first_run}/allocation-state.txt")" != "RUNNING" ]]; then
   echo "runner replay changed the consumed evidence state" >&2
   exit 1
 fi
+printf '%s\n' "sealed fixture" >"${first_run}/selftest-payload.txt"
 bash "${finish_runner}" "${first_run}" COMPLETE >/dev/null
 if [[ "$(<"${first_run}/allocation-state.txt")" != "COMPLETE" ||
       "$(<"${first_run}/terminal-claim-v1/terminal-contract.txt")" != \
@@ -132,6 +134,20 @@ if bash "${finish_runner}" "${first_run}" FAILED >/dev/null 2>&1; then
 fi
 if [[ "$(<"${first_run}/allocation-state.txt")" != "COMPLETE" ]]; then
   echo "terminal replay changed a completed run" >&2
+  exit 1
+fi
+if ! bash "${verify_run}" "${first_run}" >/dev/null; then
+  echo "terminal evidence manifest did not verify" >&2
+  exit 1
+fi
+printf '%s\n' "tampered fixture" >"${first_run}/selftest-payload.txt"
+if bash "${verify_run}" "${first_run}" >/dev/null 2>&1; then
+  echo "evidence verifier accepted post-terminal payload tampering" >&2
+  exit 1
+fi
+printf '%s\n' "sealed fixture" >"${first_run}/selftest-payload.txt"
+if ! bash "${verify_run}" "${first_run}" >/dev/null; then
+  echo "restored terminal evidence did not verify" >&2
   exit 1
 fi
 
@@ -200,6 +216,10 @@ if [[ "$(<"${claim_race}/allocation-state.txt")" != "FAILED" ]]; then
   echo "runner failure did not publish FAILED" >&2
   exit 1
 fi
+if ! bash "${verify_run}" "${claim_race}" >/dev/null; then
+  echo "FAILED evidence run did not verify" >&2
+  exit 1
+fi
 
 finish_race="$(bash "${allocator}" "${evidence_root}" finish-race)"
 bash "${begin_runner}" "${finish_race}" >/dev/null
@@ -231,6 +251,10 @@ finish_receipt="$(<"${finish_race}/terminal-claim-v1/terminal-state.txt")"
 if [[ "${finish_state}" != "${finish_receipt}" ||
       ("${finish_state}" != "COMPLETE" && "${finish_state}" != "FAILED") ]]; then
   echo "winning terminal publication disagrees with its state receipt" >&2
+  exit 1
+fi
+if ! bash "${verify_run}" "${finish_race}" >/dev/null; then
+  echo "terminal-race winner did not verify" >&2
   exit 1
 fi
 
@@ -289,4 +313,4 @@ if bash "${allocator}" / phase-b >/dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' "evidence-run-selftest=pass allocations=14 concurrent=8 runner-claims=4 terminal-claims=4 rejection-cases=10"
+printf '%s\n' "evidence-run-selftest=pass allocations=14 concurrent=8 runner-claims=4 terminal-claims=4 manifest-verifications=5 rejection-cases=11"

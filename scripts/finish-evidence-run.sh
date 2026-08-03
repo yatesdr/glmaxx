@@ -89,6 +89,15 @@ stop_after_signal() {
   exit "${exit_code}"
 }
 
+fail_terminal() {
+  local exit_code="$1"
+  local message="$2"
+  echo "${message}" >&2
+  mark_incomplete
+  trap - ERR HUP INT TERM
+  exit "${exit_code}"
+}
+
 trap mark_incomplete ERR
 trap 'stop_after_signal 129' HUP
 trap 'stop_after_signal 130' INT
@@ -101,10 +110,7 @@ fi
 terminal_claimed=1
 
 if [[ "$(read_one_line "${run_dir}/allocation-state.txt")" != "RUNNING" ]]; then
-  echo "evidence allocation state changed while claiming terminal publication" >&2
-  mark_incomplete
-  trap - ERR HUP INT TERM
-  exit 70
+  fail_terminal 70 "evidence allocation state changed while claiming terminal publication"
 fi
 
 terminal_clock="$(TZ=UTC date -u '+%Y%m%dT%H%M%SZ|%Y-%m-%dT%H:%M:%SZ|%s')"
@@ -112,10 +118,7 @@ IFS='|' read -r terminal_compact terminal_rfc3339 terminal_epoch <<<"${terminal_
 if [[ ! "${terminal_compact}" =~ ^[0-9]{8}T[0-9]{6}Z$ ||
       ! "${terminal_rfc3339}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ||
       ! "${terminal_epoch}" =~ ^[0-9]+$ ]]; then
-  echo "UTC clock returned an invalid terminal record" >&2
-  mark_incomplete
-  trap - ERR HUP INT TERM
-  exit 70
+  fail_terminal 70 "UTC clock returned an invalid terminal record"
 fi
 
 printf '%s\n' "glmaxx-evidence-terminal-v1" >"${terminal_dir}/terminal-contract.txt"
@@ -123,6 +126,36 @@ printf '%s\n' "${terminal_state}" >"${terminal_dir}/terminal-state.txt"
 printf '%s\n' "${terminal_compact}" >"${terminal_dir}/terminal-compact-utc.txt"
 printf '%s\n' "${terminal_rfc3339}" >"${terminal_dir}/terminal-utc.txt"
 printf '%s\n' "${terminal_epoch}" >"${terminal_dir}/terminal-epoch-seconds.txt"
+
+if [[ -n "$(find "${run_dir}" -type l -print -quit)" ]]; then
+  fail_terminal 70 "evidence run contains a symlink and cannot be sealed"
+fi
+
+# The mutable convenience state is excluded: terminal-state.txt is the sealed
+# terminal authority, and the verifier requires allocation-state.txt to match
+# it exactly. The manifest and its transaction file are necessarily excluded
+# from their own preimage.
+manifest_path="${run_dir}/evidence-sha256.txt"
+manifest_tmp="${run_dir}/evidence-sha256.txt.tmp"
+if [[ -e "${manifest_path}" || -e "${manifest_tmp}" ]]; then
+  fail_terminal 70 "evidence run already contains a manifest or manifest transaction"
+fi
+(
+  cd "${run_dir}"
+  find . -type f \
+    ! -path './allocation-state.txt' \
+    ! -path './allocation-state.txt.tmp' \
+    ! -path './evidence-sha256.txt' \
+    ! -path './evidence-sha256.txt.tmp' \
+    -exec shasum -a 256 {} + | LC_ALL=C sort -k2,2
+) >"${manifest_tmp}"
+if [[ ! -s "${manifest_tmp}" ]]; then
+  fail_terminal 70 "evidence manifest is empty"
+fi
+if ! (cd "${run_dir}" && shasum -a 256 -c evidence-sha256.txt.tmp >/dev/null); then
+  fail_terminal 70 "evidence changed while the manifest was being sealed"
+fi
+mv "${manifest_tmp}" "${manifest_path}"
 
 printf '%s\n' "${terminal_state}" >"${run_dir}/allocation-state.txt.tmp"
 mv "${run_dir}/allocation-state.txt.tmp" "${run_dir}/allocation-state.txt"

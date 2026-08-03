@@ -14,11 +14,13 @@ with an incomplete marker if initialization cannot finish. Ten repeated
 self-tests passed allocation, consumer-side runner claiming, and exact
 terminal publication, including eight-way allocator concurrency, competing
 runner and terminal claims, replay and tamper rejection, and exact receipt
-framing. The new wrapper supplies the unchanged Phase-B runner an uncreated
-`payload/` inside the claimed run. Exact source hashes, commands, and scope are in
+framing. Terminal publication now seals and immediately verifies the exact
+regular-file set; a standalone verifier checks file-set coverage, hashes, and
+terminal agreement. The wrapper supplies the unchanged Phase-B runner an
+uncreated `payload/` inside the claimed run. Exact source hashes, commands, and scope are in
 `docs/evidence-run-allocation-v1-20260803.md`. This is local tooling evidence
-only; the wrapper has not run on cn4, the pinned runner remains unchanged, and
-no GPU result follows.
+only; the manifest revision has not run on cn4, the pinned runner remains
+unchanged, and no GPU result follows.
 
 The `metadata.total_size` readiness map at
 `docs/safetensors-total-size-r2-implementation-readiness-20260803.md` locates
