@@ -164,6 +164,14 @@ measured the gate M1 input/output rotations at 2.848/3.216 us average, only
 1.17% of the scalar projection, so rotation fusion is correctly ordered after
 projection parallelism and expert grouping.
 
+The accepted manifest/ABI Phase-B FC1 artifact was separately profiled in
+`docs/cn4-nvfp4-fc1-ncu-diagnostic-20260803.md`. Its synthetic M1 activation
+quantizer took 14.464 us and its direct CUDA-core FC1+SwiGLU control took
+75.872 us. The latter already used 376 CTAs but reached only 14.816% aggregate
+SM and 2.243% L2 throughput. This orders NVFP4 work around connecting the
+SM120 block-scaled MMA path first, then quantizer producer fusion; it is not a
+real-payload or token-throughput result.
+
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
 r2 tree passed 163 Rust tests, layout probes, `sm_120f`/OMMA/symbol checks,
