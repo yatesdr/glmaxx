@@ -17,7 +17,13 @@ proposal, scratch, boundary-hidden, and argument state explicit memory-plan
 homes, extends operation-manifest membership through layer 78, forbids
 same-generation retry after native launch, distinguishes pipelined MTP0, and
 closes bucket-determinism and terminal-session behavior. This is an
-unreviewed design only; no CPU, CUDA, checkpoint, quality, capacity, or speed
+unreviewed design candidate at
+`83bd1ba4dd14aa60224a4483a80ed85dbcf74d14`; bounded re-review is requested
+by `docs/fable-mtp-layer-execution-v1-r2-handoff.md`. The complete local gate
+passed formatting, Clippy, 414 Rust tests, every deterministic CPU proof, and
+147 handoff provenance checks with 43 of 129 configured results present (39
+accepted, four withheld); the tokenizer fixture and CUDA compiler were
+explicitly unavailable. No CUDA, checkpoint, quality, capacity, or speed
 result follows.
 
 The resident-loader readiness audit at
@@ -1097,7 +1103,7 @@ verdicts:
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | corrective target-layer program, table, and control design r2 | `d4817ff` | `docs/fable-target-layer-execution-v1-r2-handoff.md` |
-| recurrent MTP0–6 execution design | `fd80e16` | `docs/fable-mtp-layer-execution-v1-handoff.md` |
+| recurrent MTP0–6 execution corrective design r2 | `83bd1ba` | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` |
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
