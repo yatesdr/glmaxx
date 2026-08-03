@@ -6,17 +6,18 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`a2fc47afb8557fb0b8a3396865fb951064380dad`
+`419c2b0832723f5ffaeecbbc39c9ad6fd8652be7`
 
-`review-proof-all` must verify 131 current handoffs and skip the two historical
-umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Forty of 113 configured result artifacts are
-present: 36 machine-accepted and four explicitly withheld.
+On a clean tracked tree, `review-proof-all` must verify 139 current handoffs
+and skip the two historical umbrella handoffs
+`docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
+Forty-three of 121 configured result artifacts are present: 39
+machine-accepted and four explicitly withheld.
 
 The immediate source-to-first-batch review order is:
 
 1. `docs/fable-safetensors-index-total-size-v1-handoff.md`;
-2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md`;
+2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
 3. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md`;
 4. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
 5. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
@@ -174,12 +175,20 @@ result path; follow the output instructions in that handoff.
 | 123 | `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md` | `1efdf101f42439587b38c147f8a9ff5ee8b59ba5` | `fable-current-tree-review-acceptance-v3-r2.md` | `current-tree-review-acceptance-v3-r2-design-accepted` |
 | 124 | `docs/fable-sm120-profiler-package-v1-handoff.md` | `fdbd91647a3ea23031ebd562e3d57676d7eb5d9a` | `fable-sm120-profiler-package-v1.md` | `sm120-profiler-package-v1-accepted` |
 | 125 | `docs/fable-safetensors-index-total-size-v1-handoff.md` | `bb8b7d6b9529b69bfaa3d9b981df7412e39bb30b` | `fable-safetensors-index-total-size-v1.md` | `safetensors-index-total-size-v1-design-accepted` |
-| 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | `exl3-mixed-k-source-and-kernel-v1-design-accepted` |
+| 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | superseded; do not issue token |
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
 | 128 | `docs/fable-resident-weight-runtime-generation-v1-handoff.md` | `9710c0db7245592a17084b65efe041010612bcfa` | `fable-resident-weight-runtime-generation-v1.md` | `resident-weight-runtime-generation-v1-design-accepted` |
 | 129 | `docs/fable-target-layer-execution-v1-r2-handoff.md` | `d4817ff9ff7eec09c74e98a99db5c27690286013` | `fable-target-layer-execution-v1-r2.md` | `target-layer-execution-v1-accepted` |
 | 130 | `docs/fable-quality-acceptance-v1-r2-handoff.md` | `eb62b3d138880e7bfcacec74f975de5a017cd977` | `fable-quality-acceptance-v1-r2.md` | `quality-acceptance-v1-accepted` |
 | 131 | `docs/fable-quality-corpus-sources-v1-r2-handoff.md` | `a2fc47afb8557fb0b8a3396865fb951064380dad` | `fable-quality-corpus-sources-v1-r2.md` | `quality-corpus-sources-v1-accepted` |
+| 132 | `docs/fable-cn4-tp4-eager-module-baseline-20260803-handoff.md` | `f19e66e082ee8a2ace2b59db04c96e58295c0fb9` | `fable-cn4-tp4-eager-module-baseline-20260803.md` | `cn4-tp4-eager-module-baseline-20260803-diagnostic-accepted` |
+| 133 | `docs/fable-cn4-tp4-memory-baseline-20260803-handoff.md` | `28993cf858357ee5b697e8fca1f94d2136c6e233` | `fable-cn4-tp4-memory-baseline-20260803.md` | `cn4-tp4-memory-baseline-20260803-diagnostic-accepted` |
+| 134 | `docs/fable-fc1-direct-control-oracle-r1-handoff.md` | `da65e63c8ebbe303335ca2636a3b56d7f1dfe028` | `fable-fc1-direct-control-oracle-r1.md` | `fc1-direct-control-oracle-r1-design-accepted` |
+| 135 | `docs/fable-fc2-grouped-control-scratch-r1-handoff.md` | `da65e63c8ebbe303335ca2636a3b56d7f1dfe028` | `fable-fc2-grouped-control-scratch-r1.md` | superseded; do not issue token |
+| 136 | `docs/fable-hybrid-mtp3-capacity-ledger-v1-handoff.md` | `94b09e7a2c4281116f38eed10b4ce97e35ebf833` | `fable-hybrid-mtp3-capacity-ledger-v1.md` | `hybrid-mtp3-capacity-ledger-v1-design-accepted` |
+| 137 | `docs/fable-nf3-nvfp4-native-rank-manifest-v1-handoff.md` | `b1584a989f5878c1b433ea54ffb0dc2925b03f9e` | `fable-nf3-nvfp4-native-rank-manifest-v1.md` | `nf3-nvfp4-native-rank-manifest-v1-design-accepted` |
+| 138 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md` | `23e6e26c172e370b63608a07aa2f781a24faef24` | `fable-exl3-mixed-k-source-and-kernel-v1-r2.md` | `exl3-mixed-k-source-and-kernel-v1-r2-design-accepted` |
+| 139 | `docs/fable-fc2-grouped-control-scratch-r2-handoff.md` | `419c2b0832723f5ffaeecbbc39c9ad6fd8652be7` | `fable-fc2-grouped-control-scratch-r2.md` | `fc2-grouped-control-scratch-r2-design-accepted` |
 
 ## Verification command
 
@@ -190,5 +199,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 131 current handoffs and two
+The expected queue count for this document is 139 current handoffs and two
 explicitly skipped historical umbrella handoffs.

@@ -4,14 +4,17 @@ Date: 2026-07-30
 
 Baseline audited: `da6d89fe0c7997653807080bcfbebc6a00356395`
 
-Live evidence update through `ad487d6` on 2026-08-03:
+Live evidence update through `46080db` on 2026-08-03:
 
 - the active goal grants full cn4 development authorization under isolated
   `/home/derek/glmaxx` paths; the older `AUTH` cells and external-state note
   below are historical, not current operator posture;
 - reviewed EXL3 source projection has launched correctly on SM120 at
   `M=1,2,4,8`, and reviewed manifest/ABI FC1 has launched correctly at M1;
-- FC2 still fails closed before launch on its pending grouped-scratch design,
+- FC2 still fails closed before launch. A source-pinned host probe proved the
+  exact deficit is 3,072 bytes of metadata plus 144,384 bytes of CUTLASS
+  workspace versus 24,576 bytes available; the false metadata-only r1 design
+  is superseded by the pending r2 scratch/probe contract,
   and real TR3 admission still fails closed on the pending safetensors
   `total_size` contract. The first mixed-K design is also superseded: a full
   header census proved 75 mixed target layers plus one uniform-K3 recurrent

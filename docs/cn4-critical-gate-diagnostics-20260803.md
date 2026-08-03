@@ -2,8 +2,8 @@
 
 Date: 2026-08-03
 
-Status: two fail-closed diagnostics; no FC2, checkpoint, TP4, quality, or
-performance acceptance
+Status: two fail-closed runs plus one non-launching sizing probe; no FC2,
+checkpoint, TP4, quality, or performance acceptance
 
 ## Reviewed manifest/ABI Phase B
 
@@ -24,12 +24,14 @@ glmaxx: Driver(-3)
 ```
 
 No FC2 report was published and the matrix, graph, dense-control, and grouped-
-control suites did not run. Source inspection locates this fail-closed value
-at the known grouped-control scratch check: the M1 `token_output_f32` extent is
-24,576 bytes, smaller than the grouped metadata and CUTLASS workspace. This
-independently reproduces the defect already frozen by
-`docs/fc2-grouped-control-scratch-r1.md`; it does not accept the pending
-correction.
+control suites did not run. Source inspection located this fail-closed value
+at the grouped-control scratch checks. The later pinned non-launching probe in
+`docs/cn4-fc2-scratch-probe-20260803.md` separated the terms: 3,072 bytes of
+metadata fit, but another 144,384 bytes of CUTLASS workspace make the combined
+147,456-byte requirement exceed the 24,576-byte M1 capacity. The r1 design's
+metadata-only explanation is superseded by
+`docs/fc2-grouped-control-scratch-r2.md`; neither diagnostic accepts the
+pending correction.
 
 Provenance:
 
@@ -92,12 +94,12 @@ These diagnostics corroborate, but do not alter or become provenance inputs
 to, the existing immutable Fable handoffs. The shortest safe route to the next
 device results is:
 
-1. `docs/fable-fc2-grouped-control-scratch-r1-handoff.md` — token
-   `fc2-grouped-control-scratch-r1-design-accepted`;
+1. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md` — token
+   `fc2-grouped-control-scratch-r2-design-accepted`;
 2. `docs/fable-safetensors-index-total-size-v1-handoff.md` — token
    `safetensors-index-total-size-v1-design-accepted`; and
-3. `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` — token
-   `exl3-mixed-k-source-and-kernel-v1-design-accepted`.
+3. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md` — token
+   `exl3-mixed-k-source-and-kernel-v1-r2-design-accepted`.
 
 After acceptance, the sequence remains CPU/native implementation and proof,
 implementation re-review where required, a fresh isolated cn4 rerun, real

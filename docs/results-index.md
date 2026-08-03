@@ -79,9 +79,10 @@ Two real-checkpoint, no-GPU discovery records are current:
   `29b18a87d378afbe65f2388e7c716c9aabaf1fc3c818b4d670338e85fc37501e`.
   Six K=3 gate/up/down rank projections reconstructed exactly. The K=4
   attempt failed closed and proved that the retained EXL3 source path is
-  incorrectly hard-coded to three bits. The mixed-K correction is candidate
-  `849c1d12bf42d92aecffe9003530a2a13dcc3dfe`, with review requested by
-  `da03944`; no implementation is permitted before that review.
+  incorrectly hard-coded to three bits. The first mixed-K design is
+  superseded; corrected candidate `23e6e26c172e370b63608a07aa2f781a24faef24`
+  has review requested by `00afd86`. No implementation is permitted before
+  that r2 review.
 - NVFP4/NF3 hybrid inventory at
   `/home/derek/glmaxx/evidence/20260803T133928Z-hybrid-format-inventory` has
   evidence-manifest SHA-256
@@ -107,8 +108,11 @@ isolated 43 semantic-oracle deviations to one deterministic M256 column: the
 CUDA schedule produces exact BF16 `-177`, while the sequential semantic
 oracle produces `-172`. That diagnostic is not a production-kernel quality
 pass. FC2 failed before launch with `Driver(-3)` because its development
-control reused a 24,576-byte M1 output allocation for larger CUTLASS metadata
-and workspace. Corrective FC1/FC2 design reviews remain pending.
+control reused a 24,576-byte M1 output allocation for scratch. A later
+source-pinned non-launching probe proved that metadata is 3,072 bytes and
+fits, while another 144,384 bytes of CUTLASS workspace raise the combined
+requirement to 147,456 bytes. The false metadata-only r1 explanation is
+superseded by the r2 contract; corrective FC1/FC2 reviews remain pending.
 
 The five-sample four-rank memory baseline is recorded in
 `docs/cn4-tp4-memory-baseline-20260803.md`. Clean source `36584b0` compiled
@@ -199,8 +203,8 @@ scratch boundary before publishing any FC2 or matrix result. A separate
 K=3-only real-TR3 runner pinned the exact raw checkpoint index and retained
 production inventory validation, which stopped with `Index` before tensor
 upload or launch. No gate was weakened. These results make the immediate
-review order concrete: FC2 grouped scratch, safetensors `total_size`, then
-mixed-K EXL3.
+review order concrete: safetensors `total_size`, mixed-K EXL3 r2, and FC2
+grouped scratch r2.
 
 The required public decode benchmark is pinned at Local Inference Lab commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and

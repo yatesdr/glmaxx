@@ -13,25 +13,46 @@ The complete queue remains
 `docs/fable-review-queue-all-20260730.md`. This document does not supersede or
 remove any row from it.
 
-## P0 — repair already-substantive kernel verdicts
+## Current source-to-first-batch order
 
-These three r2 review texts report substantive passes but fail machine
-acceptance only because their attestations omit pinned inputs. Follow the
-exact repair packet:
+The old kernel-attestation repair below is complete. The shortest current
+implementation-unblock sequence is:
+
+1. `docs/fable-safetensors-index-total-size-v1-handoff.md`;
+2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
+3. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
+4. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md`;
+5. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-handoff.md`;
+6. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
+7. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+8. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+9. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`; and
+10. `docs/fable-tp4-layer6-replay-v1-handoff.md`.
+
+Items 1 and 2 unblock real TR3 admission and K3/K4 CPU work. Item 3 unblocks
+the stopped NVFP4 FC2 control. Items 4 and 5 open the independent hybrid
+source/manifest path. The remaining items progressively open optimized EXL3,
+owner-thread execution, a complete target program, checkpoint smoke, and TP4
+layer replay. None conveys GPU authorization.
+
+## Completed P0 — repaired kernel verdicts
+
+These three r2 results are now machine-accepted after complete attestation
+repair. The retained packet is historical provenance:
 
 ```text
 docs/fable-kernel-r2-attestation-repair-request.md
 ```
 
-Repair in this order:
+The completed repair order was:
 
 1. `docs/fable-manifest-abi-v022-r2-handoff.md`
 2. `docs/fable-exl3-source-projection-v1-r2-handoff.md`
 3. `docs/fable-exl3-warp-decode-v2-r2-handoff.md`
 
-Do not merely append a token. Each repaired result must attest every candidate
-input at review start and finish and preserve the substantive finding record.
-These repairs unblock the current kernel source/format baseline.
+Each repaired result attests every candidate input at review start and finish
+and preserves the substantive finding record. They unblock the retained
+kernel source/format baseline.
 
 ## P1 — direct-tier implementation chain
 
