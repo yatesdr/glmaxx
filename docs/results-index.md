@@ -7,6 +7,16 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The local evidence allocator at `scripts/new-evidence-run.sh` now derives the
+run basename and three time receipts from one UTC clock read, atomically claims
+the directory, resolves same-second collisions without reuse, and fails closed
+with an incomplete marker if initialization cannot finish. Five repeated
+self-tests passed ten allocations apiece, including eight-way concurrency,
+plus five rejection cases. The exact source hashes, commands, scope, and
+pending Phase-B runner integration are in
+`docs/evidence-run-allocation-v1-20260803.md`. This is local tooling evidence
+only; the pinned Phase-B runner remains unchanged and no GPU result follows.
+
 The `metadata.total_size` readiness map at
 `docs/safetensors-total-size-r2-implementation-readiness-20260803.md` locates
 the real TR3 `Index` failure and freezes the implementation cut without
