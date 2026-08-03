@@ -7,6 +7,16 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The `metadata.total_size` readiness map at
+`docs/safetensors-total-size-r2-implementation-readiness-20260803.md` locates
+the real TR3 `Index` failure and freezes the implementation cut without
+changing parser semantics before review. The public replacement is small,
+but the accepted implementation must refactor shard opening so pathname and
+descriptor fingerprints match before prefix reads and after header
+validation, reject duplicate metadata keys, compute checked payload/file/
+overhead totals, and stop fabricating a declaration for directory inventory.
+No payload, checkpoint, or GPU result is claimed.
+
 The static mixed-K readiness map at
 `docs/exl3-mixed-k-r2-implementation-readiness-20260803.md` identifies the
 exact CPU/source and later native cuts required for the real TR3 checkpoint.
