@@ -3,9 +3,21 @@
 Date: 2026-08-03
 
 Current tracked tooling baseline before this result record:
-`0124b39`
+`8a2a617`
 
 ## 2026-08-03 active-goal ledger
+
+Clean detached source `8a2a617a778a7cd528f5516660de681f94be22db`
+now has a fully evidence-wrapped cn4 preparation result at
+`docs/cn4-evidence-wrapped-preparation-8a2a617-20260803.md`. The run passed all
+413 committed Rust tests, both CUTLASS layout probes, five real `sm_120f`
+cubins, the exact 256 owned-NVFP4 OMMA count, required symbols, and release
+Rust/CUDA linkage. Its fail-closed verifier accepted 4,398 exact regular files
+with manifest SHA-256
+`a20f1ce8a1fa97278147ecb535132dd063f2ed7d934cdbdc83e442b8bf626f0c`.
+All paths remained under `/home/derek/glmaxx`; the four GPUs were idle after
+the run. This was explicitly `PREPARED_NO_DEVICE_LAUNCH`, so it creates no
+checkpoint, quality, capacity, serving, or throughput result.
 
 The local evidence allocator at `scripts/new-evidence-run.sh` now derives the
 run basename and three time receipts from one UTC clock read, atomically claims
@@ -17,10 +29,11 @@ runner and terminal claims, replay and tamper rejection, and exact receipt
 framing. Terminal publication now seals and immediately verifies the exact
 regular-file set; a standalone verifier checks file-set coverage, hashes, and
 terminal agreement. The wrapper supplies the unchanged Phase-B runner an
-uncreated `payload/` inside the claimed run. Exact source hashes, commands, and scope are in
-`docs/evidence-run-allocation-v1-20260803.md`. This is local tooling evidence
-only; the manifest revision has not run on cn4, the pinned runner remains
-unchanged, and no GPU result follows.
+uncreated `payload/` inside the claimed run. Exact source hashes, commands,
+and scope are in `docs/evidence-run-allocation-v1-20260803.md`. The allocator
+self-test is local tooling evidence; the terminal-manifest revision has now
+also run on cn4 in the preparation record above. The pinned Phase-B runner
+remains unchanged, and no device-launch result follows.
 
 The `metadata.total_size` readiness map at
 `docs/safetensors-total-size-r2-implementation-readiness-20260803.md` locates
