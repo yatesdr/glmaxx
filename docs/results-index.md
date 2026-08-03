@@ -131,6 +131,17 @@ cache candidate leaves 468,955,200 bytes after the old fixed allowances,
 including 1 GiB escrow. The run launched no kernel and covers only the current
 linked module, so the complete fit gate remains open.
 
+The reviewed EXL3 source-projection Phase-B launch is recorded in
+`docs/cn4-exl3-source-projection-phase-b-20260803.md`. At isolated
+qualification commit `ccf0162e236e8a8b5d4d6a308d6491759750e83e`, gate, up,
+and down M=1 projections launched on cn4 GPU 0 and matched their Rust CPU
+oracles bit-for-bit on both repetitions: zero failed elements and zero
+absolute or relative error. The exact tree passed 163 CPU tests, produced a
+real `sm_120f` library, retained zero reconstructed-weight and runtime-repack
+bytes, stayed clean, and returned cn4 to idle. This is a synthetic K=3
+correctness pass only; real TR3 K=3/K=4 payload replay, TP4 execution,
+checkpoint smoke, quality, and performance remain open.
+
 The required public decode benchmark is pinned at Local Inference Lab commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and
 `llm_decode_bench.py` SHA-256
