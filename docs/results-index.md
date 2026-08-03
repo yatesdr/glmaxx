@@ -7,6 +7,19 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The recurrent-MTP corrective contract at
+`docs/mtp-layer-execution-v1-r2.md` resolves the withheld v1 review's one
+major, three minors, and two questions without changing the accepted teacher
+lineage or successor-slot arithmetic. It adopts the exact 240-byte split
+output and 480-byte sequence records from the coordinated step ABI under
+`StepPlan.v4`/`StepInput.v3`, defines 48-byte counter/ticket records, gives
+proposal, scratch, boundary-hidden, and argument state explicit memory-plan
+homes, extends operation-manifest membership through layer 78, forbids
+same-generation retry after native launch, distinguishes pipelined MTP0, and
+closes bucket-determinism and terminal-session behavior. This is an
+unreviewed design only; no CPU, CUDA, checkpoint, quality, capacity, or speed
+result follows.
+
 The resident-loader readiness audit at
 `docs/w4a16-nf3-resident-loader-readiness-audit-20260803.md` proves that the
 current reader-plus-arena ownership boundary can supply every corrected
