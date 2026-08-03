@@ -4,6 +4,27 @@ Date: 2026-07-30
 
 Baseline audited: `da6d89fe0c7997653807080bcfbebc6a00356395`
 
+Live evidence update through `ab821c1` on 2026-08-03:
+
+- the active goal grants full cn4 development authorization under isolated
+  `/home/derek/glmaxx` paths; the older `AUTH` cells and external-state note
+  below are historical, not current operator posture;
+- reviewed EXL3 source projection has launched correctly on SM120 at
+  `M=1,2,4,8`, and reviewed manifest/ABI FC1 has launched correctly at M1;
+- FC2 still fails closed before launch on its pending grouped-scratch design,
+  and real TR3 admission still fails closed on the pending safetensors
+  `total_size` contract;
+- current profiler diagnostics are indexed in `docs/results-index.md`; they
+  order EXL3 around K-parallel warp staging/grouped experts and NVFP4 around
+  block-scaled MMA before quantizer fusion; and
+- the local workspace gate passes 414 Rust tests. The operator-owned review
+  inbox currently has 36 machine-ready artifacts, all already byte-identical
+  to their required root results, plus 27 correctly rejected artifacts.
+
+This historical table has not been mechanically relabeled row-by-row. Treat
+`docs/results-index.md`, the active goal, and the live evidence above as the
+authoritative delta while preserving the original blocking dependencies.
+
 Goal: complete GLM-5.2 serving on four RTX PRO 6000 Blackwell SM120 GPUs,
 TP=4 over PCIe, with EXL3/NVFP4 hybrid weights, MTP0–6, 1M context, tiered
 KV, concurrent serving, quality evidence, and matched benchmarks.
@@ -93,12 +114,16 @@ State meanings:
 
 ## External state
 
-- cn4 GPU work is not currently authorized. Do not connect or launch until a
-  new operator authorization is given. The final authorized inventory found
-  a four-rank vLLM job already occupying all four GPUs.
+- The active goal authorizes full cn4 development. Every GLMAXX run must still
+  check occupancy immediately before launch, remain isolated under
+  `/home/derek/glmaxx`, and return all GPUs idle. The latest recorded runs did
+  so; no permission exists to mutate vLLM worktrees, containers, caches, or
+  evidence.
 - The user has stated that NVFP4 and EXL3 checkpoints already exist on the
-  servers. No checkpoint download is required. Their current paths and hashes
-  must be re-inventoried under H01; model bytes remain outside Git.
+  servers. No checkpoint download is required. Their paths, index hashes,
+  shard counts, and byte conventions were re-inventoried read-only on
+  2026-08-03; model bytes remain outside Git and full payload admission remains
+  gated.
 - Public quality-source revisions and the deterministic reasoning/coding/tool
   selections are pinned in the non-runnable
   `manifests/quality-corpus-sources-v1.json` design candidate. Generated
