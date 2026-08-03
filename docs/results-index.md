@@ -142,6 +142,17 @@ bytes, stayed clean, and returned cn4 to idle. This is a synthetic K=3
 correctness pass only; real TR3 K=3/K=4 payload replay, TP4 execution,
 checkpoint smoke, quality, and performance remain open.
 
+Two stronger fail-closed diagnostics are recorded in
+`docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
+r2 tree passed 163 Rust tests, layout probes, `sm_120f`/OMMA/symbol checks,
+and FC1 M1, then reproduced `Driver(-3)` at the undersized FC2 grouped-control
+scratch boundary before publishing any FC2 or matrix result. A separate
+K=3-only real-TR3 runner pinned the exact raw checkpoint index and retained
+production inventory validation, which stopped with `Index` before tensor
+upload or launch. No gate was weakened. These results make the immediate
+review order concrete: FC2 grouped scratch, safetensors `total_size`, then
+mixed-K EXL3.
+
 The required public decode benchmark is pinned at Local Inference Lab commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and
 `llm_decode_bench.py` SHA-256
