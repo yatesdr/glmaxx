@@ -7,6 +7,22 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The first production W4A16/NF3 fused-MoE execution ABI is design candidate
+`fc5786dde5f88bc1f99efa8dd4c883f35b750c7e`. It consumes the real r2 codecs
+without moving the tensor-ID-ordered 94-GB rank arena: a 2,573,312-byte/rank
+binding table maps each layer's global experts to exact resident value, scale,
+metadata, codec, layout, and scalar records. Direct M1/2/4/8 work is
+token/slot deterministic; prefill is codec/expert stable. FC2 prefill scratch
+is tiled at 256 hidden columns, bounding the complete M3072 MoE workspace at
+126,225,408 bytes instead of a forbidden 603,979,776-byte untiled slot plane,
+while retaining slot-ordered FP32 FMA. Exact table/plan/step/work ABIs support
+compatible cubin generations without weight movement. The candidate passed
+the complete local gate: 414 Rust tests, formatting, Clippy, CPU proofs, and
+144 handoff provenance checks; CUDA was explicitly unavailable. Adversarial
+review is requested by
+`docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md`. This is no
+implementation, GPU, checkpoint, quality, capacity, reload, or speed result.
+
 The full CPU gate passed at design candidate
 `d3a5acd91422845a4665898405f05466763b8525`: formatting, Clippy with warnings
 denied, CUDA-FFI host checks, 413 Rust unit/integration tests, deterministic
