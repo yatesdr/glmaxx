@@ -182,6 +182,15 @@ to contain a matched full Nsight Systems collector/importer and preserved the
 initial failed import separately. This is one trace sample per shape, not
 retained-event timing, a top-8 layer, or model token throughput.
 
+The full accepted EXL3 small-M trace matrix is recorded in
+`docs/cn4-exl3-nsys-scaling-20260803.md`. Across two traced repetitions of all
+12 gate/up/down M1/2/4/8 cases, correctness and determinism remained exact.
+Gate/up projection latency stayed within 1.3% from M1 to M8 at roughly
+452--460 us, while down stayed near 40 us through M4 and rose to 63.967 us at
+M8. Rotations added only 3.2795--4.320 us. This non-replay matrix reinforces
+warp-local K parallelism and grouped experts as the serving-kernel priorities;
+it is not retained-event timing or model throughput.
+
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
 r2 tree passed 163 Rust tests, layout probes, `sm_120f`/OMMA/symbol checks,
