@@ -3,7 +3,7 @@
 Date: 2026-08-03
 
 Current host implementation baseline:
-`12c6e150c0e2432d1677ed417355757321a6e95f`
+`fbda15ab5353a881ebe7b57ff3a5738e441e885a`
 
 ## 2026-08-03 active-goal ledger
 
@@ -16,6 +16,18 @@ the gate reported both skips explicitly. After adding only the pinned review
 handoff, `review-proof-all` passed again at `12c6e15`, verifying 127 handoffs
 and 40 of 109 configured review results: 36 accepted, four withheld, and no
 provenance failure.
+
+The resident-weight hot-reload boundary is now design candidate
+`9710c0db7245592a17084b65efe041010612bcfa`, with its adversarial handoff at
+`fbda15ab5353a881ebe7b57ff3a5738e441e885a`. It fixes one active plus one
+secondary prepare/rollback slot, separately charges user-owned allocations and
+CUDA-driver-owned HBM escrow, binds every TP4/MTP physical step to one common
+generation epoch, permits rollback only before publication, and requires
+monotonic zero-open/read/staging/H2D counters. The complete local gate passed
+413 tests before the handoff; the updated review proof verifies 128 handoffs
+and 40 of 110 configured results. This is an unreviewed design only: no reload
+code, CUDA execution, resident-weight result, cold-start result, or performance
+claim exists.
 
 The active cn4 workspace boundary is now
 `docs/cn4-experiment-isolation-v1.md`: every GLMAXX worktree, build, cache,

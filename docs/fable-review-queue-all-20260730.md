@@ -6,11 +6,11 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`d3a5acd91422845a4665898405f05466763b8525`
+`9710c0db7245592a17084b65efe041010612bcfa`
 
-`review-proof-all` verified 127 current handoffs and skipped the two historical
+`review-proof-all` verified 128 current handoffs and skipped the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Forty of 109 configured result artifacts are
+`docs/fable-review-handoff.md`. Forty of 110 configured result artifacts are
 present: 36 machine-accepted and four explicitly withheld.
 
 The immediate source-to-first-batch review order is:
@@ -24,6 +24,11 @@ The immediate source-to-first-batch review order is:
 The first three unblock real checkpoint CPU ingest. The profiler and
 current-tree reviews then bind the exact bytes allowed into the next SM120
 qualification. None conveys cn4 or CUDA authorization.
+
+The resident-generation design review is also queued. It is not ahead of the
+source-to-first-batch gates, but it must pass before implementing hot reload or
+claiming zero weight traffic across tuning generations:
+`docs/fable-resident-weight-runtime-generation-v1-handoff.md`.
 
 For every row, Fable should read the handoff itself and follow its exact
 provenance, scope, result-path, and token rules. Review the pinned candidate
@@ -162,6 +167,7 @@ result path; follow the output instructions in that handoff.
 | 125 | `docs/fable-safetensors-index-total-size-v1-handoff.md` | `bb8b7d6b9529b69bfaa3d9b981df7412e39bb30b` | `fable-safetensors-index-total-size-v1.md` | `safetensors-index-total-size-v1-design-accepted` |
 | 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | `exl3-mixed-k-source-and-kernel-v1-design-accepted` |
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
+| 128 | `docs/fable-resident-weight-runtime-generation-v1-handoff.md` | `9710c0db7245592a17084b65efe041010612bcfa` | `fable-resident-weight-runtime-generation-v1.md` | `resident-weight-runtime-generation-v1-design-accepted` |
 
 ## Verification command
 
@@ -172,5 +178,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 127 current handoffs and two
+The expected queue count for this document is 128 current handoffs and two
 explicitly skipped historical umbrella handoffs.
