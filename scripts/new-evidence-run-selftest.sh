@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 allocator="${repo_dir}/scripts/new-evidence-run.sh"
+begin_runner="${repo_dir}/scripts/begin-evidence-run.sh"
 
 test_parent="${TMPDIR:-/tmp}"
 test_root="$(mktemp -d "${test_parent%/}/glmaxx-evidence-selftest.XXXXXX")"
@@ -99,6 +100,71 @@ for worker_pid in "${worker_pids[@]}"; do
   wait "${worker_pid}"
 done
 
+begun_run="$(bash "${begin_runner}" "${first_run}")"
+if [[ "${begun_run}" != "${first_run}" ||
+      "$(<"${first_run}/allocation-state.txt")" != "RUNNING" ||
+      "$(<"${first_run}/runner-claim-v1/runner-contract.txt")" != \
+        "glmaxx-evidence-runner-v1" ]]; then
+  echo "runner did not claim and begin the evidence allocation" >&2
+  exit 1
+fi
+if bash "${begin_runner}" "${first_run}" >/dev/null 2>&1; then
+  echo "runner replayed a consumed evidence allocation" >&2
+  exit 1
+fi
+if [[ "$(<"${first_run}/allocation-state.txt")" != "RUNNING" ]]; then
+  echo "runner replay changed the consumed evidence state" >&2
+  exit 1
+fi
+
+printf '%s\n' "tampered-basename" >"${second_run}/run-directory-basename.txt"
+if bash "${begin_runner}" "${second_run}" >/dev/null 2>&1; then
+  echo "runner accepted a tampered evidence receipt" >&2
+  exit 1
+fi
+if [[ "$(<"${second_run}/allocation-state.txt")" != "READY" ||
+      -e "${second_run}/runner-claim-v1" ]]; then
+  echo "receipt rejection mutated the unclaimed allocation" >&2
+  exit 1
+fi
+
+line_tamper="$(bash "${allocator}" "${evidence_root}" line-tamper)"
+printf '%s\n%s' "READY" "TRAILING-DATA" >"${line_tamper}/allocation-state.txt"
+if bash "${begin_runner}" "${line_tamper}" >/dev/null 2>&1; then
+  echo "runner accepted a noncanonical single-line receipt" >&2
+  exit 1
+fi
+if [[ -e "${line_tamper}/runner-claim-v1" ]]; then
+  echo "noncanonical receipt rejection claimed the allocation" >&2
+  exit 1
+fi
+
+claim_race="$(bash "${allocator}" "${evidence_root}" claim-race)"
+set +e
+bash "${begin_runner}" "${claim_race}" \
+  >"${test_root}/claim-race-0.out" 2>"${test_root}/claim-race-0.err" &
+claim_pid_0="$!"
+bash "${begin_runner}" "${claim_race}" \
+  >"${test_root}/claim-race-1.out" 2>"${test_root}/claim-race-1.err" &
+claim_pid_1="$!"
+wait "${claim_pid_0}"
+claim_status_0="$?"
+wait "${claim_pid_1}"
+claim_status_1="$?"
+set -e
+claim_successes=0
+if [[ "${claim_status_0}" == "0" ]]; then
+  ((claim_successes += 1))
+fi
+if [[ "${claim_status_1}" == "0" ]]; then
+  ((claim_successes += 1))
+fi
+if [[ "${claim_successes}" != "1" ||
+      "$(<"${claim_race}/allocation-state.txt")" != "RUNNING" ]]; then
+  echo "concurrent runner claim did not select exactly one consumer" >&2
+  exit 1
+fi
+
 unique_concurrent="$({
   for ((worker = 0; worker < 8; worker++)); do
     sed -n '1p' "${concurrent_outputs}/${worker}.txt"
@@ -154,4 +220,4 @@ if bash "${allocator}" / phase-b >/dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' "evidence-run-selftest=pass allocations=10 concurrent=8 rejection-cases=5"
+printf '%s\n' "evidence-run-selftest=pass allocations=12 concurrent=8 runner-claims=2 rejection-cases=8"

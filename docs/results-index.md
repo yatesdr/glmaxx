@@ -10,10 +10,11 @@ Current tracked tooling baseline before this result record:
 The local evidence allocator at `scripts/new-evidence-run.sh` now derives the
 run basename and three time receipts from one UTC clock read, atomically claims
 the directory, resolves same-second collisions without reuse, and fails closed
-with an incomplete marker if initialization cannot finish. Five repeated
-self-tests passed ten allocations apiece, including eight-way concurrency,
-plus five rejection cases. The exact source hashes, commands, scope, and
-pending Phase-B runner integration are in
+with an incomplete marker if initialization cannot finish. Ten repeated
+self-tests passed allocation and consumer-side runner claiming, including
+eight-way allocator concurrency and a two-way claim race, replay and tamper
+rejection, and exact receipt framing. The exact source hashes, commands,
+scope, and pending one-call Phase-B runner integration are in
 `docs/evidence-run-allocation-v1-20260803.md`. This is local tooling evidence
 only; the pinned Phase-B runner remains unchanged and no GPU result follows.
 
