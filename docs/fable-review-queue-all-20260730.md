@@ -6,11 +6,11 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`9710c0db7245592a17084b65efe041010612bcfa`
+`d4817ff9ff7eec09c74e98a99db5c27690286013`
 
-`review-proof-all` verified 128 current handoffs and skipped the two historical
+`review-proof-all` must verify 129 current handoffs and skip the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Forty of 110 configured result artifacts are
+`docs/fable-review-handoff.md`. Forty of 111 configured result artifacts are
 present: 36 machine-accepted and four explicitly withheld.
 
 The immediate source-to-first-batch review order is:
@@ -18,12 +18,14 @@ The immediate source-to-first-batch review order is:
 1. `docs/fable-safetensors-index-total-size-v1-handoff.md`;
 2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md`;
 3. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md`;
-4. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
-5. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
+4. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+5. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
+6. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
-The first three unblock real checkpoint CPU ingest. The profiler and
-current-tree reviews then bind the exact bytes allowed into the next SM120
-qualification. None conveys cn4 or CUDA authorization.
+The first three unblock real checkpoint CPU ingest. The target-layer r2 review
+then opens the exact CPU operator-program and table proof. The profiler and
+current-tree reviews bind the bytes allowed into the next SM120 qualification.
+None conveys cn4 or CUDA authorization.
 
 The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
@@ -168,6 +170,7 @@ result path; follow the output instructions in that handoff.
 | 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | `exl3-mixed-k-source-and-kernel-v1-design-accepted` |
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
 | 128 | `docs/fable-resident-weight-runtime-generation-v1-handoff.md` | `9710c0db7245592a17084b65efe041010612bcfa` | `fable-resident-weight-runtime-generation-v1.md` | `resident-weight-runtime-generation-v1-design-accepted` |
+| 129 | `docs/fable-target-layer-execution-v1-r2-handoff.md` | `d4817ff9ff7eec09c74e98a99db5c27690286013` | `fable-target-layer-execution-v1-r2.md` | `target-layer-execution-v1-accepted` |
 
 ## Verification command
 
@@ -178,5 +181,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 128 current handoffs and two
+The expected queue count for this document is 129 current handoffs and two
 explicitly skipped historical umbrella handoffs.

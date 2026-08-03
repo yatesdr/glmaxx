@@ -3,7 +3,7 @@
 Date: 2026-08-03
 
 Current host implementation baseline:
-`fbda15ab5353a881ebe7b57ff3a5738e441e885a`
+`8ecbef4`
 
 ## 2026-08-03 active-goal ledger
 
@@ -28,6 +28,18 @@ monotonic zero-open/read/staging/H2D counters. The complete local gate passed
 and 40 of 110 configured results. This is an unreviewed design only: no reload
 code, CUDA execution, resident-weight result, cold-start result, or performance
 claim exists.
+
+The corrective target-layer execution contract is design candidate
+`d4817ff9ff7eec09c74e98a99db5c27690286013`, with its immutable adversarial
+handoff at `8ecbef4`. It pins the exact GLM-5.2 normalization and RoPE source
+facts; exact target-program, phase, lifetime, row, unified-page, pending-logit,
+step, and graph records; and independent source-expanded/decoded/packed
+controls. The unified page record preserves the fixed layer-major KV/indexer
+layout and bounds the table payload at 273,408 bytes for 3,072-row prefill,
+136 bytes for C1 decode, and 42,496 bytes for the 448-row verifier profile.
+The exact candidate passed the full local gate with 413 tests. This remains an
+unreviewed design: no target-layer implementation, CUDA result, model logits,
+quality, capacity, cold-start, or performance claim exists.
 
 The active cn4 workspace boundary is now
 `docs/cn4-experiment-isolation-v1.md`: every GLMAXX worktree, build, cache,
@@ -860,6 +872,7 @@ verdicts:
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
+| corrective target-layer program, table, and control design r2 | `d4817ff` | `docs/fable-target-layer-execution-v1-r2-handoff.md` |
 | recurrent MTP0–6 execution design | `fd80e16` | `docs/fable-mtp-layer-execution-v1-handoff.md` |
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
