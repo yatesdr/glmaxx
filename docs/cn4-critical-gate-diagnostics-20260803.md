@@ -96,8 +96,8 @@ device results is:
 
 1. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md` — token
    `fc2-grouped-control-scratch-r2-design-accepted`;
-2. `docs/fable-safetensors-index-total-size-v1-handoff.md` — token
-   `safetensors-index-total-size-v1-design-accepted`; and
+2. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md` — token
+   `safetensors-index-total-size-v1-r2-design-accepted`; and
 3. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md` — token
    `exl3-mixed-k-source-and-kernel-v1-r2-design-accepted`.
 

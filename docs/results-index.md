@@ -214,7 +214,7 @@ No endpoint was contacted and no benchmark result exists yet.
 
 The immediate source-ingest implementation blockers are exactly:
 
-1. adversarial acceptance of `docs/safetensors-index-total-size-v1.md` before
+1. adversarial acceptance of `docs/safetensors-index-total-size-v1-r2.md` before
    correcting the two real producer conventions;
 2. adversarial acceptance of
    `docs/exl3-mixed-k-source-and-kernel-v1-r2.md` before K=4 TR3 support; and

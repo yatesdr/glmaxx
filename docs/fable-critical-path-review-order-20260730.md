@@ -18,7 +18,7 @@ remove any row from it.
 The old kernel-attestation repair below is complete. The shortest current
 implementation-unblock sequence is:
 
-1. `docs/fable-safetensors-index-total-size-v1-handoff.md`;
+1. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
 2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
 3. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
 4. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md`;
