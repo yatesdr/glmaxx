@@ -2,8 +2,8 @@
 
 Date: 2026-08-03
 
-Current host implementation baseline:
-`9be5cab`
+Current tracked tooling baseline before this result record:
+`0124b39`
 
 ## 2026-08-03 active-goal ledger
 
@@ -171,6 +171,16 @@ quantizer took 14.464 us and its direct CUDA-core FC1+SwiGLU control took
 SM and 2.243% L2 throughput. This orders NVFP4 work around connecting the
 SM120 block-scaled MMA path first, then quantizer producer fusion; it is not a
 real-payload or token-throughput result.
+
+A complementary non-replay trace is recorded in
+`docs/cn4-nvfp4-fc1-nsys-scaling-20260803.md`. The same accepted artifact
+passed its synthetic single-expert correctness gate at M1/2/4/8. Quantization
+was essentially fixed at 11.999--12.064 us; direct FC1+SwiGLU measured
+48.767/73.918/146.269/266.202 us, and aggregate time per row fell from
+60.830 us at M1 to 34.77525 us at M8. The run also corrected the GLMAXX image
+to contain a matched full Nsight Systems collector/importer and preserved the
+initial failed import separately. This is one trace sample per shape, not
+retained-event timing, a top-8 layer, or model token throughput.
 
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI

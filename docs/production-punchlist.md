@@ -4,7 +4,7 @@ Date: 2026-07-30
 
 Baseline audited: `da6d89fe0c7997653807080bcfbebc6a00356395`
 
-Live evidence update through `ab821c1` on 2026-08-03:
+Live evidence update through `0124b39` on 2026-08-03:
 
 - the active goal grants full cn4 development authorization under isolated
   `/home/derek/glmaxx` paths; the older `AUTH` cells and external-state note
@@ -16,7 +16,9 @@ Live evidence update through `ab821c1` on 2026-08-03:
   `total_size` contract;
 - current profiler diagnostics are indexed in `docs/results-index.md`; they
   order EXL3 around K-parallel warp staging/grouped experts and NVFP4 around
-  block-scaled MMA before quantizer fusion; and
+  block-scaled MMA before quantizer fusion. The accepted NVFP4 FC1 control now
+  has traced M1/2/4/8 scaling, and the isolated image has a verified full
+  Nsight Systems collector/importer; and
 - the local workspace gate passes 414 Rust tests. The operator-owned review
   inbox currently has 36 machine-ready artifacts, all already byte-identical
   to their required root results, plus 27 correctly rejected artifacts.
