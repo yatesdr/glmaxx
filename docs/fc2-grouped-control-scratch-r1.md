@@ -2,8 +2,10 @@
 
 Date: 2026-08-03
 
-Status: corrective design candidate; CPU implementation and adversarial review
-required before an SM120 rerun
+Status: superseded; do not implement or accept
+
+The root-cause wording and helper domain in this candidate are incorrect.
+`docs/fc2-grouped-control-scratch-r2.md` is the only current design authority.
 
 ## Observed failure
 

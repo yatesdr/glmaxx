@@ -2,7 +2,11 @@
 
 Date: 2026-08-03
 
-Status: corrective design review requested
+Status: superseded; do not review and do not issue the r1 token
+
+Use `docs/fable-fc2-grouped-control-scratch-r2-handoff.md` instead. A pinned
+native probe disproved the r1 root-cause wording and exposed an incomplete
+Rust/native helper domain.
 
 GPU authorization conveyed by this handoff: none
 
