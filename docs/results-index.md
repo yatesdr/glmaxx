@@ -7,6 +7,17 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The static mixed-K readiness map at
+`docs/exl3-mixed-k-r2-implementation-readiness-20260803.md` identifies the
+exact CPU/source and later native cuts required for the real TR3 checkpoint.
+The retained CPU address arithmetic and 96-byte metadata are structurally
+width-generic, but committed validators, caller authority, ABI construction,
+and CUDA remain K3-only, and no target/draft tier partition exists. The audit
+pins the complete 233,472-descriptor census and the corrected per-rank byte
+totals while preserving the required order: r2 design acceptance, CPU parser
+and proof, implementation review, K3/K4 controls, then mixed target/draft
+replay. It changes no source and creates no checkpoint or GPU result.
+
 The exact reviewed kernel candidate was re-qualified at
 `db91038d8a652675968a61938d72d85cb14fbeb6`; the commit differs from Fable's
 accepted `0edfc8d` source only by the three tracked acceptance artifacts. The
