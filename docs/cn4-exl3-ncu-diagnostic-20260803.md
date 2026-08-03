@@ -47,6 +47,21 @@ expert grouping alone leaves every gate/up CTA internally serial. A candidate
 must beat this control with matched source planes and output membership, then
 pass the same exact CPU/GPU and repeat-determinism gates.
 
+### Rotation priority
+
+A separate basic-set capture measured the retained gate M1 rotations:
+
+| kernel | grid CTAs | duration min/avg/max | SM throughput | L2 throughput |
+| --- | ---: | ---: | ---: | ---: |
+| input H128 rotation | 48 | 2.848 / 2.848 / 2.848 us | 3.862% | 0.465% |
+| output H128 rotation | 4 | 3.136 / 3.216 / 3.296 us | 0.285% | 0.385% |
+
+Their combined average is 6.064 us, only 1.17% of the 517.296-us scalar gate
+projection. Rotation fusion therefore follows K-parallel projection and
+grouped expert execution in the optimization order. It can become material
+after the projection is accelerated, but it is not the current first-order
+bottleneck.
+
 ## Provenance
 
 ```text
@@ -79,10 +94,21 @@ inside disposable, GLMAXX-named containers with `SYS_ADMIN`; no host driver
 policy changed. CSV export used a no-GPU container. cn4 returned to
 2/2/2/10 MiB used, 0% utilization, and no compute process.
 
+The rotation report, CSV, and log are separately retained at:
+
+```text
+/home/derek/glmaxx/evidence/20260803T181000Z-exl3-rotation-ncu-ccf0162
+```
+
+Its sorted relative-path three-file hash stream is
+`4fa04b2099a0bbebac1685f3821c4400c65feb7e919bdea11477163a74a14ae1`;
+the `.ncu-rep` SHA-256 is
+`f4bdb6d813f3840c5b30327d00d0325b778e2ed03871cb826f032ee16028387a`.
+
 ## Scope
 
 Profiler replay perturbs execution and these are two-sample diagnostic values,
-not production latency estimates. Rotations, allocation, transfers, routing,
-collectives, and framework time are deliberately excluded. The pending
-SM120-profiler-package review still governs any acceptance-grade timing or
-comparison.
+not production latency estimates. The projection and rotation captures are
+reported separately; allocation, transfers, routing, collectives, and
+framework time are deliberately excluded. The pending SM120-profiler-package
+review still governs any acceptance-grade timing or comparison.

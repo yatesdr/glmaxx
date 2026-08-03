@@ -159,7 +159,10 @@ count. Aggregate SM throughput stayed below 6% and L2 throughput below 0.6%.
 This isolates scalar/serial under-parallelization as the correctness control's
 first-order defect and orders the optimized path around warp-local K-parallel
 decode plus grouped routed-expert launches. These are replay-perturbed
-diagnostics, not an acceptance-grade performance claim.
+diagnostics, not an acceptance-grade performance claim. A follow-up capture
+measured the gate M1 input/output rotations at 2.848/3.216 us average, only
+1.17% of the scalar projection, so rotation fusion is correctly ordered after
+projection parallelism and expert grouping.
 
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
