@@ -7,6 +7,20 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+Clean published source `5641497d6e0d871acf570592730a19f1fbcbe24e`
+now has a fresh cn4 preparation result at
+`docs/cn4-current-tree-preparation-5641497-20260803.md`. In the pinned
+CUDA-13.3/Rust-1.92 image it passed all 413 committed tests, both independent
+CUTLASS layout probes, a complete `sm_120f` build with five cubins, the exact
+256-instruction NVFP4 OMMA check, and release Rust/CUDA linkage. The sealed
+external evidence manifest is
+`df990d33bdef97b9dd187c3f57f051ff85152a4506da6e31d1be042b54af0015`.
+All GPUs were idle before and after. No device kernel was launched: the three
+corrective kernel reviews are machine-accepted for candidate `0edfc8d`, but
+route-relevant current files differ and current-tree acceptance v3-r2 is not
+yet reviewed or implemented. No checkpoint, quality, capacity, or speed
+result follows.
+
 The recurrent-MTP corrective contract at
 `docs/mtp-layer-execution-v1-r2.md` resolves the withheld v1 review's one
 major, three minors, and two questions without changing the accepted teacher
