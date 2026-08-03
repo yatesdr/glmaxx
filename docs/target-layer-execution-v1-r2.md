@@ -179,7 +179,7 @@ The global `TargetPhaseTemplate.v1` is serialized as:
 ```text
 "glmaxx.target-phase-template.v1\0"
 u16_le(1)                       # version
-u16_le(variant_count)
+u16_le(5)                       # variant_count
 variants in strictly ascending variant_id
 ```
 
@@ -238,8 +238,8 @@ Required flag, local-mask, and graph-slot-class fields are exact:
 | 3 partial return | `0x04` | `0x0003` | 13 |
 | 4 attention TP sum | `0x04` | `0x0001` | 15 |
 | 5 MLP TP sum | `0x38` | `0x0001` | 24 |
-| 6 packed CKV | `0x02` | `0x0002` | 7 |
-| 7 indexer-key gather | `0x02` | `0x0002` | 8 |
+| 6 packed CKV | `0x02` | `0x0002` | 31 |
+| 7 indexer-key gather | `0x02` | `0x0002` | 32 |
 | 8 embedding TP sum | `0x40` | `0x0001` | 1 |
 
 `0x0001` is fixed-capacity payload and `0x0002` is zero-count records legal.
@@ -259,8 +259,8 @@ Layer masks are exact:
 
 ```text
 bit variant_id set means permitted
-FULL layers:   FULL_QUERY | FULL_CKV | CKV_WITH_WINNERS
-SHARED layers: SHARED_QUERY | CKV_WITH_WINNERS
+FULL layers:   FULL_QUERY | FULL_CKV | CKV_WITH_WINNERS = 0x0034
+SHARED layers: SHARED_QUERY | CKV_WITH_WINNERS = 0x0028
 bits for EMBEDDING or unknown variants are zero
 ```
 
@@ -273,7 +273,7 @@ bound by its exact SHA-256 in the final-head entry.
 
 ```text
 "glmaxx.target-buffer-lifetime.v1\0" ||
-u16_le(1) || u16_le(record_count) || records ordered by slot_class
+u16_le(1) || u16_le(32) || records ordered by slot_class
 ```
 
 One record is twelve bytes:
@@ -311,8 +311,8 @@ are:
 | 4 | Q LoRA | `0x003c` | 3 | 4 | 1 | 0 |
 | 5 | local query heads | `0x003c` | 3 | 6 | 1 | 0 |
 | 6 | absorbed query | `0x003c` | 3 | 6 | 1 | 0 |
-| 7 | KV encode / packed CKV | `0x003c` | 3 | 6 | 1 | 0 |
-| 8 | index encode / key union | `0x0034` | 4 | 5 | 1 | 0 |
+| 7 | KV encode staging | `0x003c` | 3 | 3 | 1 | 0 |
+| 8 | index encode staging | `0x0034` | 4 | 4 | 1 | 0 |
 | 9 | local candidates | `0x0004` | 4 | 5 | 1 | 0 |
 | 10 | exchanged candidates | `0x0004` | 4 | 5 | 1 | 0 |
 | 11 | winner lists | `0x003c` | 5 | 6 | 1 | 0 |
@@ -335,6 +335,8 @@ are:
 | 28 | target KV destinations | `0x003c` | 3 | 65535 | 0 | 1 |
 | 29 | indexer destinations | `0x0034` | 4 | 65535 | 0 | 1 |
 | 30 | pending-logit destinations | `0x003c` | 14 | 65535 | 0 | 1 |
+| 31 | packed CKV payload | `0x0030` | 6 | 6 | 1 | 0 |
+| 32 | indexer-key union payload | `0x0010` | 4 | 5 | 1 | 0 |
 
 Dense layers validate that router/routed records have zero capacity and
 sparse layers validate that dense-only spans have zero capacity; the common
@@ -376,26 +378,45 @@ An invalid graph row has request ID, token, position, context, and generations
 zero, sequence index `65535`, kind ABSENT, and valid bit zero. A valid row has
 a nonzero request ID, a real sequence index, a nonzero kind, and valid bit one.
 
-`TargetWriteSlot.v1` is 32 bytes. KV records are ordered by
-`(row_ordinal,layer_id)` and have exactly `target_row_bucket*78` records. Indexer
-records are ordered by `(row_ordinal,index_group_id)` and have exactly
-`target_row_bucket*21` records.
+GLM-5.2's fixed layer-major HBM geometry permits one unified page slot per row
+instead of 99 redundant per-layer/per-group records. `TargetPageWriteSlot.v1`
+is 40 bytes, ordered by row ordinal, with exactly `target_row_bucket` records:
 
 | Offset | Bytes | Field |
 |---:|---:|---|
 | 0 | 4 | row ordinal |
-| 4 | 1 | layer or index-group ID |
-| 5 | 1 | owner rank `0..3` |
-| 6 | 1 | token offset `0..63` |
-| 7 | 1 | kind: ABSENT=0, KV=1, INDEXER=2 |
+| 4 | 1 | owner rank `0..3` |
+| 5 | 1 | token offset `0..63` |
+| 6 | 1 | valid bit |
+| 7 | 1 | reserved zero |
 | 8 | 4 | owner-local page ID |
 | 12 | 4 | reserved zero |
 | 16 | 8 | page generation |
-| 24 | 8 | arena allocation generation |
+| 24 | 8 | target-KV arena allocation generation |
+| 32 | 8 | target-indexer arena allocation generation |
 
-For an invalid graph row, `kind=ABSENT` and owner, token offset, page ID,
-reserved bytes, and both generations are zero; row ordinal and layer/group ID
-remain populated. A valid row has the expected nonzero kind and generation.
+For an invalid graph row, every field except row ordinal is zero. A valid row
+has valid bit one, a nonzero page generation and both nonzero arena
+generations. The graph profile binds immutable base pointers and the common
+owner-local page capacity. Every layer/group address is checked arithmetic:
+
+```text
+target_kv_record =
+  target_kv_base +
+  (((layer_id * local_page_capacity + local_page_id) * 64 + token_offset)
+    * 368)
+
+target_indexer_record =
+  target_indexer_base +
+  (((index_group_id * local_page_capacity + local_page_id) * 64 + token_offset)
+    * 132)
+```
+
+This is the fixed layer/group-major layout in `spec/engine-v0.md`; a different
+layout hash or stride is incompatible. One maximum-sized active-step table
+arena is charged per rank, not one copy per graph profile. At the 3,072-row
+prefill ceiling the row, page-write, and 64-entry pending tables occupy only
+`147456 + 122880 + 3072 = 273408` bytes before ordinary table-arena alignment.
 
 `PendingLogitSlot.v1` is 48 bytes, ordered by sequence-table index and has
 exactly `sequence_bucket` records:
@@ -421,8 +442,7 @@ Domains are respectively:
 
 ```text
 glmaxx.target-row-table.v1\0
-glmaxx.target-kv-write-table.v1\0
-glmaxx.target-indexer-write-table.v1\0
+glmaxx.target-page-write-table.v1\0
 glmaxx.pending-logit-slot-table.v1\0
 ```
 
@@ -456,8 +476,7 @@ PageTableDelta.v2 global_digest                32 bytes
 PageTableDelta.v2 rank_delta_digest[4]        128 bytes
 post_apply_device_table_digest[4]             128 bytes
 TargetRow table SHA-256                        32 bytes
-target KV write table SHA-256                  32 bytes
-target indexer write table SHA-256             32 bytes
+target page-write table SHA-256                32 bytes
 pending-logit slot table SHA-256               32 bytes
 sequence row_count                              2 bytes
 prompt_token_count                              4 bytes
@@ -466,7 +485,7 @@ prompt_token_count little-endian u32 IDs
 ```
 
 Its schema and hash domain are `glmaxx.step-input.v3` and
-`glmaxx.step-input.v3\0`. The four tables travel as authenticated immutable
+`glmaxx.step-input.v3\0`. The three tables travel as authenticated immutable
 arguments and their exact counts must reconstruct the plan buckets and
 sequence records. Hash equality without table validation is insufficient.
 
@@ -481,8 +500,7 @@ SHA256(
   target_phase_template_sha256 ||
   target_buffer_lifetime_sha256 ||
   SHA256("glmaxx.target-row-table.v1\0") ||
-  SHA256("glmaxx.target-kv-write-table.v1\0") ||
-  SHA256("glmaxx.target-indexer-write-table.v1\0") ||
+  SHA256("glmaxx.target-page-write-table.v1\0") ||
   SHA256("glmaxx.pending-logit-slot-table.v1\0")
 )
 ```
