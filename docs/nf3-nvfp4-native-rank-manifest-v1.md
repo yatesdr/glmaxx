@@ -2,7 +2,8 @@
 
 Date: 2026-08-03
 
-Status: design candidate; adversarial acceptance required before implementation
+Status: superseded by `nf3-nvfp4-native-rank-manifest-v1-r2.md`; do not
+implement or issue the v1 acceptance token
 
 GPU evidence: none
 

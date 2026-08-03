@@ -2,7 +2,8 @@
 
 Date: 2026-08-03
 
-Status: design candidate; adversarial review required before CPU implementation
+Status: weight-accounting boundary superseded by
+`hybrid-mtp3-capacity-ledger-v1-r2.md`; do not implement or issue the v1 token
 
 GPU evidence: none
 

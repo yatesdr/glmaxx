@@ -2,7 +2,8 @@
 
 Date: 2026-08-03
 
-Status: design candidate; implementation blocked on adversarial acceptance
+Status: superseded by `nf3-nvfp4-hybrid-source-and-kernel-v1-r2.md`; do not
+implement or issue the v1 acceptance token
 
 ## Purpose
 

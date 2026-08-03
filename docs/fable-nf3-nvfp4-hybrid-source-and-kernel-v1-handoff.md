@@ -2,7 +2,7 @@
 
 Date: 2026-08-03
 
-Status: adversarial design review requested
+Status: superseded by the r2 handoff; do not review or issue this token
 
 GPU authorization conveyed by this handoff: none
 

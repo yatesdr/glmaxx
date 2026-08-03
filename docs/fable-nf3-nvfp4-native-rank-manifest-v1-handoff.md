@@ -2,7 +2,7 @@
 
 Date: 2026-08-03
 
-Status: adversarial design review requested
+Status: superseded by the r2 handoff; do not review or issue this token
 
 GPU authorization conveyed by this handoff: none
 
@@ -112,4 +112,3 @@ by independent derivations and all ten decisions. Only if every decision is an
 unqualified `YES`, attest all twelve checked-in hashes plus any cn4 source
 hashes used, then end with the requested token as the only bare acceptance
 line.
-
