@@ -246,7 +246,9 @@ The follow-up source-only audit in
 `docs/cn4-w4a16-nf3-kernel-source-audit-20260803.md` pins the executable
 reference strategy rather than treating “NVFP4” as an instruction type. It
 reconstructs ModelOpt E2M1 or NF3 codebook weights into BF16 register
-fragments and uses BF16 MMA with FP32 accumulation. Its GLM-5.2 small-M
+fragments and uses BF16 MMA with FP32 accumulation. NVIDIA PTX ISA 9.3
+independently confirms that SM120 block-scaled `mxf4nvf4` MMA accepts E2M1
+for both A and B and defines no BF16/E2M1 mixed form. Its GLM-5.2 small-M
 precedent is one direct-top-k E64/E192 grid with fused FC2 top-k reduction and
 fixed `(64,256,64,256)` FC1/FC2 tiles. The reference still collapses two
 loaded FC1 outer scalars to one during preparation, so it is an optimization

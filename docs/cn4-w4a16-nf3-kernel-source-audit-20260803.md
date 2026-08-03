@@ -58,6 +58,26 @@ does the following:
    `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32`; and
 6. accumulate into FP32 before the BF16 output boundary.
 
+This route is also required by the published SM120 instruction contract, not
+merely selected by the reference implementation. NVIDIA PTX ISA 9.3,
+sections 9.7.15.2--9.7.15.3, lists the valid `.kind::mxf4nvf4` element type
+for both `atype` and `btype` as E2M1. Its block-scaled example is explicitly:
+
+```text
+mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4
+  .block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3
+```
+
+The same target notes make E2M1, `.kind`, and `.block_scale` available on
+`sm_120f`. The documented valid-combination table contains no BF16/E2M1
+mixed pair. Therefore there is no documented native BF16-activation by
+NVFP4-weight block-scaled MMA form on SM120. A direct block-scaled FP4 MMA
+requires an FP4 A operand and is W4A4; W4A16 must reconstruct a 16-bit weight
+operand before MMA.
+
+Primary reference:
+[NVIDIA PTX ISA 9.3](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-instructions-mma-block-scaling).
+
 For small-M GLM-5.2 decode, the adapter pins:
 
 ```text
