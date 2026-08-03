@@ -242,6 +242,17 @@ contracts assign direct ModelOpt codec `0x0102`, 192-byte metadata, the exact
 NF3 producer mapping, and corrected metadata accounting; the immutable
 per-rank arena total remains 94,016,235,456 bytes.
 
+The follow-up source-only audit in
+`docs/cn4-w4a16-nf3-kernel-source-audit-20260803.md` pins the executable
+reference strategy rather than treating “NVFP4” as an instruction type. It
+reconstructs ModelOpt E2M1 or NF3 codebook weights into BF16 register
+fragments and uses BF16 MMA with FP32 accumulation. Its GLM-5.2 small-M
+precedent is one direct-top-k E64/E192 grid with fused FC2 top-k reduction and
+fixed `(64,256,64,256)` FC1/FC2 tiles. The reference still collapses two
+loaded FC1 outer scalars to one during preparation, so it is an optimization
+precedent, not a source-quality oracle. No GPU or checkpoint payload was read,
+and no implementation gate advances from this audit.
+
 The current pushed tree was separately prepared on cn4 at commit `01b6176`.
 `docs/cn4-pinned-preparation-01b6176-20260803.md` records 413 passing release
 tests, a clean CUDA 13.3/CUTLASS `sm_120f` build with five cubins, and a linked
