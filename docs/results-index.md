@@ -122,6 +122,15 @@ non-context, non-loader-staging allowances. Native alignment, module/graph,
 collective, workspace, and physical cache-allocation gates remain open, so
 this is not a capacity or fit result.
 
+The matched eager-module diagnostic is recorded in
+`docs/cn4-tp4-eager-module-baseline-20260803.md`. Five fresh containers with
+`CUDA_MODULE_LOADING=EAGER` were again byte-identical and reduced free HBM by
+exactly 2,097,152 bytes per rank, to a 101,365,645,312-byte minimum. Combining
+that floor with the unaccepted exact NF3/NVFP4 arena candidate and the MTP3
+cache candidate leaves 468,955,200 bytes after the old fixed allowances,
+including 1 GiB escrow. The run launched no kernel and covers only the current
+linked module, so the complete fit gate remains open.
+
 The required public decode benchmark is pinned at Local Inference Lab commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and
 `llm_decode_bench.py` SHA-256
