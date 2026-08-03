@@ -7,6 +7,13 @@ digests:
   `nvidia/cuda@sha256:ef2203909e80b8b976cfc672f7e2ae2b00bc0e25c404ee86d89e10a3802f1c52`
 - Rust 1.92:
   `rust@sha256:e90e846de4124376164ddfbaab4b0774c7bdeef5e738866295e5a90a34a307a2`
+- Nsight Systems:
+  `nsight-systems-2026.1.3=2026.1.3.425-261338342291v0`
+
+The full Nsight Systems package is intentional. CUDA's target-side collector
+can retain a `.qdstrm` without containing the host-side `QdstrmImporter`,
+which makes a seemingly successful capture unusable. The image therefore
+pins both the collector and importer from the same package.
 
 Build it from the repository root:
 
@@ -22,6 +29,8 @@ Record the local image identity in every evidence directory:
 ```bash
 docker image inspect glmaxx-dev:cuda13.3-rust1.92 \
   --format '{{.Id}}'
+nsys --version
+test -x /opt/nvidia/nsight-systems/2026.1.3/host-linux-x64/QdstrmImporter
 ```
 
 The repository, pinned CUTLASS checkout, Cargo cache, and external evidence
