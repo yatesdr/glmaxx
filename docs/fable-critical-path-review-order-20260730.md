@@ -21,19 +21,21 @@ implementation-unblock sequence is:
 1. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
 2. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
 3. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
-4. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md`;
-5. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-handoff.md`;
-6. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
-7. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
-8. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
-9. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`; and
-10. `docs/fable-tp4-layer6-replay-v1-handoff.md`.
+4. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
+5. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
+6. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
+7. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
+8. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+10. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`; and
+11. `docs/fable-tp4-layer6-replay-v1-handoff.md`.
 
 Items 1 and 2 unblock real TR3 admission and K3/K4 CPU work. Item 3 unblocks
-the stopped NVFP4 FC2 control. Items 4 and 5 open the independent hybrid
-source/manifest path. The remaining items progressively open optimized EXL3,
-owner-thread execution, a complete target program, checkpoint smoke, and TP4
-layer replay. None conveys GPU authorization.
+the stopped NVFP4 FC2 control. Items 4 through 6 open the corrected independent
+hybrid source/manifest path and capacity ledger. The remaining items
+progressively open optimized EXL3, owner-thread execution, a complete target
+program, checkpoint smoke, and TP4 layer replay. None conveys GPU
+authorization.
 
 ## Completed P0 — repaired kernel verdicts
 
