@@ -242,6 +242,13 @@ contracts assign direct ModelOpt codec `0x0102`, 192-byte metadata, the exact
 NF3 producer mapping, and corrected metadata accounting; the immutable
 per-rank arena total remains 94,016,235,456 bytes.
 
+The current pushed tree was separately prepared on cn4 at commit `01b6176`.
+`docs/cn4-pinned-preparation-01b6176-20260803.md` records 413 passing release
+tests, a clean CUDA 13.3/CUTLASS `sm_120f` build with five cubins, and a linked
+Rust CUDA-FFI binary. The build container had no GPU device exposure; this is
+toolchain preparation only and does not advance any pending correctness,
+layer, checkpoint, quality, capacity, or performance gate.
+
 The historical 2026-07-30 ledger follows unchanged below.
 
 The complete local gate most recently ran at
