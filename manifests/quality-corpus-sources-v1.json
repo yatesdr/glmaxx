@@ -1,7 +1,7 @@
 {
   "schema": "glmaxx.quality-corpus-sources.v1",
   "status": "design-candidate-not-a-materialized-corpus",
-  "date": "2026-07-29",
+  "date": "2026-08-03",
   "qualification_only": true,
   "calibration_must_be_disjoint": true,
   "model_identity": {
@@ -13,6 +13,11 @@
     "generation_config_sha256": "ac76b43d8683d3b930126870fc8be73d8679308fe752fa1f381096d8354f6a55",
     "chat_template_sha256": "172dc74a35e1752df75ecfb2b2cf9326d2852bb1379868ebeec9571654489679",
     "tokenizer_bundle_sha256": "31eb3c003ad8b1545e29144e3f161ad706883e0ccc927beebeddf950b36a6abb",
+    "tokenizer_bundle_encoding": "SHA256(glmaxx-tokenizer-bundle-v0 || NUL || tokenizer.json || NUL || tokenizer_sha256_raw32 || tokenizer_config.json || NUL || tokenizer_config_sha256_raw32 || generation_config.json || NUL || generation_config_sha256_raw32); names are literal UTF-8 in listed order and chat template is excluded",
+    "tokenizer_bundle_normative_sources": [
+      "crates/glm-cli/src/main.rs::tokenizer_bundle_sha256",
+      "crates/glm-format/src/rank_manifest.rs::validate_context"
+    ],
     "logical_vocabulary": 154856,
     "physical_vocabulary": 154880
   },
@@ -23,7 +28,15 @@
       "revision": "f4d4b3de3ee6741a7151a9fe74945ee515262f4c",
       "role": "prompt-and-task-config-reference-only",
       "license": "MIT",
-      "normative_evaluator": false
+      "normative_evaluator": false,
+      "files": [
+        {
+          "path": "lm_eval/tasks/mmlu_pro/README.md",
+          "size": 4776,
+          "sha256": "7a46bdda17a62d7ae4752a9c12e990ac43ede208e1a44a7a5a5b426bb8a1ceea",
+          "verified_task_version": "3.1"
+        }
+      ]
     },
     {
       "source_id": "mmlu-pro",
@@ -259,6 +272,7 @@
         "source_id": "human-eval-diagnostic",
         "selection": "all task IDs HumanEval/0..HumanEval/163 in source order",
         "selected_count": 164,
+        "selected_id_stream": "human-eval || HTAB || task_id_utf8 || LF",
         "selected_id_stream_domain": "glmaxx.quality.coding.humaneval.item-ids.v1",
         "selected_id_stream_sha256": "0dbbca61baa0b9b486debc99ea894681688e1950f93f1a0171ccd2a7adea114e"
       },

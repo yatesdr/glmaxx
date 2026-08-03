@@ -1,6 +1,6 @@
-# GLM-5.2 quality corpus source and materialization contract v1
+# GLM-5.2 quality corpus source and materialization contract v1, revision 2
 
-Date: 2026-07-29
+Date: 2026-08-03
 
 Status: design candidate; public source bytes and selection arithmetic audited,
 but the qualification corpus is not materialized
@@ -16,7 +16,7 @@ It closes the previous ambiguity about what "1,000 reasoning cases", "500
 coding cases", and "500 tool cases" mean.
 
 It is deliberately not the `corpus_manifest_sha256` required by
-`QualityRun.v1`. Generated prompt bytes, gated multilingual content hashes,
+`QualityRun.v2`. Generated prompt bytes, gated multilingual content hashes,
 tokenized windows, and the evaluator do not exist yet. Treating this source
 recipe as a runnable corpus is a contract violation.
 
@@ -105,6 +105,20 @@ HumanEval's 164 cases are an additional separately reported diagnostic. They
 do not increase or dilute the paired MBPP primary pass rate. Candidate code is
 untrusted even when it came from the pinned model.
 
+The HumanEval diagnostic stream begins with UTF-8 domain
+`glmaxx.quality.coding.humaneval.item-ids.v1` and one NUL byte. It then emits,
+in pinned source order, exactly 164 records:
+
+```text
+human-eval<TAB>HumanEval/0<LF>
+...
+human-eval<TAB>HumanEval/163<LF>
+```
+
+There is no NUL or length prefix between records. The SHA-256 of the complete
+domain-plus-record stream is
+`0dbbca61baa0b9b486debc99ea894681688e1950f93f1a0171ccd2a7adea114e`.
+
 ## Tool task
 
 The primary tool task is 500 offline BFCL AST cases: 125 from each of simple
@@ -130,6 +144,30 @@ assistant extraction, accepted call ordering, number and string
 normalization, schema validation, and semantic checker. BFCL's pinned AST
 checker is a cross-check. It is not silently imported as "latest", and a
 candidate cannot receive a different parser from its control.
+
+## Tokenizer bundle derivation
+
+The manifest's tokenizer bundle is SHA-256 over literal domain bytes
+`glmaxx-tokenizer-bundle-v0` plus NUL, followed in this order by:
+
+```text
+tokenizer.json || NUL || tokenizer_sha256_raw32
+tokenizer_config.json || NUL || tokenizer_config_sha256_raw32
+generation_config.json || NUL || generation_config_sha256_raw32
+```
+
+Names are literal UTF-8 and the component digests are raw 32-byte values, not
+hex. The chat-template digest remains a separate identity and is excluded
+from this bundle. The normative implementations are
+`crates/glm-cli/src/main.rs::tokenizer_bundle_sha256` and
+`crates/glm-format/src/rank_manifest.rs::validate_context`; the manifest value
+must reproduce from both.
+
+The pinned lm-evaluation-harness MMLU-Pro reference is confirmed as task
+version 3.1 by `lm_eval/tasks/mmlu_pro/README.md` at revision
+`f4d4b3de3ee6741a7151a9fe74945ee515262f4c`. Its exact 4,776 bytes hash to
+`7a46bdda17a62d7ae4752a9c12e990ac43ede208e1a44a7a5a5b426bb8a1ceea`.
+It remains a rendering reference only, never the normative evaluator.
 
 ## Deterministically generated behavior strata
 
