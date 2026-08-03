@@ -18,7 +18,7 @@ use crate::{
     RankExecutionError, RankExecutor, RankExecutorFactory, RankSetAbortCommand,
     RankSetLoadEnvironment, RankSetLoadPlan, StepInput, StepOutput, StepPlan, SystemMemoryPlan,
     Tp4WorkerPool, WeightLoadFailure, WeightLoadOutcome, WeightShutdownFailure,
-    WeightShutdownOutcome, WorkerError, build_rank_set_load_plan,
+    WeightShutdownOutcome, WorkerError, WorkerExecutionPosture, build_rank_set_load_plan,
 };
 
 const NATIVE_PROGRAM_NOT_IMPLEMENTED: i32 = -1;
@@ -692,7 +692,11 @@ impl Tp4WorkerPool {
                     .map_err(|error| WorkerError::RankCheckpointLoad { rank, error })
                 }) as Box<dyn RankExecutorFactory>
             });
-        Self::spawn_factories(maximum_outstanding, factories)
+        Self::spawn_factories_with_posture(
+            maximum_outstanding,
+            factories,
+            WorkerExecutionPosture::NativeWeightsOnly,
+        )
     }
 }
 

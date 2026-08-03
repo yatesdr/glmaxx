@@ -12,7 +12,7 @@ use std::{
 };
 
 use glm_cache::MODEL_POSITIONS;
-use glm_engine::{StartupCoordinator, StartupState, StepSampling};
+use glm_engine::{StartupCoordinator, StartupState, StepSampling, WorkerExecutionPosture};
 use glm_scheduler::{RequestSpec, SamplingCollective};
 use glm_tokenizer::{DecodeDelta, IncrementalDecoder, PinnedTokenizer, StreamFinish};
 
@@ -78,6 +78,18 @@ impl fmt::Display for CoordinatorBackendError {
 }
 
 impl std::error::Error for CoordinatorBackendError {}
+
+fn validate_production_readiness(
+    startup_state: StartupState,
+    execution_posture: WorkerExecutionPosture,
+) -> Result<(), CoordinatorBackendError> {
+    if startup_state != StartupState::Healthy
+        || execution_posture != WorkerExecutionPosture::ProductionModel
+    {
+        return Err(CoordinatorBackendError::EngineNotHealthy);
+    }
+    Ok(())
+}
 
 enum BackendCommand {
     Submit {
@@ -204,9 +216,7 @@ impl CoordinatorApiBackend {
         startup: &StartupCoordinator,
         backend_name: &'static str,
     ) -> Result<Self, CoordinatorBackendError> {
-        if startup.state() != StartupState::Healthy {
-            return Err(CoordinatorBackendError::EngineNotHealthy);
-        }
+        validate_production_readiness(startup.state(), coordinator.execution_posture())?;
         Self::spawn_with_tokenizer(
             config,
             coordinator,
@@ -1312,6 +1322,39 @@ mod tests {
     use crate::ChatCompletionRequest;
 
     static NEXT_TEMPORARY_STORE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn production_backend_requires_healthy_startup_and_production_workers() {
+        assert!(
+            validate_production_readiness(
+                StartupState::Healthy,
+                WorkerExecutionPosture::ProductionModel,
+            )
+            .is_ok()
+        );
+
+        for posture in [
+            WorkerExecutionPosture::CpuReference,
+            WorkerExecutionPosture::CustomUnverified,
+            WorkerExecutionPosture::NativeWeightsOnly,
+        ] {
+            assert!(matches!(
+                validate_production_readiness(StartupState::Healthy, posture),
+                Err(CoordinatorBackendError::EngineNotHealthy)
+            ));
+        }
+
+        for state in StartupState::NORMATIVE_ORDER
+            .into_iter()
+            .filter(|state| *state != StartupState::Healthy)
+            .chain([StartupState::Failed])
+        {
+            assert!(matches!(
+                validate_production_readiness(state, WorkerExecutionPosture::ProductionModel),
+                Err(CoordinatorBackendError::EngineNotHealthy)
+            ));
+        }
+    }
 
     struct FakeTokenizer;
 

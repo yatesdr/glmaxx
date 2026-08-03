@@ -597,6 +597,21 @@ pub struct Tp4WorkerPool {
     dispatcher: Option<JoinHandle<()>>,
     state_word: Arc<AtomicUsize>,
     maximum_outstanding: usize,
+    execution_posture: WorkerExecutionPosture,
+}
+
+/// What the four persistent rank workers are actually capable of executing.
+///
+/// The posture is assigned only by engine-owned constructors. In particular,
+/// loading and adopting real weights is not equivalent to having a complete
+/// GLM-5.2 target program, and custom executors cannot self-assert production
+/// readiness through the public factory API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerExecutionPosture {
+    CpuReference,
+    CustomUnverified,
+    NativeWeightsOnly,
+    ProductionModel,
 }
 
 impl Tp4WorkerPool {
@@ -607,37 +622,66 @@ impl Tp4WorkerPool {
         let executors = std::array::from_fn(|_| {
             Box::new(CpuRankExecutor { fault }) as Box<dyn RankExecutor + Send>
         });
-        Self::spawn(maximum_outstanding, executors)
+        Self::spawn_inner(
+            maximum_outstanding,
+            executors,
+            None,
+            WorkerExecutionPosture::CpuReference,
+        )
     }
 
     pub fn spawn(
         maximum_outstanding: usize,
         executors: [Box<dyn RankExecutor + Send>; 4],
     ) -> Result<Self, WorkerError> {
-        Self::spawn_inner(maximum_outstanding, executors, None)
+        Self::spawn_inner(
+            maximum_outstanding,
+            executors,
+            None,
+            WorkerExecutionPosture::CustomUnverified,
+        )
     }
 
     pub fn spawn_factories(
         maximum_outstanding: usize,
         factories: [Box<dyn RankExecutorFactory>; 4],
     ) -> Result<Self, WorkerError> {
+        Self::spawn_factories_with_posture(
+            maximum_outstanding,
+            factories,
+            WorkerExecutionPosture::CustomUnverified,
+        )
+    }
+
+    pub(crate) fn spawn_factories_with_posture(
+        maximum_outstanding: usize,
+        factories: [Box<dyn RankExecutorFactory>; 4],
+        execution_posture: WorkerExecutionPosture,
+    ) -> Result<Self, WorkerError> {
         let sources = factories.map(RankExecutorSource::Factory);
-        Self::spawn_sources(maximum_outstanding, sources, None)
+        Self::spawn_sources(maximum_outstanding, sources, None, execution_posture)
     }
 
     fn spawn_inner(
         maximum_outstanding: usize,
         executors: [Box<dyn RankExecutor + Send>; 4],
         rank_spawn_fault: Option<u8>,
+        execution_posture: WorkerExecutionPosture,
     ) -> Result<Self, WorkerError> {
         let sources = executors.map(RankExecutorSource::Transferred);
-        Self::spawn_sources(maximum_outstanding, sources, rank_spawn_fault)
+        Self::spawn_sources(
+            maximum_outstanding,
+            sources,
+            rank_spawn_fault,
+            execution_posture,
+        )
     }
 
     fn spawn_sources(
         maximum_outstanding: usize,
         sources: [RankExecutorSource; 4],
         rank_spawn_fault: Option<u8>,
+        execution_posture: WorkerExecutionPosture,
     ) -> Result<Self, WorkerError> {
         if maximum_outstanding == 0 || maximum_outstanding > WORKER_STATE_COUNT_MASK {
             return Err(WorkerError::Config);
@@ -677,7 +721,13 @@ impl Tp4WorkerPool {
             dispatcher: Some(dispatcher),
             state_word,
             maximum_outstanding,
+            execution_posture,
         })
+    }
+
+    #[must_use]
+    pub const fn execution_posture(&self) -> WorkerExecutionPosture {
+        self.execution_posture
     }
 
     #[cfg(test)]
@@ -3153,6 +3203,7 @@ mod tests {
             dispatcher: None,
             state_word,
             maximum_outstanding: 1,
+            execution_posture: WorkerExecutionPosture::CustomUnverified,
         };
         assert!(pool.quota_poisoned());
         assert!(!pool.is_closed());
@@ -3180,6 +3231,7 @@ mod tests {
             dispatcher: None,
             state_word,
             maximum_outstanding: 1,
+            execution_posture: WorkerExecutionPosture::CustomUnverified,
         };
         assert!(pool.quota_poisoned());
         assert!(matches!(pool.reserve_slot(), Err(WorkerError::Poisoned)));
@@ -3210,6 +3262,19 @@ mod tests {
     }
 
     #[test]
+    fn cpu_reference_pool_cannot_claim_production_execution() {
+        let pool = Tp4WorkerPool::spawn_cpu(1, None).unwrap();
+        assert_eq!(
+            pool.execution_posture(),
+            WorkerExecutionPosture::CpuReference
+        );
+        assert_ne!(
+            pool.execution_posture(),
+            WorkerExecutionPosture::ProductionModel
+        );
+    }
+
+    #[test]
     fn pool_spawn_waits_for_all_four_ranks_and_cleans_partial_startup() {
         let drops = Arc::new(AtomicUsize::new(0));
         let executors = std::array::from_fn(|_| {
@@ -3218,7 +3283,12 @@ mod tests {
             }) as Box<dyn RankExecutor + Send>
         });
         assert!(matches!(
-            Tp4WorkerPool::spawn_inner(1, executors, Some(2)),
+            Tp4WorkerPool::spawn_inner(
+                1,
+                executors,
+                Some(2),
+                WorkerExecutionPosture::CustomUnverified,
+            ),
             Err(WorkerError::Thread(_))
         ));
         assert_eq!(drops.load(Ordering::Acquire), 4);
@@ -3236,6 +3306,10 @@ mod tests {
             }) as Box<dyn RankExecutor + Send>
         });
         let pool = Tp4WorkerPool::spawn(1, executors).unwrap();
+        assert_eq!(
+            pool.execution_posture(),
+            WorkerExecutionPosture::CustomUnverified
+        );
         let (plan, schedule) = step(1);
         let handle = pool.try_submit(plan, schedule).unwrap();
         entered.wait();

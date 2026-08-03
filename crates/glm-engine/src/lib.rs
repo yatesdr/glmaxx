@@ -69,5 +69,5 @@ pub use worker::{
     MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankExecutorFactory,
     RankStepAck, RankWeightCleanupAck, RankWeightFinalizeAck, RankWeightPhase, StepHandle,
     StepOutcome, Tp4WorkerPool, WeightLoadFailure, WeightLoadFailureCause, WeightLoadOutcome,
-    WeightShutdownFailure, WeightShutdownOutcome, WorkerError,
+    WeightShutdownFailure, WeightShutdownOutcome, WorkerError, WorkerExecutionPosture,
 };

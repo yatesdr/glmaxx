@@ -17,7 +17,7 @@ use glm_cache::{
 use glm_engine::{
     CollectiveKind, CollectiveSchedule, CommittedTokens, GraphProfile, MAX_ACTIVE_SEQUENCES,
     MAX_MTP_DEPTH, SequenceStepInput, StepInput, StepInputError, StepMode, StepSampling,
-    StepSamplingKind, Tp4WorkerPool, WorkerError,
+    StepSamplingKind, Tp4WorkerPool, WorkerError, WorkerExecutionPosture,
 };
 use glm_scheduler::{
     BatchCompletion, BatchKind, RequestProgress, RequestSpec, RequestState, RouteCatalog,
@@ -272,6 +272,14 @@ impl ServingCoordinator {
             request_tokens: BTreeMap::new(),
             request_sampling: BTreeMap::new(),
         })
+    }
+
+    /// Returns the engine-owned execution posture of the four rank workers.
+    /// Public serving must never infer model readiness from startup health
+    /// alone because the coordinator and startup receipt are separate values.
+    #[must_use]
+    pub const fn execution_posture(&self) -> WorkerExecutionPosture {
+        self.workers.execution_posture()
     }
 
     pub fn attach_prefix_cache(
@@ -1584,6 +1592,19 @@ mod tests {
 
     fn coordinator(fault: Option<MockWorkerFault>) -> ServingCoordinator {
         coordinator_with_workers(Tp4WorkerPool::spawn_cpu(2, fault).unwrap())
+    }
+
+    #[test]
+    fn cpu_reference_coordinator_is_not_production_execution_ready() {
+        let coordinator = coordinator(None);
+        assert_eq!(
+            coordinator.execution_posture(),
+            WorkerExecutionPosture::CpuReference
+        );
+        assert_ne!(
+            coordinator.execution_posture(),
+            WorkerExecutionPosture::ProductionModel
+        );
     }
 
     fn coordinator_with_workers(workers: Tp4WorkerPool) -> ServingCoordinator {
