@@ -47,9 +47,17 @@ fi
 
 mkdir -p "${evidence_dir}"
 date -u +%Y-%m-%dT%H:%M:%SZ > "${evidence_dir}/start-utc.txt"
+printf 'GLMAXX_TR3_DIR=%q GLMAXX_EVIDENCE_DIR=%q %q\n' \
+  "${source_dir}" "${evidence_dir}" "$0" > "${evidence_dir}/command.txt"
 printf '%s\n' "$(git rev-parse HEAD)" > "${evidence_dir}/source-commit.txt"
 git status --short --branch > "${evidence_dir}/source-status-before.txt"
 sha256sum "${index_path}" "${tier_path}" "$0" > "${evidence_dir}/input-sha256.txt"
+{
+  jq --version
+  dd --version | sed -n '1p'
+  od --version | sed -n '1p'
+  sha256sum --version | sed -n '1p'
+} > "${evidence_dir}/tool-versions.txt"
 stat --printf='%n bytes=%s mode=%a type=%F\n' \
   "${index_path}" "${tier_path}" > "${evidence_dir}/source-stat.txt"
 nvidia-smi --query-gpu=index,name,uuid,compute_cap,memory.used,utilization.gpu \
