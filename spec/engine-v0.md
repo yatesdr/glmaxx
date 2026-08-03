@@ -641,8 +641,10 @@ winner list is reused by the following shared layers.
 ### 15.1 Target-only decode
 
 MTP0 SHALL be the correctness reference. Greedy MTP0 SHALL match the pinned
-reference token sequence under the sampling ABI's stable-position and
-tie-adjacent classification. Stable-position mismatches fail; permitted
+reference token sequence under the exact classification and threshold in
+`docs/quality-acceptance-v1.md`. The sampling ABI supplies the globally
+ordered top candidates and logits but does not own this quality threshold.
+Stable-position mismatches fail; permitted
 tie-adjacent divergences SHALL retain both tokens, the top-two logits, and
 the margin.
 
@@ -715,9 +717,10 @@ Version zero does not require batch-invariant GEMM/reduction kernels.
 The MTP quality gate SHALL compare MTPK with MTP0 over a pinned corpus and
 retain every position's selected tokens, top-two target logits, top-one
 margin, and logit error. Agreement is required at positions classified as
-numerically stable by the reviewed sampling ABI. A mismatch MAY be
-classified tie-adjacent only when the competing tokens and margin satisfy
-that ABI's fixed tolerance; all other mismatches fail. Aggregate match,
+numerically stable by `docs/quality-acceptance-v1.md`. A mismatch MAY be
+classified tie-adjacent only when the competing tokens, margins, and centered
+errors satisfy that contract's fixed tolerance; all other mismatches fail.
+Aggregate match,
 tie-adjacent divergence, KLD, task quality, and accepted length SHALL be
 reported separately. The stable/tie thresholds are blocking before MTP1 is
 enabled.
@@ -749,6 +752,10 @@ tested statistically against the pinned reference.
 
 The LM head SHALL be column-parallel with one contiguous vocabulary interval
 per rank. Production execution MUST NOT gather full-vocabulary logits.
+After a measured production step has completed, qualification mode MAY copy
+the four rank shards to an offline evaluator under the retained-logit and
+timing-exclusion rules in `docs/quality-acceptance-v1.md`; this is not a
+production sampling route.
 
 For greedy sampling, each rank computes its FP32 local `(maximum, token_id)`
 and a fixed-rank reduction chooses the greatest value, breaking exact ties by

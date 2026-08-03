@@ -383,8 +383,10 @@ Qualification mode writes external per-position records containing:
 These large records remain outside Git and are pinned by hash in the result
 index. Aggregate means never replace per-position values.
 
-Greedy MTP stable/tie-adjacent thresholds remain a separate measured quality
-artifact. MTP1 cannot be enabled merely because the sampling mechanics pass.
+Greedy MTP stable/tie-adjacent classification and thresholds are normative in
+`docs/quality-acceptance-v1.md`. This ABI supplies the exact global candidates,
+logits, and trace records consumed by that contract but cannot change its
+threshold. MTP1 cannot be enabled merely because the sampling mechanics pass.
 
 ## Failure semantics
 

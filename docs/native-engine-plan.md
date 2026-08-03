@@ -833,11 +833,11 @@ Compare:
 
 ### Whole model
 
-The initial KLD gate uses the existing pinned BF16 reference logits, all
-2,047 positions, full vocabulary, FP64 KLD, MTP0, and retained per-position
-values. The current first valid EXL3 control result, approximately
-`0.1195253311`, is promising but remains provisional until the full pinned
-series is complete.
+The initial KLD gate uses pinned BF16 reference logits, all 2,047 positions,
+the full vocabulary, the exact MPFR-256 construction and final binary64
+rounding in `docs/quality-acceptance-v1.md`, MTP0, and retained per-position
+values. Historical means from another evaluator definition are not inputs;
+every control is rerun under the accepted contract.
 
 Qualification then includes reasoning, coding, tool use, JSON exactness,
 long-generation repetition, frozen and randomized long-context retrieval,

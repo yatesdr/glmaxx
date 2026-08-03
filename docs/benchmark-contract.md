@@ -53,7 +53,8 @@ The first KLD cell is a smoke test:
 - pinned 2,048-token sample;
 - all 2,047 next-token positions;
 - full vocabulary;
-- FP64 KLD calculation;
+- the exact MPFR-256 operation sequence, exponent range, and final binary64
+  rounding in `docs/quality-acceptance-v1.md`;
 - MTP disabled;
 - per-position values retained.
 
