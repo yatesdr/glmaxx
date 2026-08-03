@@ -3,7 +3,7 @@
 Date: 2026-08-03
 
 Current host implementation baseline:
-`b92531a`
+`9be5cab`
 
 ## 2026-08-03 active-goal ledger
 
@@ -52,6 +52,17 @@ vLLM worktrees, images, containers, caches, volumes, services, or results. The
 full local gate passed 413 tests. This is an unreviewed design only: no
 evaluator, model KLD, task, retrieval, CUDA, capacity, cold-start, latency,
 throughput, or serving result exists.
+
+The corrected public quality-source recipe is candidate
+`a2fc47afb8557fb0b8a3396865fb951064380dad`, with its bounded re-review
+handoff at `9be5cab`. It adds the exact 4,034-byte HumanEval selected-ID
+stream preimage while preserving its diagnostic-only role, makes the
+tokenizer-bundle construction independently reproducible from both Rust
+sites, and pins the official 4,776-byte MMLU-Pro README proving task version
+3.1 at the immutable harness commit. The full local gate passed 413 tests.
+This is still a non-runnable source recipe: no gated FLORES+ bytes,
+materialized corpus, evaluator, task/model result, GPU, or performance claim
+exists.
 
 The active cn4 workspace boundary is now
 `docs/cn4-experiment-isolation-v1.md`: every GLMAXX worktree, build, cache,
@@ -890,6 +901,7 @@ verdicts:
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
+| corrected quality corpus source recipe r2 | `a2fc47a` | `docs/fable-quality-corpus-sources-v1-r2-handoff.md` |
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
 | bit-exact indexer-key scale and overflow rejection | `13f0c59` | `docs/fable-indexer-key-scale-v1-handoff.md` |
 | atomic no-replace rank-set publication | `aaeffea` | `docs/fable-atomic-rank-publication-v1-handoff.md` |
