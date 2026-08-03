@@ -10,9 +10,10 @@ acceptance
 This document replaces the source-membership and byte-accounting authority in
 `docs/exl3-mixed-k-source-and-kernel-v1.md`. The first candidate incorrectly
 required one 256-entry `k` array for layer 78 and treated it as a 192:64 target
-mixture. The authenticated source instead contains 75 mixed target sparse
-layers plus one uniform-K3 recurrent draft layer. The original review handoff
-must not be accepted or used to open implementation.
+mixture. The checkpoint metadata at the two pinned raw identities instead
+contains 75 mixed target sparse layers plus one uniform-K3 recurrent draft
+layer. This is discovery evidence, not publisher-manifest authentication. The
+original review handoff must not be accepted or used to open implementation.
 
 All unaffected v1 requirements remain mandatory: descriptor-derived width,
 exact component validation, immutable authenticated source identity, checked
@@ -30,8 +31,8 @@ target sparse layers          3 through 77   (75 layers)
 recurrent draft layer            78   (one layer)
 ```
 
-The content-authenticated tier map must have exactly the 76 top-level integer
-keys 3 through 78.
+After complete publisher-manifest authentication, the tier map must have
+exactly the 76 top-level integer keys 3 through 78.
 
 For every target sparse layer 3 through 77:
 
