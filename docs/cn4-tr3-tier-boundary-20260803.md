@@ -56,7 +56,7 @@ validated every layer/projection/rank count. It did not read tensor payloads
 or create a CUDA context.
 
 ```text
-source commit       1d2d5997f633fa7952c01e26ecc4dd3e55076016
+source commit       8667f10c37cd0942fba3be6d7b16687a2e4b0268
 index SHA-256       f5dcd976a64ca70808dd4d8bd3ad07e9610c8ca6c30e3a6ed77ddefdac4c1d21
 tier-map SHA-256    a287ffe816de5998fbc35a56a1ec05f69eb71087d5bbdfe631242c6b296b2a3d
 verdict             TR3_TARGET_DRAFT_TIER_BOUNDARY_PASS
@@ -65,11 +65,11 @@ verdict             TR3_TARGET_DRAFT_TIER_BOUNDARY_PASS
 The 16-artifact evidence stream is outside Git at:
 
 ```text
-/home/derek/glmaxx/evidence/20260803T191500Z-tr3-tier-boundary-1d2d599
+/home/derek/glmaxx/evidence/20260803T193000Z-tr3-tier-boundary-8667f10
 ```
 
 Its `evidence-sha256.txt` SHA-256 is
-`677eb23261b4ac25cf745be31911564ccca723e7c24f5239163a214c0e5e705c`;
+`1ff92e2fa8ab97b5790edc967dd20079f0b80261b114770755ddd903ea353a5a`;
 every listed hash was revalidated from the evidence directory. GPU state was
 unchanged at 2/2/2/10 MiB used and 0% utilization, with no compute process.
 
