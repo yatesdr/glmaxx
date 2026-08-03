@@ -142,6 +142,15 @@ bytes, stayed clean, and returned cn4 to idle. This is a synthetic K=3
 correctness pass only; real TR3 K=3/K=4 payload replay, TP4 execution,
 checkpoint smoke, quality, and performance remain open.
 
+A supplemental accepted-artifact run is recorded in
+`docs/cn4-exl3-multirow-correctness-20260803.md`. It reused the exact Phase-B
+binary and library and extended gate/up/down correctness to `M=1,2,4,8`.
+All 12 SM120 cases had zero failed elements, bit-identical CPU/GPU hashes,
+two-run device determinism, and zero reconstructed-weight/repack bytes. This
+is small-row synthetic correctness coverage, not a real-payload or timing
+result. Its 21-file evidence stream hashes to
+`004f14e853a30a568b7a2b229180a27615acd4e1e5db67b4a98d58072fc621a1`.
+
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
 r2 tree passed 163 Rust tests, layout probes, `sm_120f`/OMMA/symbol checks,
