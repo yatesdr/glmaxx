@@ -190,7 +190,7 @@ jq -n \
       },
       target_sparse_layers: 75,
       recurrent_draft_layer: 78,
-      claim: "authenticated index/tier-map and safetensors-header metadata only; no tensor payload or CUDA access",
+      claim: "pinned raw index/tier-map identities and safetensors-header metadata only; no publisher authentication, tensor payload, or CUDA access",
       verdict: "TR3_TARGET_DRAFT_TIER_BOUNDARY_PASS"
     }
   ' > "${evidence_dir}/summary.json"
@@ -207,5 +207,6 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory \
   find . -type f ! -name evidence-sha256.txt -print0 \
     | sort -z \
     | xargs -0 sha256sum > evidence-sha256.txt
+  sha256sum -c evidence-sha256.txt >/dev/null
 )
 cat "${evidence_dir}/summary.json"

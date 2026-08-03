@@ -13,7 +13,9 @@ Live evidence update through `ad487d6` on 2026-08-03:
   `M=1,2,4,8`, and reviewed manifest/ABI FC1 has launched correctly at M1;
 - FC2 still fails closed before launch on its pending grouped-scratch design,
   and real TR3 admission still fails closed on the pending safetensors
-  `total_size` contract;
+  `total_size` contract. The first mixed-K design is also superseded: a full
+  header census proved 75 mixed target layers plus one uniform-K3 recurrent
+  draft layer, and its corrective r2 review is now required;
 - current profiler diagnostics are indexed in `docs/results-index.md`; they
   order EXL3 around K-parallel warp staging/grouped experts and NVFP4 around
   block-scaled MMA before quantizer fusion. The accepted NVFP4 FC1 control now

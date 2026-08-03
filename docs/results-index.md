@@ -213,10 +213,19 @@ The immediate source-ingest implementation blockers are exactly:
 1. adversarial acceptance of `docs/safetensors-index-total-size-v1.md` before
    correcting the two real producer conventions;
 2. adversarial acceptance of
-   `docs/exl3-mixed-k-source-and-kernel-v1.md` before K=4 TR3 support; and
+   `docs/exl3-mixed-k-source-and-kernel-v1-r2.md` before K=4 TR3 support; and
 3. adversarial acceptance of
    `docs/nf3-nvfp4-hybrid-source-and-kernel-v1.md` before the independent NF3
    parser, native packer, metadata, or proof.
+
+The TR3 mixed-K blocker now has a required r2 correction. A complete read-only
+header census in `docs/cn4-tr3-tier-boundary-20260803.md` proved that target
+sparse layers 3--77 each contain 192 K3 and 64 K4 experts, while recurrent
+draft layer 78 has no `k` array and all 3,072 of its trellis tensors are K3.
+The first mixed-K design incorrectly charged layer 78 as another mixed target
+layer. `docs/exl3-mixed-k-source-and-kernel-v1-r2.md` corrects the per-rank K4
+delta from 5,737,807,872 to 5,662,310,400 bytes and requires a separate draft
+K3 admission/dispatch path. The v1 handoff must not open implementation.
 
 The historical 2026-07-30 ledger follows unchanged below.
 

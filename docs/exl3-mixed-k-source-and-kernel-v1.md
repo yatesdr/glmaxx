@@ -2,7 +2,14 @@
 
 Date: 2026-08-03
 
-Status: design candidate; implementation is blocked on adversarial acceptance
+Status: superseded; do not review or implement this v1 contract
+
+This candidate incorrectly requires a `k` array for recurrent draft layer 78
+and charges that layer as another 192:64 target mixture. The pinned TR3
+tier map and every layer-78 safetensors header instead prove a uniform K=3
+draft layer with no `k` field. The corrective contract is
+`docs/exl3-mixed-k-source-and-kernel-v1-r2.md`; only its separate r2 review may
+open implementation.
 
 ## Problem
 
