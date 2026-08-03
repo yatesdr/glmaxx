@@ -98,6 +98,30 @@ inventory check found no GPU compute process and 0% utilization on every
 device. These are discovery records, not checkpoint admission, quality,
 capacity, cold-start, or performance evidence.
 
+The first current-goal SM120 kernel launch is recorded in
+`docs/cn4-sm120-first-launch-20260803.md`. At source integration commit
+`972379140e88504164115b74c02fdefa7604f335`, the native FC1 M1 control
+launched on SM120 and passed with zero failed elements, maximum absolute
+error 2, and maximum relative error 0.027397. The 144-case FC1 continuation
+isolated 43 semantic-oracle deviations to one deterministic M256 column: the
+CUDA schedule produces exact BF16 `-177`, while the sequential semantic
+oracle produces `-172`. That diagnostic is not a production-kernel quality
+pass. FC2 failed before launch with `Driver(-3)` because its development
+control reused a 24,576-byte M1 output allocation for larger CUTLASS metadata
+and workspace. Corrective FC1/FC2 design reviews remain pending.
+
+The five-sample four-rank memory baseline is recorded in
+`docs/cn4-tp4-memory-baseline-20260803.md`. Clean source `36584b0` compiled
+to real `sm_120f` ELF and held four CUDA contexts plus one stream per rank
+simultaneously. All five samples were byte-identical; minimum post-context
+free HBM was 101,367,742,464 bytes on rank 3. No device kernel launched, and
+the host returned to 2/2/2/10 MiB with no compute application. Combined with
+the minimum hybrid weight-record and 524,288-token MTP3 cache charges, the
+diagnostic leaves 474,189,824 bytes of provisional margin after the old
+non-context, non-loader-staging allowances. Native alignment, module/graph,
+collective, workspace, and physical cache-allocation gates remain open, so
+this is not a capacity or fit result.
+
 The required public decode benchmark is pinned at Local Inference Lab commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and
 `llm_decode_bench.py` SHA-256
