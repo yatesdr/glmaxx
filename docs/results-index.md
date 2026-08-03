@@ -7,6 +7,21 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The exact reviewed kernel candidate was re-qualified at
+`db91038d8a652675968a61938d72d85cb14fbeb6`; the commit differs from Fable's
+accepted `0edfc8d` source only by the three tracked acceptance artifacts. The
+run passed 163 Rust tests, both CUTLASS layout probes, real `sm_120f`
+compilation, the exact 256 owned-NVFP4 OMMA count, and required symbols. NVFP4
+FC1 M1 launched and passed with zero failed elements; FC2 then failed closed
+with `Driver(-3)` before any FC2 matrix, graph, control, or timing acceptance.
+The sealed record is
+`docs/cn4-reviewed-phase-b-db91038-20260803.md`; its external evidence
+manifest hashes to
+`f80c0a72bcb222944859c1592b806b2e6818abdce2f0d39416fad9142d73835c`.
+The record also preserves a directory-label timestamp defect rather than
+using the future-looking basename as timing evidence. No TP4, checkpoint,
+quality, capacity, serving, or throughput result follows.
+
 Clean published source `5641497d6e0d871acf570592730a19f1fbcbe24e`
 now has a fresh cn4 preparation result at
 `docs/cn4-current-tree-preparation-5641497-20260803.md`. In the pinned
