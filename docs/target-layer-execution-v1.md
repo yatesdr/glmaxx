@@ -279,12 +279,13 @@ The projections are:
 
 ```text
 q_lora = q_a_proj(x)                                  [row, 2048]
-q_lora = RMSNorm(q_lora, q_a_layernorm.weight)
+q_lora = RMSNorm(q_lora, q_a_layernorm.weight, epsilon=1e-6)
 q = q_b_proj(q_lora)                                  [row, 64, 256]
 
 kv_latent_and_rope = kv_a_proj_with_mqa(x)             [row, 512+64]
 kv_latent = RMSNorm(kv_latent[0..512],
-                    kv_a_layernorm.weight)
+                    kv_a_layernorm.weight,
+                    epsilon=1e-6)
 ```
 
 `q_b_proj` and `kv_b_proj` are column-parallel by head. Each rank produces
@@ -305,8 +306,10 @@ absorbed-query value.
 
 The 64-value query suffix and the 64-value
 `kv_latent_and_rope[512..576]` key use RoPE at the row's absolute logical
-position with theta 8,000,000 and the pinned interleave convention. The
-resulting head-independent 512-value latent and 64-value RoPE key are encoded
+position with theta 8,000,000 and the pinned interleave convention. Rotation
+reads interleaved even/odd pairs and stores the 32 rotated-first values
+followed by the 32 rotated-second values; the wire does not re-interleave that
+output. The resulting head-independent 512-value latent and 64-value RoPE key are encoded
 into the exact 368-byte dynamic target KV record. The record is written only
 to that row's tentative slot on its DCP owner rank.
 
@@ -343,8 +346,9 @@ index_score[p] = FP32_SUM_h(head_weight[h] * head_score[h,p])
 
 Causal masking occurs before selection. The independent CPU oracle must
 match the pinned source's LayerNorm, RoPE, projection, and FP32 accumulation
-boundaries. The rotated/pass-through 128-value key is encoded into the exact
-132-byte indexer-key record and written to the row's tentative sidecar slot.
+boundaries. The 128-value key stores the de-interleaved 64-value rotated output
+followed by the 64 pass-through values and is encoded into the exact 132-byte
+indexer-key record written to the row's tentative sidecar slot.
 
 Each DCP owner scores every owner-local committed key plus every causally
 visible same-step tentative key, rejects nonfinite values, and selects at most
@@ -491,10 +495,11 @@ attention_output = TP4_SUM(attention_partial)
 h_attention = attention_residual + attention_output
 ```
 
-`o_proj` is row-parallel. Exactly one TP4 reduction occurs. The residual add
-is after the reduction. Its exact FP32 accumulation/BF16 store membership is
-part of this candidate's CPU oracle and must be fixed before fusion. A fusion
-that adds the residual before a rank-complete reduction is forbidden.
+`o_proj` is row-parallel. Exactly one TP4 reduction occurs over BF16 partials
+and produces BF16 output under the reviewed route. The residual add is
+`BF16_RN(FP32(attention_residual) + FP32(attention_output))` after that
+reduction. A fusion that adds the residual before a rank-complete reduction is
+forbidden.
 
 ### Phase F — normalized MLP input
 
@@ -572,8 +577,12 @@ the shared path and the same collective ordinal.
 h_out = mlp_residual + mlp_output
 ```
 
+This residual is
+`BF16_RN(FP32(mlp_residual) + FP32(mlp_output))` after the complete BF16 TP4
+sum.
+
 The last target layer output enters the protected final RMSNorm and
-column-parallel LM head. Production sampling consumes rank-local logical
+vocabulary-axis-0-sharded LM head. Production sampling consumes rank-local logical
 vocabulary intervals and masks the 24 physical padding rows before any
 candidate or mass operation.
 
@@ -660,6 +669,12 @@ Dependencies are explicit:
   logits and complete before the embedding reduction; and
 - verify sampling dependencies follow the distributed-sampling ABI, while
   its newly computed target logits and pending state remain tentative.
+
+The one encoded dependency ordinal is the greatest direct collective
+predecessor ordinal, or `65535` when none exists. The target phase-template
+validator separately proves that every required collective predecessor exists
+earlier; local compute prerequisites are graph edges or device events rather
+than synthetic collective ordinals.
 
 Every step has exactly one embedding TP reduction. Every layer has exactly one
 attention TP reduction and one MLP TP reduction.
@@ -754,6 +769,10 @@ After adversarial acceptance, CPU implementation must prove:
 11. exact graph slot lifetimes with no alias between live values; and
 12. one-owner embedding reduction, vocabulary padding rejection, final norm,
     rank-logit intervals, and no full-logits gather.
+13. exact 368-byte KV and 132-byte indexer record encode/decode, stored RoPE
+    order, and malformed inputs; and
+14. source-expanded, decoded-expand, and packed-path layer controls that
+    separate codec error from implementation error.
 
 CPU proof does not open CUDA execution.
 

@@ -120,7 +120,9 @@ against the checkpoint manifest:
 | total checkpoint layer IDs | 79 (`0..77` target, `78` draft) |
 | vocabulary | 154,880 |
 | maximum total positions | 1,048,576 |
-| RMSNorm epsilon | `1e-5` |
+| input, post-attention, and final RMSNorm epsilon | `1e-5` |
+| Q-A and KV-A RMSNorm epsilon | `1e-6` (pinned source class default) |
+| indexer K LayerNorm epsilon | `1e-6` |
 | RoPE theta | `8,000,000` |
 | router score function | sigmoid |
 | router probability normalization | enabled |

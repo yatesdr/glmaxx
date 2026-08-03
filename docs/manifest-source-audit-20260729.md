@@ -60,6 +60,16 @@ Independent parsing of the exact-revision configuration produced:
 | `num_hidden_layers` | 78 |
 | `num_nextn_predict_layers` | 1 |
 | `index_topk` | 2,048 |
+| `vocab_size` | 154,880 |
+| `rms_norm_eps` | `1e-5` |
+| `rope_parameters.rope_type` | `default` |
+| `rope_parameters.rope_theta` | 8,000,000 |
+
+The exact config has no yarn factor, `mscale`, or `mscale_all_dim`; the
+default RoPE path therefore does not modify the `256^-0.5` attention scale.
+On 2026-08-03 the official raw config was fetched with redirects from the
+exact model revision URL and independently hashed to the pinned
+`185f93ee6d12548e16a847e279dc0c3c90b1524c970b0866b42fb545747d859a`.
 
 `indexer_types` has 78 entries: 21 `full` and 57 `shared`. The exact `full`
 layer IDs are:
