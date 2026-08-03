@@ -3,6 +3,12 @@ ARG CUDA_IMAGE=nvidia/cuda@sha256:ef2203909e80b8b976cfc672f7e2ae2b00bc0e25c404ee
 
 FROM ${RUST_IMAGE} AS rust-toolchain
 
+# The official Rust image carries rustup proxies but uses the minimal
+# component profile. Install the two components required by local-checks in
+# the pinned toolchain layer so a missing component fails the image build,
+# not a later qualification run.
+RUN rustup component add rustfmt clippy
+
 FROM ${CUDA_IMAGE}
 
 ARG NSIGHT_SYSTEMS_PACKAGE_VERSION=2026.1.3.425-261338342291v0
@@ -22,6 +28,7 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
         build-essential \
         ca-certificates \
+        clang \
         cmake \
         git \
         libdigest-sha-perl \
@@ -29,6 +36,11 @@ RUN apt-get update \
         nsight-systems-2026.1.3=${NSIGHT_SYSTEMS_PACKAGE_VERSION} \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
+
+RUN rustfmt --version \
+    && cargo clippy --version \
+    && clang --version \
+    && clang++ --version
 
 WORKDIR /workspace
 

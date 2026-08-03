@@ -7,6 +7,9 @@ digests:
   `nvidia/cuda@sha256:ef2203909e80b8b976cfc672f7e2ae2b00bc0e25c404ee86d89e10a3802f1c52`
 - Rust 1.92:
   `rust@sha256:e90e846de4124376164ddfbaab4b0774c7bdeef5e738866295e5a90a34a307a2`
+- Rust components: `rustfmt` and `clippy`, installed into that exact pinned
+  toolchain during the build
+- Host header parsers: distribution `clang`/`clang++`
 - Nsight Systems:
   `nsight-systems-2026.1.3=2026.1.3.425-261338342291v0`
 
@@ -29,6 +32,9 @@ Record the local image identity in every evidence directory:
 ```bash
 docker image inspect glmaxx-dev:cuda13.3-rust1.92 \
   --format '{{.Id}}'
+rustfmt --version
+cargo clippy --version
+clang --version
 nsys --version
 test -x /opt/nvidia/nsight-systems/2026.1.3/host-linux-x64/QdstrmImporter
 ```
