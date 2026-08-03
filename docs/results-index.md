@@ -151,6 +151,16 @@ is small-row synthetic correctness coverage, not a real-payload or timing
 result. Its 21-file evidence stream hashes to
 `004f14e853a30a568b7a2b229180a27615acd4e1e5db67b4a98d58072fc621a1`.
 
+An Nsight Compute diagnostic of that same accepted artifact is recorded in
+`docs/cn4-exl3-ncu-diagnostic-20260803.md`. Gate M1 exposed only two CTAs and
+averaged 517.296 us, gate M8 exposed 16 CTAs and averaged 564.960 us, while
+down M1 exposed 24 CTAs and averaged 46.000 us for the same matrix parameter
+count. Aggregate SM throughput stayed below 6% and L2 throughput below 0.6%.
+This isolates scalar/serial under-parallelization as the correctness control's
+first-order defect and orders the optimized path around warp-local K-parallel
+decode plus grouped routed-expert launches. These are replay-perturbed
+diagnostics, not an acceptance-grade performance claim.
+
 Two stronger fail-closed diagnostics are recorded in
 `docs/cn4-critical-gate-diagnostics-20260803.md`. The accepted manifest/ABI
 r2 tree passed 163 Rust tests, layout probes, `sm_120f`/OMMA/symbol checks,
