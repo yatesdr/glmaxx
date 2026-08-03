@@ -492,6 +492,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-rank-bind-smoke") => gpu_rank_bind_smoke()?,
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-rank-memory-baseline") => gpu_rank_memory_baseline()?,
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-checkpoint-load-smoke") => {
             if arguments.len() > 6 {
                 return Err(
@@ -575,7 +577,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
                     .into(),
             );
         }
@@ -3306,6 +3308,90 @@ fn gpu_rank_bind_smoke() -> Result<(), Box<dyn std::error::Error>> {
         "streams": "one nonblocking stream created, synchronized, and destroyed on each persistent-rank test thread",
         "kernel_launched": false,
         "verdict": "SM120_TP4_RANK_BIND_PASS",
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_rank_memory_baseline() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Barrier};
+
+    let contexts_ready = Arc::new(Barrier::new(4));
+    let measurements_complete = Arc::new(Barrier::new(4));
+    let workers: Vec<_> = (0_u8..4)
+        .map(|rank| {
+            let contexts_ready = Arc::clone(&contexts_ready);
+            let measurements_complete = Arc::clone(&measurements_complete);
+            std::thread::spawn(move || {
+                let bound = (|| {
+                    let context = glm_cuda::NativeRankContext::bind(rank)?;
+                    if context.stream()? == 0 {
+                        return Err(glm_cuda::KernelError::Null);
+                    }
+                    context.synchronize()?;
+                    Ok(context)
+                })();
+                contexts_ready.wait();
+                let measurement = bound.and_then(|context| {
+                    let identity = context.identity();
+                    let post_context_free_memory_bytes = context.free_memory_bytes()?;
+                    Ok::<_, glm_cuda::KernelError>((identity, post_context_free_memory_bytes))
+                });
+                measurements_complete.wait();
+                measurement
+            })
+        })
+        .collect();
+    let mut measurements = Vec::with_capacity(4);
+    for worker in workers {
+        measurements.push(worker.join().map_err(|_| "rank memory worker panicked")??);
+    }
+    measurements.sort_by_key(|(identity, _)| identity.device_index);
+    if measurements.len() != 4
+        || measurements
+            .iter()
+            .enumerate()
+            .any(|(rank, (identity, free_bytes))| {
+                identity.visible_devices != 4
+                    || usize::try_from(identity.device_index).ok() != Some(rank)
+                    || identity.compute_capability != 120
+                    || identity.total_memory_bytes == 0
+                    || *free_bytes == 0
+                    || *free_bytes > identity.total_memory_bytes
+            })
+    {
+        return Err("native TP4 memory baseline did not produce the exact SM120 rank set".into());
+    }
+    let minimum_post_context_free_memory_bytes = measurements
+        .iter()
+        .map(|(_, free_bytes)| *free_bytes)
+        .min()
+        .ok_or("rank memory measurements are empty")?;
+    let devices: Vec<_> = measurements
+        .iter()
+        .map(|(identity, free_bytes)| {
+            serde_json::json!({
+                "rank": identity.device_index,
+                "device_index": identity.device_index,
+                "compute_capability": identity.compute_capability,
+                "multiprocessor_count": identity.multiprocessor_count,
+                "total_memory_bytes": identity.total_memory_bytes,
+                "post_context_free_memory_bytes": free_bytes,
+                "unavailable_after_context_bytes": identity.total_memory_bytes - free_bytes,
+            })
+        })
+        .collect();
+    let report = serde_json::json!({
+        "schema": "glmaxx.sm120-tp4-memory-baseline.v1",
+        "visible_devices": 4,
+        "devices": devices,
+        "minimum_post_context_free_memory_bytes": minimum_post_context_free_memory_bytes,
+        "contexts": "four contexts and one nonblocking stream per rank held simultaneously through all measurements",
+        "allocation_posture": "no GLMAXX device allocation other than CUDA context/runtime-owned state and one stream per rank",
+        "kernel_launched": false,
+        "capacity_claim": false,
+        "verdict": "SM120_TP4_MEMORY_BASELINE_DIAGNOSTIC",
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
