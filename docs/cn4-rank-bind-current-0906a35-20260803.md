@@ -36,6 +36,21 @@ Pinned results:
 | `cargo-test.txt` | `8d10da1b3126c74786261ec05d77c1710be3110eadbc6146fd544b38d2192b93` |
 | sorted raw-record stream | `6cd60f858b32cb73ca456379f01c944db7d40d9ee181d0e73871f0a720e2590a` |
 
+Five fresh-container post-context HBM samples from the same binary are at:
+
+```text
+/home/derek/glmaxx/evidence/20260804T000500Z-memory-baseline-0906a35-r2
+```
+
+All five valid standalone JSON records are byte-identical with SHA-256
+`8d489a48e2fc31061e59bb1d526140900d1d03346c93f307dc915ae212350fd8`.
+Ranks 0–2 each retained `101,384,978,432` free bytes; rank 3 retained the
+minimum `101,367,742,464` free bytes. The complete sorted record-stream hash
+is `d36fcfcdf42e396bbf89e87aea286bee96be7902b2cd8b612cae0cd0e96e4e88`.
+An earlier retained diagnostic directory at `20260803T235500Z` captured the
+container banner before each JSON object and is invalid as standalone JSON;
+it is not used by this result.
+
 The post-run check found 2/2/2/10 MiB used, zero utilization, no compute
 application, and no retained container. A first container invocation stopped
 before GPU inventory because the linked-worktree Git metadata path was not
