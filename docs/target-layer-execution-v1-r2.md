@@ -417,6 +417,8 @@ layout hash or stride is incompatible. One maximum-sized active-step table
 arena is charged per rank, not one copy per graph profile. At the 3,072-row
 prefill ceiling the row, page-write, and 64-entry pending tables occupy only
 `147456 + 122880 + 3072 = 273408` bytes before ordinary table-arena alignment.
+At C1 decode they occupy 136 bytes; at the 448-row verifier ceiling with a
+64-sequence pending table they occupy 42,496 bytes.
 
 `PendingLogitSlot.v1` is 48 bytes, ordered by sequence-table index and has
 exactly `sequence_bucket` records:
@@ -483,6 +485,8 @@ prompt_token_count                              4 bytes
 row_count fixed 480-byte sequence records
 prompt_token_count little-endian u32 IDs
 ```
+
+The fixed prefix before the 480-byte sequence records is exactly 430 bytes.
 
 Its schema and hash domain are `glmaxx.step-input.v3` and
 `glmaxx.step-input.v3\0`. The three tables travel as authenticated immutable
