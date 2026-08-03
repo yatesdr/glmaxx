@@ -43,6 +43,11 @@ The repository, pinned CUTLASS checkout, Cargo cache, and external evidence
 root are mounted at runtime. Raw test output and build products remain under
 `~/glmaxx/` on cn4 and never enter Git.
 
+The first image proven to run the complete host gate is pinned in
+`docs/cn4-development-image-ae02a0d-20260803.md`. Qualification scripts should
+use its immutable image ID (or a later separately evidenced successor), never
+only the mutable tag.
+
 GPU device access remains separately gated. Building this image, fetching
 Rust dependencies, running CPU tests, compiling `sm_120f`, and running the
 host-only CUTLASS layout probe do not authorize a CUDA device launch.

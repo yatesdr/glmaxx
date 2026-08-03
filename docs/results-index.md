@@ -249,6 +249,12 @@ Rust CUDA-FFI binary. The build container had no GPU device exposure; this is
 toolchain preparation only and does not advance any pending correctness,
 layer, checkpoint, quality, capacity, or performance gate.
 
+The development-image defect exposed by that preparation is corrected and
+validated at `ae02a0d`. `docs/cn4-development-image-ae02a0d-20260803.md`
+pins image ID `sha256:0b400cb8...773842`, a complete container-local host gate,
+and a second five-cubin `sm_120f` build. This remains non-device toolchain
+evidence only.
+
 The historical 2026-07-30 ledger follows unchanged below.
 
 The complete local gate most recently ran at
