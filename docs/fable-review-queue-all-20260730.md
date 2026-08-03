@@ -11,8 +11,10 @@ Latest candidate included in the enumeration:
 On a clean tracked tree, `review-proof-all` must verify 139 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Forty-three of 121 configured result artifacts are present: 39
-machine-accepted and four explicitly withheld.
+Thirty-nine of 121 configured result artifacts are tracked and all 39 are
+machine-accepted. The current operator-owned untracked review inbox adds four
+explicitly withheld artifacts; it does not change the tracked acceptance
+count.
 
 The immediate source-to-first-batch review order is:
 
