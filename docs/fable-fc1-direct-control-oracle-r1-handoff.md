@@ -12,7 +12,7 @@ Review candidate commit:
 Required result path: `fable-fc1-direct-control-oracle-r1.md` at the repository
 root.
 
-Requested acceptance token, only for an unqualified pass:
+Requested acceptance token, only if every blocker and major is resolved:
 `fc1-direct-control-oracle-r1-design-accepted`
 
 ## Provenance
@@ -77,4 +77,3 @@ Return findings ordered `BLOCKER`, `MAJOR`, `MINOR`, and `QUESTION`, followed
 by independent derivations and all six decisions. Only if all are `YES`,
 attest all nine hashes and end with the requested token as the only bare
 acceptance line.
-
