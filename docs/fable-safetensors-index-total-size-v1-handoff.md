@@ -2,7 +2,11 @@
 
 Date: 2026-08-03
 
-Status: adversarial design review requested
+Status: superseded; do not review and do not issue the v1 token
+
+Use `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`. The r2
+candidate makes directory semantics, typed diagnostics, mutual exclusivity,
+and concurrent-source stability explicit.
 
 GPU authorization conveyed by this handoff: none
 

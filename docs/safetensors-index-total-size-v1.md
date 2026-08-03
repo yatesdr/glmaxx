@@ -2,7 +2,10 @@
 
 Date: 2026-08-03
 
-Status: design candidate; implementation is blocked on adversarial acceptance.
+Status: superseded; do not implement or accept
+
+Use `docs/safetensors-index-total-size-v1-r2.md`. The first candidate does not
+fully specify directory-mode semantics or a stable pre/post shard fingerprint.
 
 ## Problem
 
