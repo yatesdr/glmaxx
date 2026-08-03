@@ -7,6 +7,21 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
+The resident-loader readiness audit at
+`docs/w4a16-nf3-resident-loader-readiness-audit-20260803.md` proves that the
+current reader-plus-arena ownership boundary can supply every corrected
+W4A16/NF3 binding field without enlarging its 64-byte arena entry. It also
+closes the first implementation cut: a versioned minor-3/profile-4 reader,
+hybrid catalog/load plan, exact memory ledger, and a quarantined composite
+weight-plus-binding-table typestate must precede native execution. In
+particular, constructing the 2,573,312-byte table after arena adoption would
+permit partial TP4 publication and is forbidden. The audit found no new
+arithmetic contradiction in the three r2 contracts. The complete local gate
+passed formatting, Clippy, 414 Rust tests, every deterministic CPU proof, and
+146 handoff provenance checks; the tokenizer fixture and CUDA compiler were
+explicitly unavailable. It is static evidence only; the required Fable tokens
+remain absent and no hybrid implementation or GPU result is claimed.
+
 The first W4A16/NF3 fused-MoE ABI at `fc5786d` is superseded after a static
 cross-contract audit found seven implementation defects: layout-free target
 identity, pointer-tainted common hashes, module-dependent persistent bindings,
