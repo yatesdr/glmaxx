@@ -204,6 +204,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_exl3_smoke(projection, rows)?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-exl3-real-k3-smoke") => {
+            if arguments.len() > 8 {
+                return Err(
+                    "gpu-exl3-real-k3-smoke accepts index, layer, expert, rank, projection, and optional rows"
+                        .into(),
+                );
+            }
+            let index = arguments
+                .get(2)
+                .ok_or("gpu-exl3-real-k3-smoke requires the pinned safetensors index")?;
+            let layer = parse_argument::<u16>(&arguments, 3, "layer")?;
+            let expert = parse_argument::<u16>(&arguments, 4, "expert")?;
+            let rank = parse_argument::<u8>(&arguments, 5, "rank")?;
+            let projection = arguments
+                .get(6)
+                .ok_or("gpu-exl3-real-k3-smoke requires gate, up, or down")?;
+            let rows = arguments
+                .get(7)
+                .map(|value| value.parse::<u32>())
+                .transpose()?
+                .unwrap_or(1);
+            gpu_exl3_real_k3_smoke(Path::new(index), layer, expert, rank, projection, rows)?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-rank-bind-smoke") => gpu_rank_bind_smoke()?,
         #[cfg(feature = "cuda-ffi")]
         Some("gpu-matrix") => {
@@ -249,7 +273,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|gpu-rank-bind-smoke|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-exl3-real-k3-smoke pinned-index layer expert rank gate|up|down [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir>"
                     .into(),
             );
         }
@@ -1762,6 +1786,140 @@ fn gpu_exl3_smoke(projection_name: &str, rows: u32) -> Result<(), Box<dyn std::e
     println!("{}", serde_json::to_string_pretty(&report)?);
     if failures != 0 || !replay.bitwise_deterministic {
         return Err("SM120 EXL3 source-projection smoke did not satisfy the frozen gate".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_exl3_real_k3_smoke(
+    index: &Path,
+    layer: u16,
+    expert: u16,
+    rank: u8,
+    projection_name: &str,
+    rows: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rows == 0 || rows > 8 {
+        return Err("gpu-exl3-real-k3-smoke rows must be in 1..=8".into());
+    }
+    if index.file_name().and_then(|name| name.to_str()) != Some("model.safetensors.index.json") {
+        return Err("gpu-exl3-real-k3-smoke requires model.safetensors.index.json".into());
+    }
+    let (projection, canonical_projection, logical_k, logical_n) = match projection_name {
+        "gate" => (Exl3Projection::Gate, "gate", 6_144_u32, 512_u32),
+        "up" => (Exl3Projection::Up, "up", 6_144_u32, 512_u32),
+        "down" => (Exl3Projection::Down, "down", 512_u32, 6_144_u32),
+        _ => return Err("gpu-exl3-real-k3-smoke projection must be gate, up, or down".into()),
+    };
+
+    let source = ShardedSafetensors::open(index)?;
+    let checkpoint_inventory = validate_pinned_exl3_checkpoint(&source, EXL3_MODEL_REVISION)?;
+    let metadata = Exl3Metadata::new(projection, layer, expert, rank, 3, logical_k, logical_n)?;
+    let stem =
+        format!("model.layers.{layer}.mlp.experts.{expert}.{canonical_projection}_proj.rank{rank}");
+    let component_names = [
+        format!("{stem}.mcg"),
+        format!("{stem}.suh"),
+        format!("{stem}.svh"),
+        format!("{stem}.trellis"),
+    ];
+    let mut components = Vec::with_capacity(component_names.len());
+    let mut source_payload = Vec::new();
+    for name in &component_names {
+        let descriptor = source
+            .tensor(name)
+            .ok_or_else(|| format!("missing validated component {name}"))?;
+        let bytes = source.read_tensor(name)?;
+        components.push(Exl3SafetensorsComponent {
+            name: name.clone(),
+            dtype: descriptor.dtype.name(),
+            shape: descriptor.shape.clone(),
+            bytes: descriptor.bytes,
+            sha256: hex(&sha256(&bytes)),
+        });
+        source_payload.extend_from_slice(&bytes);
+    }
+    let tensor = glm_format::load_exl3_projection_sharded(&source, &stem, metadata)?;
+    if tensor.metadata.bits != 3 {
+        return Err("real K=3 smoke refuses any non-K=3 tensor".into());
+    }
+
+    let input_identity = usize::from(layer)
+        .checked_mul(131)
+        .and_then(|value| value.checked_add(usize::from(expert) * 17))
+        .and_then(|value| value.checked_add(usize::from(rank) * 7))
+        .and_then(|value| value.checked_add(usize::from(projection as u8)))
+        .ok_or("real K=3 input identity overflow")?;
+    let input_values = usize::try_from(rows)?
+        .checked_mul(usize::try_from(logical_k)?)
+        .ok_or("real K=3 input length overflow")?;
+    let input_f16: Vec<u16> = (0..input_values)
+        .map(|index| {
+            let signed = i32::try_from((index * 29 + 17 + input_identity) % 257).unwrap() - 128;
+            glm_format::f32_to_f16_bits(signed as f32 / 512.0)
+        })
+        .collect();
+    let reference = tensor.matmul_reference_f16(&input_f16, usize::try_from(rows)?)?;
+    let fixture = glm_cuda::NativeExl3Fixture::from_source(&tensor)?;
+    let replay = fixture.run_repeated(&input_f16, rows, 2)?;
+    let (maximum_absolute, maximum_relative, failures) =
+        compare_f16_output(&reference, &replay.output_f16);
+    let native_metadata = tensor.metadata.encode();
+    let cpu_reference_reconstructed_weight_bytes = u64::from(logical_k)
+        .checked_mul(u64::from(logical_n))
+        .and_then(|values| values.checked_mul(2))
+        .ok_or("real K=3 reconstructed byte count overflow")?;
+    let gpu_uploaded_packed_bytes = tensor
+        .trellis
+        .len()
+        .checked_add(tensor.suh.len())
+        .and_then(|words| words.checked_add(tensor.svh.len()))
+        .and_then(|words| words.checked_mul(2))
+        .ok_or("real K=3 upload byte count overflow")?;
+    let report = serde_json::json!({
+        "schema": "glmaxx.sm120-exl3-real-k3-smoke.v1",
+        "model_revision": EXL3_MODEL_REVISION,
+        "source_revision": EXL3_SOURCE_REVISION,
+        "checkpoint_index": index.display().to_string(),
+        "checkpoint_index_file_sha256": hex(&sha256(&fs::read(index)?)),
+        "checkpoint_structure_sha256": hex(&source.structure_sha256()),
+        "checkpoint_structure_validated": true,
+        "checkpoint_tensor_count": checkpoint_inventory.tensor_count,
+        "checkpoint_shard_count": source.shards().len(),
+        "full_source_content_verified_in_this_command": false,
+        "tensor_stem": stem,
+        "projection": canonical_projection,
+        "layer": layer,
+        "expert": expert,
+        "rank": rank,
+        "shape": [rows, logical_k, logical_n],
+        "bits": tensor.metadata.bits,
+        "kernel_abi": EXL3_KERNEL_ABI,
+        "components": components,
+        "source_payload_bytes": source_payload.len(),
+        "source_payload_sha256": hex(&sha256(&source_payload)),
+        "native_metadata_sha256": hex(&sha256(&native_metadata)),
+        "trellis_sha256": u16_hash(&tensor.trellis),
+        "suh_sha256": u16_hash(&tensor.suh),
+        "svh_sha256": u16_hash(&tensor.svh),
+        "input_kind": "deterministic synthetic FP16 activation rows",
+        "input_sha256": u16_hash(&input_f16),
+        "cpu_output_sha256": u16_hash(&reference),
+        "gpu_output_sha256": u16_hash(&replay.output_f16),
+        "maximum_absolute_error": maximum_absolute,
+        "maximum_relative_error": maximum_relative,
+        "failed_elements": failures,
+        "repeat_count": replay.repeat_count,
+        "repeat_bitwise_deterministic": replay.bitwise_deterministic,
+        "gpu_uploaded_packed_weight_bytes": gpu_uploaded_packed_bytes,
+        "gpu_runtime_weight_repack_bytes": 0,
+        "gpu_persistent_reconstructed_weight_bytes": 0,
+        "cpu_reference_reconstructed_weight_bytes": cpu_reference_reconstructed_weight_bytes,
+        "tolerance": "finite(gpu) and abs(gpu-cpu) <= 0.5 + 0.03 * abs(cpu)",
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if failures != 0 || !replay.bitwise_deterministic {
+        return Err("real K=3 SM120 EXL3 replay did not satisfy the frozen gate".into());
     }
     Ok(())
 }
