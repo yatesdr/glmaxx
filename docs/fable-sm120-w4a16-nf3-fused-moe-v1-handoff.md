@@ -2,7 +2,9 @@
 
 Date: 2026-08-03
 
-Status: adversarial design review requested
+Status: superseded by the v1 r2 handoff; do not review or issue the v1 token
+
+Use `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`.
 
 GPU authorization conveyed by this handoff: none
 

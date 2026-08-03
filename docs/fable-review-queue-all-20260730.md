@@ -6,9 +6,9 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`fc5786dde5f88bc1f99efa8dd4c883f35b750c7e`
+`10f83f6862c6c345573ebef5bece69d95f4c58fc`
 
-On a clean tracked tree, `review-proof-all` must verify 144 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 145 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
 Thirty-nine of 125 configured result artifacts are tracked and all 39 are
@@ -25,7 +25,7 @@ The immediate source-to-first-batch review order is:
 5. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
 6. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
 7. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
-8. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md`;
+8. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
 9. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
 10. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
@@ -200,7 +200,8 @@ result path; follow the output instructions in that handoff.
 | 141 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2.md` | `nf3-modelopt-nvfp4-source-kernel-v1-r2-design-accepted` |
 | 142 | `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-nf3-nvfp4-native-rank-manifest-v1-r2.md` | `nf3-modelopt-nvfp4-native-rank-manifest-v1-r2-design-accepted` |
 | 143 | `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-hybrid-mtp3-capacity-ledger-v1-r2.md` | `hybrid-mtp3-capacity-ledger-v1-r2-design-accepted` |
-| 144 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md` | `fc5786dde5f88bc1f99efa8dd4c883f35b750c7e` | `fable-sm120-w4a16-nf3-fused-moe-v1.md` | `sm120-w4a16-nf3-fused-moe-v1-design-accepted` |
+| 144 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md` | `fc5786dde5f88bc1f99efa8dd4c883f35b750c7e` | `fable-sm120-w4a16-nf3-fused-moe-v1.md` | superseded; do not issue token |
+| 145 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md` | `10f83f6862c6c345573ebef5bece69d95f4c58fc` | `fable-sm120-w4a16-nf3-fused-moe-v1-r2.md` | `sm120-w4a16-nf3-fused-moe-v1-r2-design-accepted` |
 
 ## Verification command
 
@@ -211,5 +212,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 144 current handoffs and two
+The expected queue count for this document is 145 current handoffs and two
 explicitly skipped historical umbrella handoffs.

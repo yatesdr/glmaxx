@@ -7,20 +7,22 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-03 active-goal ledger
 
-The first production W4A16/NF3 fused-MoE execution ABI is design candidate
-`fc5786dde5f88bc1f99efa8dd4c883f35b750c7e`. It consumes the real r2 codecs
-without moving the tensor-ID-ordered 94-GB rank arena: a 2,573,312-byte/rank
-binding table maps each layer's global experts to exact resident value, scale,
-metadata, codec, layout, and scalar records. Direct M1/2/4/8 work is
-token/slot deterministic; prefill is codec/expert stable. FC2 prefill scratch
-is tiled at 256 hidden columns, bounding the complete M3072 MoE workspace at
-126,225,408 bytes instead of a forbidden 603,979,776-byte untiled slot plane,
-while retaining slot-ordered FP32 FMA. Exact table/plan/step/work ABIs support
-compatible cubin generations without weight movement. The candidate passed
-the complete local gate: 414 Rust tests, formatting, Clippy, CPU proofs, and
-144 handoff provenance checks; CUDA was explicitly unavailable. Adversarial
-review is requested by
-`docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md`. This is no
+The first W4A16/NF3 fused-MoE ABI at `fc5786d` is superseded after a static
+cross-contract audit found seven implementation defects: layout-free target
+identity, pointer-tainted common hashes, module-dependent persistent bindings,
+no native-executor span boundary, no layer-78 program identity, disconnected
+buffer/shared-expert lifetimes, and changed logical compaction order. The
+corrective r2 candidate is
+`10f83f6862c6c345573ebef5bece69d95f4c58fc`. It retains the exact
+2,573,312-byte resident table, 1,839,104-byte M8 workspace, 126,225,408-byte
+tiled-M3072 workspace, and slot-ordered FP32 reduction, but adds layout-bound
+target/MTP programs, separate common and rank-local records, persistent table
+identity independent of modules, executor-span graph capture, canonical
+expert/token/slot compaction, and the routed-plus-shared BF16 rank-partial
+boundary. The complete local gate passed 414 Rust tests, formatting, Clippy,
+CPU proofs, and 145 handoff provenance checks; CUDA was explicitly
+unavailable. Adversarial review is requested by
+`docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`. This is no
 implementation, GPU, checkpoint, quality, capacity, reload, or speed result.
 
 The full CPU gate passed at design candidate
