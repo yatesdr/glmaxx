@@ -3,7 +3,7 @@
 Date: 2026-08-03
 
 Current host implementation baseline:
-`8ecbef4`
+`b92531a`
 
 ## 2026-08-03 active-goal ledger
 
@@ -40,6 +40,18 @@ layout and bounds the table payload at 273,408 bytes for 3,072-row prefill,
 The exact candidate passed the full local gate with 413 tests. This remains an
 unreviewed design: no target-layer implementation, CUDA result, model logits,
 quality, capacity, cold-start, or performance claim exists.
+
+The corrected quality/KLD contract is candidate
+`eb62b3d138880e7bfcacec74f975de5a017cd977`, with its exact review handoff at
+`b92531a`. It makes every MPFR-256 KLD intermediate and exception boundary
+normative, fixes the Wilson denominators/counts, defines zero-event bootstrap
+and seven-stratum Holm behavior, resizes task margins to strict but usable
+minimum-count gates, and retains frozen 1M retrieval as an exact hard gate.
+It separately pins a non-gating prior-cn4 diagnostic while forbidding reuse of
+vLLM worktrees, images, containers, caches, volumes, services, or results. The
+full local gate passed 413 tests. This is an unreviewed design only: no
+evaluator, model KLD, task, retrieval, CUDA, capacity, cold-start, latency,
+throughput, or serving result exists.
 
 The active cn4 workspace boundary is now
 `docs/cn4-experiment-isolation-v1.md`: every GLMAXX worktree, build, cache,
@@ -867,6 +879,7 @@ verdicts:
 | nonblocking Linux HTTP transport, first review withheld | `3608a03` | `docs/fable-nonblocking-http-transport-v1-handoff.md` |
 | nonblocking Linux HTTP transport r2 corrective design | `b7a2ac4` | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` |
 | quality, KLD, task, retrieval, and MTP numerical acceptance | `70222ab` | `docs/fable-quality-acceptance-v1-handoff.md` |
+| corrected quality/KLD numerical and statistical contract r2 | `eb62b3d` | `docs/fable-quality-acceptance-v1-r2-handoff.md` |
 | quarantined checkpoint load and four-rank adoption | `4bb0708` (r1 `737603b` superseded) | `docs/fable-checkpoint-load-transaction-v1-r2-handoff.md` |
 | consolidated checkpoint-load r3 contract and CPU/mock proof | `fc96d90` | `docs/fable-checkpoint-load-transaction-v1-r3-handoff.md` |
 | strict production rank-manifest validation v1, superseded | `46bff28` | `docs/fable-production-rank-manifest-validation-v1-handoff.md` |

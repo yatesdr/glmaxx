@@ -6,11 +6,11 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`d4817ff9ff7eec09c74e98a99db5c27690286013`
+`eb62b3d138880e7bfcacec74f975de5a017cd977`
 
-`review-proof-all` must verify 129 current handoffs and skip the two historical
+`review-proof-all` must verify 130 current handoffs and skip the two historical
 umbrella handoffs `docs/fable-phase-a-engine-handoff.md` and
-`docs/fable-review-handoff.md`. Forty of 111 configured result artifacts are
+`docs/fable-review-handoff.md`. Forty of 112 configured result artifacts are
 present: 36 machine-accepted and four explicitly withheld.
 
 The immediate source-to-first-batch review order is:
@@ -31,6 +31,11 @@ The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
 claiming zero weight traffic across tuning generations:
 `docs/fable-resident-weight-runtime-generation-v1-handoff.md`.
+
+The corrected quality/KLD contract is independently queued and may run in
+parallel with source reviews. It must pass before evaluator implementation or
+any GLMAXX quality claim:
+`docs/fable-quality-acceptance-v1-r2-handoff.md`.
 
 For every row, Fable should read the handoff itself and follow its exact
 provenance, scope, result-path, and token rules. Review the pinned candidate
@@ -171,6 +176,7 @@ result path; follow the output instructions in that handoff.
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
 | 128 | `docs/fable-resident-weight-runtime-generation-v1-handoff.md` | `9710c0db7245592a17084b65efe041010612bcfa` | `fable-resident-weight-runtime-generation-v1.md` | `resident-weight-runtime-generation-v1-design-accepted` |
 | 129 | `docs/fable-target-layer-execution-v1-r2-handoff.md` | `d4817ff9ff7eec09c74e98a99db5c27690286013` | `fable-target-layer-execution-v1-r2.md` | `target-layer-execution-v1-accepted` |
+| 130 | `docs/fable-quality-acceptance-v1-r2-handoff.md` | `eb62b3d138880e7bfcacec74f975de5a017cd977` | `fable-quality-acceptance-v1-r2.md` | `quality-acceptance-v1-accepted` |
 
 ## Verification command
 
@@ -181,5 +187,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 129 current handoffs and two
+The expected queue count for this document is 130 current handoffs and two
 explicitly skipped historical umbrella handoffs.
