@@ -1,9 +1,73 @@
 # Results index
 
-Date: 2026-07-30
+Date: 2026-08-03
 
 Current host implementation baseline:
-`7267b505fd4b83c9b421e5050277bf806a1e4867`
+`12c6e150c0e2432d1677ed417355757321a6e95f`
+
+## 2026-08-03 active-goal ledger
+
+The full CPU gate passed at design candidate
+`d3a5acd91422845a4665898405f05466763b8525`: formatting, Clippy with warnings
+denied, CUDA-FFI host checks, 413 Rust unit/integration tests, deterministic
+proof regeneration, C/C++ header checks, and all serving/cache proofs. The
+tokenizer fixture was not configured and this host has no CUDA compiler, so
+the gate reported both skips explicitly. After adding only the pinned review
+handoff, `review-proof-all` passed again at `12c6e15`, verifying 127 handoffs
+and 40 of 109 configured review results: 36 accepted, four withheld, and no
+provenance failure.
+
+The active cn4 workspace boundary is now
+`docs/cn4-experiment-isolation-v1.md`: every GLMAXX worktree, build, cache,
+temporary object, and non-overwriting evidence run belongs below
+`/home/derek/glmaxx`; production vLLM resources and checkpoint directories are
+never writable GLMAXX workspace. Raw artifacts remain external and concise
+results bind a sealed canonical manifest hash.
+
+Two real-checkpoint, no-GPU discovery records are current:
+
+- TR3 source evidence at
+  `/home/derek/glmaxx/evidence/20260803T132500Z-tr3-exl3-real-proof-7ebc39c-r2`
+  has evidence-manifest SHA-256
+  `29b18a87d378afbe65f2388e7c716c9aabaf1fc3c818b4d670338e85fc37501e`.
+  Six K=3 gate/up/down rank projections reconstructed exactly. The K=4
+  attempt failed closed and proved that the retained EXL3 source path is
+  incorrectly hard-coded to three bits. The mixed-K correction is candidate
+  `849c1d12bf42d92aecffe9003530a2a13dcc3dfe`, with review requested by
+  `da03944`; no implementation is permitted before that review.
+- NVFP4/NF3 hybrid inventory at
+  `/home/derek/glmaxx/evidence/20260803T133928Z-hybrid-format-inventory` has
+  evidence-manifest SHA-256
+  `5f495512ae0d9ba261343450985993c1fc0692d6ae5a4df9231d847ff89cfc6d`.
+  It pins checkpoint revision `68babde27a97a4c980c2494e830dd424975cd5a3`,
+  config/index/tier hashes, 14,400 NF3 plus 4,800 target NVFP4 assignments,
+  uniform-NVFP4 layer 78, representative source headers, and the exact NF3
+  codebook/packing derivation. The source/kernel design is candidate
+  `d3a5acd`, with review requested by `12c6e15`.
+
+Both cn4 records used only read-only checkpoint/source metadata paths. No CUDA
+context, kernel, model server, or container was started; the final hybrid
+inventory check found no GPU compute process and 0% utilization on every
+device. These are discovery records, not checkpoint admission, quality,
+capacity, cold-start, or performance evidence.
+
+The required public decode benchmark is pinned at Local Inference Lab commit
+`86cf05c2f42f4d21b909b6e684424ca1aab89fd5`, script version `0.4.29`, and
+`llm_decode_bench.py` SHA-256
+`fa227030012a8b55545af6b6a50fa4adcbdff8d003bb16469dc8e2de024ed0c0`.
+No endpoint was contacted and no benchmark result exists yet.
+
+The immediate source-ingest implementation blockers are exactly:
+
+1. adversarial acceptance of `docs/safetensors-index-total-size-v1.md` before
+   correcting the two real producer conventions;
+2. adversarial acceptance of
+   `docs/exl3-mixed-k-source-and-kernel-v1.md` before K=4 TR3 support; and
+3. adversarial acceptance of
+   `docs/nf3-nvfp4-hybrid-source-and-kernel-v1.md` before the independent NF3
+   parser, native packer, metadata, or proof.
+
+The historical 2026-07-30 ledger follows unchanged below.
 
 The complete local gate most recently ran at
 `7267b505fd4b83c9b421e5050277bf806a1e4867`, whose review-inbox
