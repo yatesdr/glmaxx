@@ -4,6 +4,7 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 allocator="${repo_dir}/scripts/new-evidence-run.sh"
 begin_runner="${repo_dir}/scripts/begin-evidence-run.sh"
+finish_runner="${repo_dir}/scripts/finish-evidence-run.sh"
 
 test_parent="${TMPDIR:-/tmp}"
 test_root="$(mktemp -d "${test_parent%/}/glmaxx-evidence-selftest.XXXXXX")"
@@ -116,6 +117,23 @@ if [[ "$(<"${first_run}/allocation-state.txt")" != "RUNNING" ]]; then
   echo "runner replay changed the consumed evidence state" >&2
   exit 1
 fi
+bash "${finish_runner}" "${first_run}" COMPLETE >/dev/null
+if [[ "$(<"${first_run}/allocation-state.txt")" != "COMPLETE" ||
+      "$(<"${first_run}/terminal-claim-v1/terminal-contract.txt")" != \
+        "glmaxx-evidence-terminal-v1" ||
+      "$(<"${first_run}/terminal-claim-v1/terminal-state.txt")" != \
+        "COMPLETE" ]]; then
+  echo "runner did not publish the exact terminal state" >&2
+  exit 1
+fi
+if bash "${finish_runner}" "${first_run}" FAILED >/dev/null 2>&1; then
+  echo "terminal publication replayed a completed run" >&2
+  exit 1
+fi
+if [[ "$(<"${first_run}/allocation-state.txt")" != "COMPLETE" ]]; then
+  echo "terminal replay changed a completed run" >&2
+  exit 1
+fi
 
 printf '%s\n' "tampered-basename" >"${second_run}/run-directory-basename.txt"
 if bash "${begin_runner}" "${second_run}" >/dev/null 2>&1; then
@@ -138,6 +156,19 @@ if [[ -e "${line_tamper}/runner-claim-v1" ]]; then
   echo "noncanonical receipt rejection claimed the allocation" >&2
   exit 1
 fi
+
+invalid_terminal="$(bash "${allocator}" "${evidence_root}" invalid-terminal)"
+bash "${begin_runner}" "${invalid_terminal}" >/dev/null
+if bash "${finish_runner}" "${invalid_terminal}" SUCCESS >/dev/null 2>&1; then
+  echo "terminal publisher accepted an invalid terminal state" >&2
+  exit 1
+fi
+if [[ "$(<"${invalid_terminal}/allocation-state.txt")" != "RUNNING" ||
+      -e "${invalid_terminal}/terminal-claim-v1" ]]; then
+  echo "invalid terminal-state rejection mutated the running allocation" >&2
+  exit 1
+fi
+bash "${finish_runner}" "${invalid_terminal}" FAILED >/dev/null
 
 claim_race="$(bash "${allocator}" "${evidence_root}" claim-race)"
 set +e
@@ -162,6 +193,44 @@ fi
 if [[ "${claim_successes}" != "1" ||
       "$(<"${claim_race}/allocation-state.txt")" != "RUNNING" ]]; then
   echo "concurrent runner claim did not select exactly one consumer" >&2
+  exit 1
+fi
+bash "${finish_runner}" "${claim_race}" FAILED >/dev/null
+if [[ "$(<"${claim_race}/allocation-state.txt")" != "FAILED" ]]; then
+  echo "runner failure did not publish FAILED" >&2
+  exit 1
+fi
+
+finish_race="$(bash "${allocator}" "${evidence_root}" finish-race)"
+bash "${begin_runner}" "${finish_race}" >/dev/null
+set +e
+bash "${finish_runner}" "${finish_race}" COMPLETE \
+  >"${test_root}/finish-race-0.out" 2>"${test_root}/finish-race-0.err" &
+finish_pid_0="$!"
+bash "${finish_runner}" "${finish_race}" FAILED \
+  >"${test_root}/finish-race-1.out" 2>"${test_root}/finish-race-1.err" &
+finish_pid_1="$!"
+wait "${finish_pid_0}"
+finish_status_0="$?"
+wait "${finish_pid_1}"
+finish_status_1="$?"
+set -e
+finish_successes=0
+if [[ "${finish_status_0}" == "0" ]]; then
+  ((finish_successes += 1))
+fi
+if [[ "${finish_status_1}" == "0" ]]; then
+  ((finish_successes += 1))
+fi
+if [[ "${finish_successes}" != "1" ]]; then
+  echo "concurrent terminal publication did not select exactly one winner" >&2
+  exit 1
+fi
+finish_state="$(<"${finish_race}/allocation-state.txt")"
+finish_receipt="$(<"${finish_race}/terminal-claim-v1/terminal-state.txt")"
+if [[ "${finish_state}" != "${finish_receipt}" ||
+      ("${finish_state}" != "COMPLETE" && "${finish_state}" != "FAILED") ]]; then
+  echo "winning terminal publication disagrees with its state receipt" >&2
   exit 1
 fi
 
@@ -220,4 +289,4 @@ if bash "${allocator}" / phase-b >/dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' "evidence-run-selftest=pass allocations=12 concurrent=8 runner-claims=2 rejection-cases=8"
+printf '%s\n' "evidence-run-selftest=pass allocations=14 concurrent=8 runner-claims=4 terminal-claims=4 rejection-cases=10"
