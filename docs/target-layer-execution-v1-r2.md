@@ -170,9 +170,9 @@ SHA256(
 For the exact pinned inner hashes
 `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b`
 and
-`f2fb8ec8c81c63e76b7a0639fddc8c74719faff2a972bafcdf0b1d5de8db3db7`,
+`061903d0a0cf2a284f35b177da5f1c3484cb61dfd9020f627db7b5632a4f2b6b`,
 the composite is
-`8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`.
+`95fa7aa3b4b0b78a3f8313705d25e4c11682632fce6d8b8c2355b8130745f58c`.
 An absent or unaccepted r2 successor, either changed inner file, a different
 composite, or a rank-local sampling contract prevents target-program
 construction. This dependency creates no hash cycle: sampling binds the two
