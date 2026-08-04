@@ -91,6 +91,7 @@ clang -std=c11 -x c \
 for script in scripts/*.sh; do
   bash -n "${script}"
 done
+./scripts/cn4-ncu-capture-selftest.sh
 
 if command -v nvcc >/dev/null 2>&1; then
   echo "nvcc is present; CUDA execution still requires explicit cn4 authorization"

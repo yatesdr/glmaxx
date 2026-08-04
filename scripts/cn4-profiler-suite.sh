@@ -161,20 +161,7 @@ run_counter_case() {
     > "${nsys_base}-stats.csv"
 
   check_idle
-  ncu \
-    --target-processes all \
-    --replay-mode kernel \
-    --nvtx \
-    --nvtx-include "glmaxx-profile/" \
-    --section LaunchStats \
-    --section Occupancy \
-    --section SpeedOfLight \
-    --section MemoryWorkloadAnalysis \
-    --section SchedulerStats \
-    --section WarpStateStats \
-    --section InstructionStats \
-    --force-overwrite false \
-    --export "${ncu_base}" \
+  "${repo_dir}/scripts/cn4-ncu-capture.sh" "${ncu_base}" \
     "${runner}" gpu-profile-case "${backend}" "${mode}" "${phase}" "${routing}" \
       "${rows}" 5 1 "${ncu_target}" \
     > "${GLMAXX_EVIDENCE_DIR}/commands/ncu-${case_id}.txt" 2>&1

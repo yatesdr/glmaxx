@@ -91,7 +91,11 @@ Nsight Systems uses the CUDA profiler API as its capture range. Nsight Compute
 uses the exact outer NVTX push/pop range, kernel replay, and the required
 LaunchStats, Occupancy, SpeedOfLight, MemoryWorkloadAnalysis, SchedulerStats,
 WarpStateStats, and InstructionStats sections. Counter replay is never used as
-latency evidence.
+latency evidence. The suite gives Nsight Compute a fresh export base and omits
+`--force-overwrite`: CUDA 13.3's Nsight Compute 2026.2 defines that option as a
+valueless flag, so an added `false` token would become the executable instead
+of an option value. The CPU self-test captures the complete argument vector and
+requires the GLMAXX runner to be the first target token.
 
 ## Byte and throughput records
 
