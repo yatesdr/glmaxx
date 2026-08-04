@@ -58,10 +58,10 @@ finalize() {
     local exit_code=$?
     trap - EXIT HUP INT TERM
     set +e
-    date -u +%Y-%m-%dT%H:%M:%SZ >"${run}/command-finish-utc.txt"
-    nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
-        --format=csv,noheader >"${run}/compute-apps-after.csv"
     if [[ "$(<"${run}/allocation-state.txt")" == "RUNNING" ]]; then
+        date -u +%Y-%m-%dT%H:%M:%SZ >"${run}/command-finish-utc.txt"
+        nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+            --format=csv,noheader >"${run}/compute-apps-after.csv"
         "${source}/scripts/finish-evidence-run.sh" "${run}" "${terminal}" >/dev/null
     fi
     printf 'RUN_DIR=%s\n' "${run}"
@@ -137,6 +137,9 @@ jq -n \
     }' >"${run}/summary.json"
 
 [[ -z "$(git -C "${source}" status --porcelain)" ]]
+date -u +%Y-%m-%dT%H:%M:%SZ >"${run}/command-finish-utc.txt"
+nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory \
+    --format=csv,noheader >"${run}/compute-apps-after.csv"
 terminal="COMPLETE"
 "${source}/scripts/finish-evidence-run.sh" "${run}" "${terminal}" >/dev/null
 cat "${run}/summary.json"
