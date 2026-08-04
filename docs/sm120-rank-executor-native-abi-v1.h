@@ -70,7 +70,7 @@ enum glmaxx_executor_arena_role_v1 {
   GLMAXX_ARENA_ROLE_DEVICE_CODEC_METADATA = 2,
   GLMAXX_ARENA_ROLE_DEVICE_TARGET_KV = 3,
   GLMAXX_ARENA_ROLE_DEVICE_TARGET_INDEXER = 4,
-  GLMAXX_ARENA_ROLE_DEVICE_DRAFT_SIDECAR = 5,
+  GLMAXX_ARENA_ROLE_DEVICE_RECURRENT_STATE = 5,
   GLMAXX_ARENA_ROLE_DEVICE_PAGE_TABLE = 6,
   GLMAXX_ARENA_ROLE_DEVICE_GRAPH_ARGUMENT = 7,
   GLMAXX_ARENA_ROLE_DEVICE_GRAPH_SCRATCH = 8,
@@ -232,7 +232,8 @@ struct GLMAXX_EXECUTOR_ALIGN16 glmaxx_executor_module_capability_v1 {
   uint64_t tensor_role_mask;
   uint8_t module_sha256[32];
   uint8_t family_capability_sha256[32];
-  uint64_t reserved[8];
+  uint8_t graph_memory_abi_sha256[32];
+  uint64_t reserved[4];
 };
 
 struct GLMAXX_EXECUTOR_ALIGN16 glmaxx_executor_arena_desc_v1 {
