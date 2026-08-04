@@ -14,9 +14,10 @@ if [[ "${GLMAXX_CN4_AUTHORIZATION:-}" != "${expected_authorization}" ]]; then
   echo "Refusing GPU work: the active-goal authorization marker is required" >&2
   exit 64
 fi
-if [[ -z "${CUTLASS_DIR:-}" || -z "${GLMAXX_EVIDENCE_DIR:-}" ||
+if [[ -z "${CUTLASS_DIR:-}" || -z "${GLMAXX_BUILD_DIR:-}" ||
+      -z "${GLMAXX_EVIDENCE_DIR:-}" ||
       -z "${GLMAXX_TR3_SHARD:-}" || -z "${GLMAXX_CONTAINER_DIGEST:-}" ]]; then
-  echo "CUTLASS_DIR, GLMAXX_EVIDENCE_DIR, GLMAXX_TR3_SHARD, and GLMAXX_CONTAINER_DIGEST are required" >&2
+  echo "CUTLASS_DIR, GLMAXX_BUILD_DIR, GLMAXX_EVIDENCE_DIR, GLMAXX_TR3_SHARD, and GLMAXX_CONTAINER_DIGEST are required" >&2
   exit 64
 fi
 if [[ "${GLMAXX_CONTAINER_DIGEST}" != "${expected_container}" ]]; then
@@ -32,8 +33,15 @@ case "${GLMAXX_EVIDENCE_DIR}" in
     exit 64
     ;;
 esac
-if [[ -e "${GLMAXX_EVIDENCE_DIR}" ]]; then
-  echo "Evidence directory must not exist" >&2
+case "${GLMAXX_BUILD_DIR}" in
+  "${repo_dir}"|"${repo_dir}"/*)
+    echo "Build directory must be outside the Git repository" >&2
+    exit 64
+    ;;
+esac
+if [[ "${GLMAXX_BUILD_DIR}" == "${GLMAXX_EVIDENCE_DIR}" ||
+      -e "${GLMAXX_EVIDENCE_DIR}" || -e "${GLMAXX_BUILD_DIR}" ]]; then
+  echo "Distinct build and evidence directories must not exist" >&2
   exit 65
 fi
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -106,7 +114,7 @@ if [[ "${shard_sha256}" != "${expected_shard_sha256}" ]]; then
   exit 70
 fi
 
-mkdir -p "${GLMAXX_EVIDENCE_DIR}"
+mkdir -p "${GLMAXX_EVIDENCE_DIR}" "${GLMAXX_BUILD_DIR}"
 readonly source_commit="$(git rev-parse HEAD)"
 readonly review_sha256="$(sha256sum "${review_artifact}" | awk '{print $1}')"
 
@@ -137,6 +145,7 @@ printf '%s\n' "${source_commit}" > "${GLMAXX_EVIDENCE_DIR}/source-commit.txt"
 git status --short --branch > "${GLMAXX_EVIDENCE_DIR}/source-status-before.txt"
 git diff --binary HEAD > "${GLMAXX_EVIDENCE_DIR}/source-diff.patch"
 printf '%s\n' "${GLMAXX_CONTAINER_DIGEST}" > "${GLMAXX_EVIDENCE_DIR}/container-digest.txt"
+printf '%s\n' "${GLMAXX_BUILD_DIR}" > "${GLMAXX_EVIDENCE_DIR}/build-dir.txt"
 printf '%s  %s\n' "${shard_sha256}" "${shard}" > "${GLMAXX_EVIDENCE_DIR}/checkpoint-shard-sha256.txt"
 printf '%s  %s\n' "${review_sha256}" "${expected_review_artifact}" > "${GLMAXX_EVIDENCE_DIR}/review-artifact-sha256.txt"
 printf '%s\n' "${reviewed_oracle_sha256}" > "${GLMAXX_EVIDENCE_DIR}/reviewed-oracle-sha256.txt"
@@ -152,27 +161,27 @@ sha256sum Cargo.lock crates/glm-cli/Cargo.toml \
   scripts/cn4-exl3-real-k3-v1.sh "${review_artifact}" \
   > "${GLMAXX_EVIDENCE_DIR}/input-sha256.txt"
 
-export CARGO_TARGET_DIR="${GLMAXX_EVIDENCE_DIR}/cargo-target"
+export CARGO_TARGET_DIR="${GLMAXX_BUILD_DIR}/cargo-target"
 cargo test --workspace --offline 2>&1 | tee "${GLMAXX_EVIDENCE_DIR}/cargo-test.txt"
-build_dir="${GLMAXX_EVIDENCE_DIR}/kernel-build"
-cmake -S kernels -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+kernel_build="${GLMAXX_BUILD_DIR}/kernel"
+cmake -S kernels -B "${kernel_build}" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCUTLASS_DIR="${CUTLASS_DIR}" 2>&1 | tee "${GLMAXX_EVIDENCE_DIR}/cmake-configure.txt"
-cmake --build "${build_dir}" --target glmaxx_sm120 --verbose 2>&1 \
+cmake --build "${kernel_build}" --target glmaxx_sm120 --verbose 2>&1 \
   | tee "${GLMAXX_EVIDENCE_DIR}/cmake-build.txt"
-cuobjdump --list-elf "${build_dir}/libglmaxx_sm120.so" \
+cuobjdump --list-elf "${kernel_build}/libglmaxx_sm120.so" \
   | tee "${GLMAXX_EVIDENCE_DIR}/cuobjdump-elf.txt"
 if ! grep -Fq 'exl3_projection_control.sm_120.cubin' "${GLMAXX_EVIDENCE_DIR}/cuobjdump-elf.txt"; then
   echo "Scalar EXL3 SM120 cubin is missing" >&2
   exit 70
 fi
-export GLMAXX_KERNEL_LIB_DIR="${build_dir}"
-export LD_LIBRARY_PATH="${build_dir}:${LD_LIBRARY_PATH:-}"
+export GLMAXX_KERNEL_LIB_DIR="${kernel_build}"
+export LD_LIBRARY_PATH="${kernel_build}:${LD_LIBRARY_PATH:-}"
 cargo test --offline -p glm-cli --features cuda-ffi --bin glmaxx-exl3-real-k3-v1 \
   2>&1 | tee "${GLMAXX_EVIDENCE_DIR}/cargo-harness-test.txt"
 cargo build --release --offline -p glm-cli --features cuda-ffi \
   --bin glmaxx-exl3-real-k3-v1 2>&1 | tee "${GLMAXX_EVIDENCE_DIR}/cargo-cuda-build.txt"
 runner="${CARGO_TARGET_DIR}/release/glmaxx-exl3-real-k3-v1"
-sha256sum "${runner}" "${build_dir}/libglmaxx_sm120.so" \
+sha256sum "${runner}" "${kernel_build}/libglmaxx_sm120.so" \
   > "${GLMAXX_EVIDENCE_DIR}/build-artifact-sha256.txt"
 
 check_idle
