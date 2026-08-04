@@ -552,6 +552,7 @@ int32_t glmaxx_executor_graph_destroy_v1(
 /* Device-validation construction and asynchronous status query. */
 int32_t glmaxx_executor_validation_node_add_v1(
     glmaxx_executor_handle_v1 graph_builder,
+    glmaxx_executor_handle_v1 validation_module,
     const struct glmaxx_executor_validation_desc_v1* descriptor,
     struct glmaxx_executor_error_v1* error) GLMAXX_EXECUTOR_NOEXCEPT;
 int32_t glmaxx_executor_device_status_query_v1(
