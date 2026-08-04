@@ -62,6 +62,7 @@ use sha2::{Digest, Sha256};
 
 mod cache_proof;
 mod host_profile;
+mod page_profile;
 mod profile;
 mod review;
 
@@ -213,6 +214,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let warmups = parse_argument::<u32>(&arguments, 4, "warmups")?;
             let iterations = parse_argument::<u32>(&arguments, 5, "iterations")?;
             host_profile::write_serving_host_profile(
+                Path::new(evidence),
+                source_commit,
+                warmups,
+                iterations,
+            )?;
+        }
+        Some("page-transaction-profile") => {
+            if arguments.len() != 6 {
+                return Err(
+                    "page-transaction-profile requires evidence-dir source-commit warmups iterations"
+                        .into(),
+                );
+            }
+            let evidence = arguments
+                .get(2)
+                .ok_or("page-transaction-profile requires an evidence directory")?;
+            let source_commit = arguments
+                .get(3)
+                .ok_or("page-transaction-profile requires a source commit")?;
+            let warmups = parse_argument::<u32>(&arguments, 4, "warmups")?;
+            let iterations = parse_argument::<u32>(&arguments, 5, "iterations")?;
+            page_profile::write_page_transaction_profile(
                 Path::new(evidence),
                 source_commit,
                 warmups,
@@ -614,7 +637,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|serving-host-profile evidence-dir source-commit warmups iterations|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-fc1-reduction-probe evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|serving-host-profile evidence-dir source-commit warmups iterations|page-transaction-profile evidence-dir source-commit warmups iterations|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-fc1-reduction-probe evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
                     .into(),
             );
         }
