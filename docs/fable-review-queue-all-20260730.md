@@ -22,7 +22,7 @@ The immediate source-to-first-batch review order is:
 3. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`;
 4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
 5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
-6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
+6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md`;
 7. `docs/fable-sm120-rank-executor-v1-r3-handoff.md`;
 8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
 9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
@@ -226,7 +226,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 135 | `docs/fable-fc2-grouped-control-scratch-r1-handoff.md` | `da65e63c8ebbe303335ca2636a3b56d7f1dfe028` | `fable-fc2-grouped-control-scratch-r1.md` | superseded; do not issue `fc2-grouped-control-scratch-r1-design-accepted` |
 | 136 | `docs/fable-hybrid-mtp3-capacity-ledger-v1-handoff.md` | `94b09e7a2c4281116f38eed10b4ce97e35ebf833` | `fable-hybrid-mtp3-capacity-ledger-v1.md` | superseded; do not issue `hybrid-mtp3-capacity-ledger-v1-design-accepted` |
 | 137 | `docs/fable-nf3-nvfp4-native-rank-manifest-v1-handoff.md` | `b1584a989f5878c1b433ea54ffb0dc2925b03f9e` | `fable-nf3-nvfp4-native-rank-manifest-v1.md` | superseded; do not issue `nf3-nvfp4-native-rank-manifest-v1-design-accepted` |
-| 138 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md` | `23e6e26c172e370b63608a07aa2f781a24faef24` | `fable-exl3-mixed-k-source-and-kernel-v1-r2.md` | `exl3-mixed-k-source-and-kernel-v1-r2-design-accepted` |
+| 138 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md` | `23e6e26c172e370b63608a07aa2f781a24faef24` | `fable-exl3-mixed-k-source-and-kernel-v1-r2.md` | superseded; do not issue `exl3-mixed-k-source-and-kernel-v1-r2-design-accepted` |
 | 139 | `docs/fable-fc2-grouped-control-scratch-r2-handoff.md` | `419c2b0832723f5ffaeecbbc39c9ad6fd8652be7` | `fable-fc2-grouped-control-scratch-r2.md` | `fc2-grouped-control-scratch-r2-design-accepted` |
 | 140 | `docs/fable-safetensors-index-total-size-v1-r2-handoff.md` | `1e2d0e2f10a363c2c3cdb79b73c419d49f5b10e2` | `fable-safetensors-index-total-size-v1-r2.md` | `safetensors-index-total-size-v1-r2-design-accepted` |
 | 141 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2.md` | `nf3-modelopt-nvfp4-source-kernel-v1-r2-design-accepted` |
@@ -249,6 +249,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 158 | `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md` | `7b6a98630ed612d923d7656b8723d44e5aa67b8c` | `fable-exl3-grouped-gate-up-sm120-v1-r2.md` | `exl3-grouped-gate-up-sm120-v1-r2-design-accepted` |
 | 159 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f` | `docs/reviews/fable-sm120-rank-executor-v1-r3.md` | superseded; do not issue `sm120-rank-executor-v1-r3-design-accepted` |
 | 160 | `docs/fable-sm120-rank-executor-v1-r4-handoff.md` | `688f5c7a4bfb79ed884693a968013a12a394d530` | `docs/reviews/fable-sm120-rank-executor-v1-r4.md` | `sm120-rank-executor-v1-r4-design-accepted` |
+| 161 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md` | `b4dc806db89076ac015bd25d942b3d2ebfb724b3` | `docs/reviews/fable-exl3-mixed-k-source-and-kernel-v1-r3.md` | `exl3-mixed-k-source-and-kernel-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -259,5 +260,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 160 current handoffs and two
+The expected queue count for this document is 161 current handoffs and two
 explicitly skipped historical umbrella handoffs.
