@@ -11,7 +11,7 @@ runtime resource. This is a source, arithmetic, serialization, and CPU-design
 gate only.
 
 Review candidate commit:
-`c989180b302564debcd26b1d3a1f577a66932ee8`
+`8b3b44191abe52c8d0296875942b98b87609cefe`
 
 Required result path:
 `fable-target-layer-execution-v1-r2.md` at the repository root.
@@ -32,6 +32,12 @@ but it must not promote sampling v1. Target-program construction remains
 closed until an independently accepted sampling successor supplies the exact
 hash bound by that field.
 
+The corrective successor candidate is
+`docs/distributed-sampling-abi-v1-r2.md`. Its own handoff requests the token
+`distributed-sampling-abi-v1-r2-design-accepted`; absence of that independent
+token keeps target-program construction closed even if this target review
+accepts the composite-field wiring.
+
 ## Provenance
 
 Review the exact candidate in a detached worktree. Hash every input at review
@@ -39,7 +45,7 @@ start and finish. Withhold the token for a mismatch or incomplete input.
 
 | Input at candidate commit | SHA-256 |
 |---|---|
-| `docs/target-layer-execution-v1-r2.md` | `fce2c70deac0ee5c082cc92db7b2b1e611d0d8da190e637dd55a06811a385bb1` |
+| `docs/target-layer-execution-v1-r2.md` | `b3fd0a813e6e28d9399d9949cdfc2954241f53d60764e4ddacc2b458a07a845b` |
 | `docs/target-layer-r2-preflight-erratum-20260804.md` | `4e27b469d3e0ba2c3727b0c14ec4ef3da7f1eaeec5218c8f9208a9e22fe3412a` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/manifest-source-audit-20260729.md` | `61278e9a0f85f692357ca4c193771d3d4c0487537f80cb77b2eeb956ee916ff8` |
@@ -48,6 +54,7 @@ start and finish. Withhold the token for a mismatch or incomplete input.
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
+| `docs/distributed-sampling-abi-v1-r2.md` | `f2fb8ec8c81c63e76b7a0639fddc8c74719faff2a972bafcdf0b1d5de8db3db7` |
 | `docs/serving-page-transaction-v1.md` | `31983cce95ee01a5968213d5daf12c7a855f75f8735314700f2b4a9e55625d1a` |
 | `docs/sm120-rank-runtime.md` | `908b8adf0e1fc230145c009db01c71e69437ab359c76a545031fd9157c1ceea9` |
 | `docs/prefill-graph-profile-abi-v2.md` | `37154c9e31109acdf35a382c6be87b3a865e2b7f6ae8f801969526789dd41f91` |
@@ -106,7 +113,10 @@ Do not accept the amendment by prose inspection alone. Independently:
 1. fetch and hash the exact external source, then derive the Q-A/KV-A,
    input/post/final, and indexer-K normalization epsilons and RoPE mode;
 2. serialize every `TargetProgramEntry.v1` hash preimage from the normative
-   tensor bindings. Recompute the expected 39,594 ten-byte binding records:
+   tensor bindings, including recomputation of the sampling v1+r2 composite
+   `8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`
+   consumed by the final-head entry. Recompute the expected 39,594 ten-byte
+   binding records:
    embedding 1, final 2, three dense layers at 17 each, eighteen full-indexer
    sparse layers at 531 each, and fifty-seven shared-indexer sparse layers at
    526 each;
@@ -166,8 +176,9 @@ Answer every decision with an unqualified `YES` or `NO`:
    phase table, lifetime table, page table, or pending-logit table without
    claiming an absent physical graph-buffer map?
 10. Are the target operator order, absorbed-MLA shapes, DCP routes, sparse-MoE
-    arithmetic, residual precision, and distributed sampling bindings still
-    complete after the r2 amendments?
+    arithmetic, residual precision, and distributed-sampling v1+r2 composite
+    binding complete, cycle-free, and fail-closed on absent sampling-r2
+    acceptance?
 11. Do controls A, B, and C isolate source codec error from packed-kernel
     error without changing precision membership, model math, or batch shape?
 12. Does the r2 amendment resolve every blocker, major, minor, and question in
@@ -185,7 +196,7 @@ Answer every decision with an unqualified `YES` or `NO`:
 
 Return findings ordered `BLOCKER`, `MAJOR`, `MINOR`, and `QUESTION`, followed
 by the independent derivations and all sixteen decisions. Only if every
-decision is `YES`, attest the candidate commit and all twenty-two exact input
+decision is `YES`, attest the candidate commit and all twenty-three exact input
 hashes, then end with the requested token as the only bare acceptance line.
 
 Acceptance opens only a CPU target-program, phase/logical-lifetime/table ABI,
