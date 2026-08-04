@@ -561,21 +561,36 @@ fn verify_review_queue_text(
             )));
         }
 
-        if let Some(required_result_path) = exact_code_cell(cells[3])
-            && proof.required_result_path.as_deref() != Some(required_result_path.as_str())
-        {
-            return Err(ReviewProofError::Format(format!(
-                "review queue result-path mismatch for {handoff_path}: expected {:?}, observed {required_result_path}",
-                proof.required_result_path
-            )));
+        let queued_result_path = exact_code_cell(cells[3]);
+        match proof.required_result_path.as_deref() {
+            Some(expected) if queued_result_path.as_deref() != Some(expected) => {
+                return Err(ReviewProofError::Format(format!(
+                    "review queue result-path mismatch for {handoff_path}: expected {expected}, observed {:?}",
+                    queued_result_path
+                )));
+            }
+            None if queued_result_path.is_some() || cells[3] != "—" => {
+                return Err(ReviewProofError::Format(format!(
+                    "review queue result-path mismatch for {handoff_path}: expected no configured result, observed {}",
+                    cells[3]
+                )));
+            }
+            _ => {}
         }
-        if let Some(requested_token) = exact_code_cell(cells[4])
-            && proof.requested_acceptance_token.as_deref() != Some(requested_token.as_str())
-        {
-            return Err(ReviewProofError::Format(format!(
-                "review queue token mismatch for {handoff_path}: expected {:?}, observed {requested_token}",
-                proof.requested_acceptance_token
-            )));
+
+        let queued_tokens = inline_code_values(cells[4]);
+        match proof.requested_acceptance_token.as_deref() {
+            Some(expected) if queued_tokens.as_slice() != [expected] => {
+                return Err(ReviewProofError::Format(format!(
+                    "review queue token mismatch for {handoff_path}: expected exactly one {expected}, observed {queued_tokens:?}"
+                )));
+            }
+            None if !queued_tokens.is_empty() => {
+                return Err(ReviewProofError::Format(format!(
+                    "review queue token mismatch for {handoff_path}: expected no requested token, observed {queued_tokens:?}"
+                )));
+            }
+            _ => {}
         }
     }
 
@@ -926,6 +941,22 @@ fn first_code_value(text: &str) -> Option<String> {
 fn exact_code_cell(text: &str) -> Option<String> {
     let value = text.trim().strip_prefix('`')?.strip_suffix('`')?;
     (!value.is_empty() && !value.contains('`')).then(|| value.to_owned())
+}
+
+fn inline_code_values(text: &str) -> Vec<String> {
+    let mut remainder = text;
+    let mut values = Vec::new();
+    while let Some(start) = remainder.find('`') {
+        remainder = &remainder[start + 1..];
+        let Some(end) = remainder.find('`') else {
+            break;
+        };
+        if end != 0 {
+            values.push(remainder[..end].to_owned());
+        }
+        remainder = &remainder[end + 1..];
+    }
+    values
 }
 
 fn bare_acceptance_lines(text: &str) -> Vec<String> {
@@ -1570,9 +1601,23 @@ mod tests {
                 .to_string()
                 .contains("result-path mismatch")
         );
+        let result_as_prose = queue.replace("`fable-first.md`", "fable-first.md");
+        assert!(
+            verify_review_queue_text(&result_as_prose, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("result-path mismatch")
+        );
         let bad_token = queue.replace("`first-v1-accepted`", "`wrong-v1-accepted`");
         assert!(
             verify_review_queue_text(&bad_token, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("token mismatch")
+        );
+        let token_as_prose = queue.replace("`first-v1-accepted`", "first-v1-accepted");
+        assert!(
+            verify_review_queue_text(&token_as_prose, &[first.clone(), second.clone()])
                 .unwrap_err()
                 .to_string()
                 .contains("token mismatch")
