@@ -9,6 +9,11 @@ version.workspace = true
 name = "glmaxx"
 path = "src/main.rs"
 
+[[bin]]
+name = "glmaxx-exl3-staged-v2"
+path = "src/bin/exl3_staged_v2.rs"
+required-features = ["cuda-ffi"]
+
 [features]
 default = []
 cuda-ffi = ["glm-cuda/cuda-ffi", "glm-engine/cuda-ffi"]

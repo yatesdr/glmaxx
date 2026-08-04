@@ -6,7 +6,7 @@
 // persistent dense weight matrix. The retained control is the reference for
 // later fragment-local SM120 optimization.
 
-#include "glmaxx_kernel.h"
+#include "glmaxx_exl3_staged_v2.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
@@ -22,6 +22,8 @@ constexpr uint32_t kH128 = 128;
 constexpr uint32_t kTile = 16;
 constexpr uint32_t kTrellisHalvesPerTile = 16 * kBits;
 constexpr uint32_t kTrellisWordsPerTile = 8 * kBits;
+constexpr uint32_t kStageTiles = 8;
+constexpr uint32_t kStagedDecodeMaximumRows = 8;
 constexpr uint32_t kMcgMultiplier = 0xCBAC1FEDu;
 constexpr uint32_t kLop3Mask = 0x8FFF8FFFu;
 constexpr uint32_t kLop3Xor = 0x3B603B60u;
@@ -75,6 +77,37 @@ __device__ __forceinline__ uint16_t decode_weight_bits(
       (multiplied & kLop3Mask) ^ kLop3Xor;
   const __half low =
       __ushort_as_half(static_cast<uint16_t>(packed));
+  const __half high =
+      __ushort_as_half(static_cast<uint16_t>(packed >> 16));
+  return __half_as_ushort(__float2half_rn(
+      __fadd_rn(__half2float(low), __half2float(high))));
+}
+
+__device__ __forceinline__ uint16_t decode_staged_weight_bits(
+    const uint32_t* tile_words, uint32_t local_row,
+    uint32_t local_column) {
+  const uint32_t row_quadrant = (local_row & 7u) >> 1;
+  const uint32_t row_selector =
+      (local_row >= 8u ? 2u : 0u) + (local_row & 1u);
+  const uint32_t column_group = (local_column >> 1) & 3u;
+  const uint32_t parity = local_column & 1u;
+  const uint32_t lane =
+      column_group * 8u + parity * 4u + row_quadrant;
+  const uint32_t weight =
+      (local_column >= 8u ? 4u : 0u) + row_selector;
+  const uint32_t end_bit = (lane * 8u + weight + 257u) * kBits;
+  const uint32_t start_bit = end_bit - 16u;
+  const uint32_t first_word = start_bit / 32u;
+  const uint32_t last_word = (end_bit - 1u) / 32u;
+  const uint32_t shift = (last_word + 1u) * 32u - end_bit;
+  const uint32_t first = tile_words[first_word % kTrellisWordsPerTile];
+  const uint32_t last = tile_words[last_word % kTrellisWordsPerTile];
+  const uint64_t merged = (uint64_t{first} << 32) | last;
+  const uint16_t window =
+      static_cast<uint16_t>((merged >> shift) & 0xffffu);
+  const uint32_t multiplied = uint32_t{window} * kMcgMultiplier;
+  const uint32_t packed = (multiplied & kLop3Mask) ^ kLop3Xor;
+  const __half low = __ushort_as_half(static_cast<uint16_t>(packed));
   const __half high =
       __ushort_as_half(static_cast<uint16_t>(packed >> 16));
   return __half_as_ushort(__float2half_rn(
@@ -165,6 +198,73 @@ __global__ void project_native_f16(
       atomicOr(validation, 2u);
     }
     projected[linear] =
+        __half_as_ushort(__float2half_rn(accumulator));
+  }
+}
+
+__global__ void project_staged_decode_f16(
+    glmaxx_exl3_descriptor descriptor) {
+  __shared__ uint32_t staged_words[kStageTiles][kTrellisWordsPerTile];
+
+  const uint32_t thread = threadIdx.x;
+  const uint32_t warp = thread >> 5;
+  const uint32_t lane = thread & 31u;
+  const uint32_t row = warp * 2u + (lane >> 4);
+  const uint32_t local_column = lane & 15u;
+  const uint32_t n_tile = blockIdx.x;
+  const uint32_t column = n_tile * kTile + local_column;
+  const bool active = row < descriptor.rows;
+  const uint32_t n_tiles = descriptor.logical_n / kTile;
+  const uint32_t k_tiles = descriptor.logical_k / kTile;
+  const auto* trellis_words =
+      reinterpret_cast<const uint32_t*>(descriptor.trellis_u16);
+  const auto* rotated = reinterpret_cast<const uint16_t*>(
+      descriptor.rotated_input_f16);
+  auto* projected =
+      reinterpret_cast<uint16_t*>(descriptor.projected_f16);
+  auto* validation =
+      reinterpret_cast<uint32_t*>(descriptor.validation_error_u32);
+  float accumulator = 0.0f;
+
+  for (uint32_t stage_base = 0; stage_base < k_tiles;
+       stage_base += kStageTiles) {
+    if (thread < kStageTiles * kTrellisWordsPerTile) {
+      const uint32_t stage_tile = thread / kTrellisWordsPerTile;
+      const uint32_t word = thread % kTrellisWordsPerTile;
+      const uint64_t tile_index =
+          uint64_t{stage_base + stage_tile} * n_tiles + n_tile;
+      staged_words[stage_tile][word] =
+          trellis_words[tile_index * kTrellisWordsPerTile + word];
+    }
+    __syncthreads();
+
+    if (active) {
+#pragma unroll
+      for (uint32_t stage_tile = 0; stage_tile < kStageTiles;
+           ++stage_tile) {
+#pragma unroll
+        for (uint32_t local_row = 0; local_row < kTile;
+             ++local_row) {
+          const uint32_t inner =
+              (stage_base + stage_tile) * kTile + local_row;
+          const float activation = half_bits_to_float(
+              rotated[uint64_t{row} * descriptor.logical_k + inner]);
+          const float weight = half_bits_to_float(
+              decode_staged_weight_bits(staged_words[stage_tile],
+                                        local_row, local_column));
+          accumulator =
+              __fadd_rn(accumulator, __fmul_rn(activation, weight));
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  if (active) {
+    if (!isfinite(accumulator)) {
+      atomicOr(validation, 2u);
+    }
+    projected[uint64_t{row} * descriptor.logical_n + column] =
         __half_as_ushort(__float2half_rn(accumulator));
   }
 }
@@ -336,6 +436,50 @@ extern "C" int32_t glmaxx_exl3_projection_launch(
   return static_cast<int32_t>(cudaPeekAtLastError());
 }
 
+extern "C" int32_t glmaxx_exl3_staged_projection_launch(
+    const glmaxx_exl3_descriptor* descriptor, void* cuda_stream,
+    int32_t* asynchronous_error) {
+  if (descriptor == nullptr || cuda_stream == nullptr ||
+      asynchronous_error == nullptr || !descriptor_valid(*descriptor) ||
+      descriptor->rows > kStagedDecodeMaximumRows) {
+    return -1;
+  }
+  *asynchronous_error = 0;
+  const cudaError_t device_status = require_sm120_device();
+  if (device_status != cudaSuccess) {
+    return static_cast<int32_t>(device_status);
+  }
+  const cudaStream_t stream = reinterpret_cast<cudaStream_t>(cuda_stream);
+  cudaError_t status = cudaMemsetAsync(
+      reinterpret_cast<void*>(descriptor->validation_error_u32), 0,
+      sizeof(uint32_t), stream);
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+
+  const dim3 input_grid(descriptor->rows,
+                        descriptor->logical_k / kH128);
+  rotate_input_f16<<<input_grid, kH128, 0, stream>>>(*descriptor);
+  status = cudaPeekAtLastError();
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+
+  constexpr uint32_t kProjectionThreads = 256;
+  const uint32_t projection_blocks = descriptor->logical_n / kTile;
+  project_staged_decode_f16<<<projection_blocks, kProjectionThreads, 0,
+                              stream>>>(*descriptor);
+  status = cudaPeekAtLastError();
+  if (status != cudaSuccess) {
+    return static_cast<int32_t>(status);
+  }
+
+  const dim3 output_grid(descriptor->rows,
+                         descriptor->logical_n / kH128);
+  rotate_output_f16<<<output_grid, kH128, 0, stream>>>(*descriptor);
+  return static_cast<int32_t>(cudaPeekAtLastError());
+}
+
 extern "C" uint64_t glmaxx_exl3_projection_workspace_bytes(
     uint32_t rows, uint32_t logical_k, uint32_t logical_n) {
   return workspace_bytes(rows, logical_k, logical_n);
@@ -343,4 +487,8 @@ extern "C" uint64_t glmaxx_exl3_projection_workspace_bytes(
 
 extern "C" const char* glmaxx_exl3_kernel_abi(void) {
   return "glmaxx.sm120.exl3.source_projection.v1";
+}
+
+extern "C" const char* glmaxx_exl3_staged_kernel_abi(void) {
+  return GLMAXX_EXL3_STAGED_KERNEL_ABI;
 }
