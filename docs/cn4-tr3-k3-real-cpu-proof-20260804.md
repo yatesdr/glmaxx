@@ -57,6 +57,36 @@ The gate/up/down report hashes are respectively
 `42c0f23983b0b48b4ae0b347766425cfc1386161130abc9e542b701a3f576c11`,
 and `0bc2fb8425d947cd035b8abc9e8e513d02584de5c174658ec0c6dc63aa54bd07`.
 
+## Recurrent draft source cross-check
+
+The real recurrent draft layer was checked separately at layer 78, expert 0,
+ranks 0 and 3. Its tier record has no `k` field, no NVFP4 membership, and a
+complete `tail_tr3` list from expert 0 through 255. The physical component
+shapes passed the K3 source-v1 validator for gate, up, and down on both ranks.
+
+The complete 4,244,751,352-byte owning shard freshly matched its publisher
+manifest digest:
+
+```text
+5448b63a32e394e8cbff5a4737fb50b40fc53c6c3c41305f1a7ee540c4d9a6e3  model-layer-078.safetensors
+```
+
+| Rank | Projection | Source payload SHA-256 | Reconstructed FP16 SHA-256 |
+|---:|---|---|---|
+| 0 | gate | `be25094eb8d8de1e343011645fc950ac3b979f46daffaf8ae838a7ba5f72b8d1` | `e993ea39728048571b56684abb6bceef59c37f8f12e34aebfbb509d63f40f153` |
+| 0 | up | `d31e070132aab01151807f945baab3a64a87badc8ecb626dffbde40cc25575b1` | `d128668be2f7ebc4517ede9daf96667650cedd7937af1c59a9c3f07324eadf7c` |
+| 0 | down | `5c6d4360d30461ce2e84fc4fd7a1d7ffc9a7d43d71001ea3b95bdbd3622f8bc1` | `fbdf7f076f6ae61a690c81f77bbe4d0cac1045b922e9380ed691bb93b0e50848` |
+| 3 | gate | `1bcfe298cf7828086d4241f2d7ebd81bf52eb21361dca017b67b190760c840f5` | `56bc100510b627e23b3de354531dd376ef11a81543842dadcd65db7cea67fd65` |
+| 3 | up | `08a8a4517b1dead6e47288739b2ac2d1ebcbad802883c5c5ed45d64765241543` | `af06d1c618596ec523fe548546653140aa601a5d9326603f546b549ad1ab0409` |
+| 3 | down | `1e908f8ae82fba6b934f2c34c33a475812e942fd7fb16bc6c74c076c76b2b9b4` | `6a2602ef623bbe9b5533df2849d50cee870c6a7cebcbf9dcf96b2177e79c0c47` |
+
+Draft evidence:
+`/home/derek/glmaxx/evidence/20260804T050038Z-tr3-draft-k3-cpu-1c8459e-r1`.
+Its artifact-manifest SHA-256 is
+`4f1b8ee13041167be75e0f497b9d041a691869cec02a4732270947cc7a8e633b`;
+the run-script SHA-256 is
+`ecc6dcdf15412c1552c2e3d48c9fa233096226d4b061d255276c8dcb818d6280`.
+
 ## Provenance
 
 - Checkpoint:
@@ -85,12 +115,13 @@ The proof containers used `NVIDIA_VISIBLE_DEVICES=void`. Host GPU state was
 ## Claim boundary
 
 This establishes deterministic source import and complete CPU reconstruction
-for two real target K3 experts spanning expert and rank boundaries at all
-three production projection shapes. It supplies full-hash-gated payloads for
-the later scalar-versus-staged SM120 comparison.
+for two real target K3 experts spanning expert and rank boundaries plus the
+real recurrent draft source on ranks 0 and 3, all at the three production
+projection shapes. It supplies full-hash-gated payloads for the later
+scalar-versus-staged SM120 comparison.
 
 It does not admit the globally sharded checkpoint, implement K4, exhaustively
-prove other experts or layers, launch CUDA, establish kernel performance,
-replay a TP4 layer, run the checkpoint, measure quality, serve requests, or
-prove KV capacity. K4 and the mixed 192:64 program remain behind their
-separate review and CPU-proof gates.
+prove other experts or target layers, execute the recurrent draft or MTP,
+launch CUDA, establish kernel performance, replay a TP4 layer, run the
+checkpoint, measure quality, serve requests, or prove KV capacity. K4 and the
+mixed 192:64 program remain behind their separate review and CPU-proof gates.
