@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`97c082bf840685dfa79db0356626649ca1e19234`
+`d9515c648739454a58223a6531e230ddd4a5eded`
 
-On a clean tracked tree, `review-proof-all` must verify 162 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 163 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 144 configured result artifacts are tracked and all 39 are
+Thirty-nine of 145 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -77,6 +77,11 @@ any GLMAXX quality claim:
 `docs/fable-quality-acceptance-v1-r3-handoff.md`.
 Its bounded source-recipe dependency is also queued at
 `docs/fable-quality-corpus-sources-v1-r2-handoff.md`.
+
+The decode-benchmark API correction is queued at
+`docs/fable-decode-benchmark-api-v1-handoff.md`. It is not ahead of the
+source-to-first-batch gates, but must pass before integrating the historical
+benchmark API branch or labeling an unmodified-driver run MTP3.
 
 For every row, Fable should read the handoff itself and follow its exact
 provenance, scope, result-path, and token rules. Review the pinned candidate
@@ -256,6 +261,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 160 | `docs/fable-sm120-rank-executor-v1-r4-handoff.md` | `688f5c7a4bfb79ed884693a968013a12a394d530` | `docs/reviews/fable-sm120-rank-executor-v1-r4.md` | `sm120-rank-executor-v1-r4-design-accepted` |
 | 161 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md` | `b4dc806db89076ac015bd25d942b3d2ebfb724b3` | `docs/reviews/fable-exl3-mixed-k-source-and-kernel-v1-r3.md` | `exl3-mixed-k-source-and-kernel-v1-r3-design-accepted` |
 | 162 | `docs/fable-safetensors-index-total-size-v1-r3-handoff.md` | `97c082bf840685dfa79db0356626649ca1e19234` | `docs/reviews/fable-safetensors-index-total-size-v1-r3.md` | `safetensors-index-total-size-v1-r3-design-accepted` |
+| 163 | `docs/fable-decode-benchmark-api-v1-handoff.md` | `d9515c648739454a58223a6531e230ddd4a5eded` | `docs/reviews/fable-decode-benchmark-api-v1.md` | `decode-benchmark-api-v1-design-accepted` |
 
 ## Verification command
 
@@ -266,5 +272,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 162 current handoffs and two
+The expected queue count for this document is 163 current handoffs and two
 explicitly skipped historical umbrella handoffs.
