@@ -11,7 +11,7 @@ runtime resource. This is a source, arithmetic, serialization, and CPU-design
 gate only.
 
 Review candidate commit:
-`d4817ff9ff7eec09c74e98a99db5c27690286013`
+`c989180b302564debcd26b1d3a1f577a66932ee8`
 
 Required result path:
 `fable-target-layer-execution-v1-r2.md` at the repository root.
@@ -39,24 +39,25 @@ start and finish. Withhold the token for a mismatch or incomplete input.
 
 | Input at candidate commit | SHA-256 |
 |---|---|
-| `docs/target-layer-execution-v1-r2.md` | `808da35c2e54eb5692512996650839fb6f127cb91658603eb2fb5ce049c56ed2` |
+| `docs/target-layer-execution-v1-r2.md` | `fce2c70deac0ee5c082cc92db7b2b1e611d0d8da190e637dd55a06811a385bb1` |
+| `docs/target-layer-r2-preflight-erratum-20260804.md` | `4e27b469d3e0ba2c3727b0c14ec4ef3da7f1eaeec5218c8f9208a9e22fe3412a` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/manifest-source-audit-20260729.md` | `61278e9a0f85f692357ca4c193771d3d4c0487537f80cb77b2eeb956ee916ff8` |
-| `spec/engine-v0.md` | `ba6b04905fb57f8c9b9136a88b45ec1546240f9e88f6f5258eb8d4d55cc5c88b` |
+| `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `spec/format-v0.md` | `619a3923c18f43edb23ca9de44b51b84c6d2f6432915908db5fa3a2e0e7cf45a` |
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
-| `docs/distributed-sampling-abi-v1.md` | `d717508e4d90f6ef378d486c0bd3e93e7dad522e6529b8504ccb687a0280fdce` |
+| `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
 | `docs/serving-page-transaction-v1.md` | `31983cce95ee01a5968213d5daf12c7a855f75f8735314700f2b4a9e55625d1a` |
 | `docs/sm120-rank-runtime.md` | `908b8adf0e1fc230145c009db01c71e69437ab359c76a545031fd9157c1ceea9` |
 | `docs/prefill-graph-profile-abi-v2.md` | `37154c9e31109acdf35a382c6be87b3a865e2b7f6ae8f801969526789dd41f91` |
-| `crates/glm-format/src/checkpoint.rs` | `08450f0cb33e592ec76dfbe655b06580ba1743e60f3109a65218d052dbea406c` |
+| `crates/glm-format/src/checkpoint.rs` | `12777f070e56674599ce662326552cda7c28c2b36e5155d3e8daf7718577aa18` |
 | `crates/glm-format/src/rank_manifest.rs` | `cb57a81ad3643a86992c4fd9c2166e9ee238cc7e66063732355d14e485f73410` |
 | `crates/glm-engine/src/step.rs` | `4963a58da7c9c6bbed0fb57fb7ef56d90d1e0f09fe54da8cc02c35891f743359` |
 | `crates/glm-engine/src/graph.rs` | `c85ca1aa52ba42294fc6a43524e8f70357523977d343e8c2f212787e7754cd22` |
 | `crates/glm-engine/src/input.rs` | `c3d090429015030416f6c03ddb6fef2dfd569859ff6e0fcc05bcb2d6a163ffa2` |
 | `crates/glm-engine/src/output.rs` | `1a82e9990af4e2892831e950f5cd3db256032ab5e43642faeb08229cbf2f1c2c` |
-| `crates/glm-engine/src/worker.rs` | `3533f606400c8aa5c571caa360ba516abd69d39de0489b87be4658143a9bdc24` |
+| `crates/glm-engine/src/worker.rs` | `52dbb32ef45bfa652ea113b7c3db7e4fb200bfd778015abb1aebceabaddf89d6` |
 | `crates/glm-cache/src/tier.rs` | `0a1541f13462bcdec92284911f96531b06869b60c7fe85fc5e9669c80fabe693` |
 | `crates/glm-cache/src/attention.rs` | `662965eb0c7e9e22768ee7c95c849b403a0a0004a1c061fb98c996fdd9c4e89f` |
 | `AGENTS.md` | `d78d69429dab43d096c49b795f24b8e00b71a6c1d7c1d535ad431c0f4ec9bf02` |
@@ -112,8 +113,10 @@ Do not accept the amendment by prose inspection alone. Independently:
 3. enumerate the five phase templates and independently serialize every
    twelve-byte phase record, checking dependency ordinals, participant masks,
    fixed-capacity/zero-count flags, graph/eager selection, and TP4 consensus;
-4. enumerate all 32 lifetime records, calculate first/last use for each phase
-   variant, and reject every prohibited alias or undersized graph slot;
+4. enumerate all 32 lifetime records and calculate first/last use for each
+   phase variant; prove that alias class is only reuse eligibility, that the
+   candidate accepts no physical alias map, and that an undersized physical
+   graph-slot claim is explicitly withheld pending a byte-specified span ABI;
 5. independently encode/decode and mutation-test `TargetRow.v1`, the unified
    `TargetPageWriteSlot.v1`, and `PendingLogitSlot.v1`, including all reserved
    bits, stale generations, page mismatches, malformed modes, and overflow;
@@ -123,8 +126,10 @@ Do not accept the amendment by prose inspection alone. Independently:
    KV/indexer HBM layout, cannot overflow accepted dimensions, and binds both
    tentative records to the same page identity and generation;
 8. independently serialize the 127-byte `StepPlan.v4` hash input and 159-byte
-   record, rederive the 430-byte fixed `StepInput.v3` prefix, and test all
-   `GraphProfile.v2` anti-alias and stale-program rejections;
+   record, rederive the 430-byte fixed `StepInput.v3` prefix, and test its
+   stale-program/table rejections; confirm that `GraphProfile.v2` binds only
+   the logical lifetime digest and cannot be mistaken for a physical span or
+   anti-alias proof;
 9. construct controls A, B, and C and show that A versus B isolates source
    codec error while B versus C isolates packed-kernel implementation error;
    and
@@ -146,8 +151,9 @@ Answer every decision with an unqualified `YES` or `NO`:
    prefill query, decode, and verify without rank-local route choice?
 4. Are phase dependencies, ordinals, participant masks, fixed capacities,
    zero-count behavior, and graph/eager flags exact and fail-closed?
-5. Are all 32 buffer lifetimes complete, non-aliasing while live, and
-   compatible with both captured and eager execution?
+5. Are all 32 logical buffer lifetimes complete, is reuse forbidden while
+   live, and does the candidate accurately withhold physical span, capacity,
+   capture, and eager-execution acceptance until a later byte-specified ABI?
 6. Are all three table records byte-exact, bounded, mutation-tested, and
    sufficient to bind row/page/pending-logit state without a hidden pointer?
 7. Does one unified page slot per row preserve the existing fixed GLM-5.2
@@ -155,9 +161,10 @@ Answer every decision with an unqualified `YES` or `NO`:
    equality while avoiding a per-layer page-table explosion?
 8. Are the three maximum table-byte ceilings exact and small enough for the
    required C1, 448-row verifier, and 3,072-row prefill profiles?
-9. Are `StepPlan.v4`, `StepInput.v3`, and `GraphProfile.v2` exact extensions
-   that reject every stale target program, phase table, lifetime table, page
-   table, or pending-logit table?
+9. Are `StepPlan.v4`, `StepInput.v3`, and the logical identity portion of
+   `GraphProfile.v2` exact extensions that reject every stale target program,
+   phase table, lifetime table, page table, or pending-logit table without
+   claiming an absent physical graph-buffer map?
 10. Are the target operator order, absorbed-MLA shapes, DCP routes, sparse-MoE
     arithmetic, residual precision, and distributed sampling bindings still
     complete after the r2 amendments?
@@ -178,10 +185,11 @@ Answer every decision with an unqualified `YES` or `NO`:
 
 Return findings ordered `BLOCKER`, `MAJOR`, `MINOR`, and `QUESTION`, followed
 by the independent derivations and all sixteen decisions. Only if every
-decision is `YES`, attest the candidate commit and all twenty-one exact input
+decision is `YES`, attest the candidate commit and all twenty-two exact input
 hashes, then end with the requested token as the only bare acceptance line.
 
-Acceptance opens only a CPU target-program, phase/lifetime/table ABI, and
-independent reference-proof implementation. It does not accept implementation,
-authorize cn4 or CUDA, permit full-checkpoint conversion, accept a kernel, or
-establish quality, KV capacity, cold-start, latency, throughput, or serving.
+Acceptance opens only a CPU target-program, phase/logical-lifetime/table ABI,
+and independent reference-proof implementation using distinct owned storage
+for nonzero-capacity logical classes. It does not accept a physical graph
+memory map, implementation, cn4 or CUDA use, full-checkpoint conversion, a
+kernel, quality, KV capacity, cold-start, latency, throughput, or serving.

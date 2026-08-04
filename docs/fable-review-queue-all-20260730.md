@@ -232,7 +232,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | superseded; do not issue `exl3-mixed-k-source-and-kernel-v1-design-accepted` |
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | superseded; do not issue `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
 | 128 | `docs/fable-resident-weight-runtime-generation-v1-handoff.md` | `9710c0db7245592a17084b65efe041010612bcfa` | `fable-resident-weight-runtime-generation-v1.md` | `resident-weight-runtime-generation-v1-design-accepted` |
-| 129 | `docs/fable-target-layer-execution-v1-r2-handoff.md` | `d4817ff9ff7eec09c74e98a99db5c27690286013` | `fable-target-layer-execution-v1-r2.md` | `target-layer-execution-v1-accepted` |
+| 129 | `docs/fable-target-layer-execution-v1-r2-handoff.md` | `c989180b302564debcd26b1d3a1f577a66932ee8` | `fable-target-layer-execution-v1-r2.md` | `target-layer-execution-v1-accepted` |
 | 130 | `docs/fable-quality-acceptance-v1-r2-handoff.md` | `eb62b3d138880e7bfcacec74f975de5a017cd977` | `fable-quality-acceptance-v1-r2.md` | `quality-acceptance-v1-accepted` |
 | 131 | `docs/fable-quality-corpus-sources-v1-r2-handoff.md` | `a2fc47afb8557fb0b8a3396865fb951064380dad` | `fable-quality-corpus-sources-v1-r2.md` | `quality-corpus-sources-v1-accepted` |
 | 132 | `docs/fable-cn4-tp4-eager-module-baseline-20260803-handoff.md` | `f19e66e082ee8a2ace2b59db04c96e58295c0fb9` | `fable-cn4-tp4-eager-module-baseline-20260803.md` | `cn4-tp4-eager-module-baseline-20260803-diagnostic-accepted` |
