@@ -10,7 +10,7 @@ Do not connect to cn4, inspect a checkpoint, launch CUDA, create a context, or
 modify a runtime resource for this review.
 
 Review candidate commit:
-`c96a2316d5942514d79f16e93c4e69558dccd103`
+`2d5721db1dfd03890e6c260bb5b9f95ba6c04266`
 
 Required result path:
 `docs/reviews/fable-full-checkpoint-batch-smoke-v1.md`
@@ -32,9 +32,9 @@ and finish. Any mismatch withholds the token.
 | `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `spec/format-v0.md` | `619a3923c18f43edb23ca9de44b51b84c6d2f6432915908db5fa3a2e0e7cf45a` |
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
-| `docs/full-checkpoint-batch-smoke-v1.md` | `fe824cd9b040db5239cae32d56c4dc76e118d7c2fdd7758d0d017be6dff689de` |
+| `docs/full-checkpoint-batch-smoke-v1.md` | `03244842531b155259d7c52760e6def81f83ff3f91e35f2bbb44b3fc8ba94870` |
 | `docs/tp4-layer6-replay-v1-r2.md` | `1a9c1819548cb0550b3060e558991ce3b2a12844f1b853c28ae2f5d68811068a` |
-| `docs/small-checkpoint-runner-v1-r3.md` | `27b12a36d06c0509edd23bc8faa2654edf9623c831c5f7b3842c72978c59d0b5` |
+| `docs/small-checkpoint-runner-v1-r3.md` | `223042c553ce0584737590217251d841ca6bb8991c236f6167f47068fd452047` |
 | `docs/target-layer-execution-v1-r3.md` | `97c2c3615384dddc6204e910fe3c498fdd7a26554ed8aecec790d62f72c2ad87` |
 | `docs/target-graph-physical-memory-v1.md` | `135e7d61f5ce7cc94d200648e9691b9d76edaee13025c21e88f0ad2c07018bc9` |
 | `docs/sm120-rank-executor-v1-r5.md` | `85c1082575c4b4d9dbdf26affe499121339c8a3a3f7f914ff5957ff6bee7f565` |
@@ -76,14 +76,16 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
 4. Reconstruct the two graph-plan and schedule-set encodings, GraphProfile v3,
    target-only program set, module set, resource budget, final memory plan,
    and four rank-local ten-arena tables. Find any hash cycle.
-5. Independently derive all arena-5 C4 MTP0 pending-logit/rank-logit terms and
-   prove proposal/draft state and an MTP module are absent.
+5. Independently prove class 30 owns exactly 1,239,040 bytes of arena-5 C4
+   MTP0 pending-logit state and class 26 owns exactly 619,520 bytes of arena-2
+   rank-logit scratch. Prove proposal/draft state and an MTP module are absent.
 6. Recompute prompt/page/tentative slack for the smoke-minimal cache. Prove it
    uses 1M-safe types/arithmetic without claiming or preventing the later
    524,288-token allocation.
-7. Trace token feedback exactly: prefill produces token 1, fifteen C4 decode
-   steps consume tokens 1--15 and produce tokens 2--16, and no reference
-   route/logit/token enters execution.
+7. Trace token feedback exactly: prefill emits no token and commits CURRENT
+   pending logits; sixteen C4 decode steps each sample token 1--16 from prior
+   pending state, execute that token into KV/indexer state, and publish the
+   next pending state. Prove no reference route/logit/token enters execution.
 8. Prove distributed greedy never gathers the full vocabulary at runtime,
    while offline per-position evidence remains complete and correctly scoped.
 9. Attack every profile, predecessor, source, catalog, program, module, graph,
@@ -111,8 +113,9 @@ Answer each with an unqualified `YES` or `NO`:
 4. Do all ten arenas, physical uses, four rank-local bindings, budgets, and
    final plans identify one bounded executable full-model generation with no
    raw-address, hidden-allocation, or rank-local fallback path?
-5. Is four-row prefill plus token 1 and fifteen C4 decode steps an exact
-   sixteen-token autoregressive smoke with correct cache and EOS semantics?
+5. Is four-row prefill pending-state publication plus sixteen C4 decode steps
+   an exact sixteen-token autoregressive smoke with correct terminal pending,
+   cache, and EOS semantics?
 6. Are the reference ladder, distributed sampling, offline vocabulary data,
    per-position quality, reset/repetition, and fault gates sufficient to
    detect a wrong full-model execution?

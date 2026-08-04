@@ -838,8 +838,8 @@ fixture, CPU replay, CUDA run, layer result, quality result, or speed claim
 exists.
 The first full-checkpoint-to-text successor is now specified in
 `docs/full-checkpoint-batch-smoke-v1.md`. It freezes profile-local capacity
-TR3 and hybrid programs, four prompts, one prefill token plus fifteen C4
-decode steps, sixteen greedy MTP0 tokens per row, two physical graph plans,
+TR3 and hybrid programs, four prompts, prefill pending-state publication plus
+sixteen C4 decode steps, sixteen greedy MTP0 tokens per row, two physical graph plans,
 all ten arenas, cache successors, per-position evidence, warm resets, and
 fault-safe cleanup. It is a design candidate only; no CPU runner, checkpoint
 execution, text, quality, capacity, service, or performance result exists.
@@ -1327,9 +1327,9 @@ verdicts:
 | NVFP4 M4 laboratory manifest and four-rank load-plan design | `0e08496` | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` |
 | corrected deterministic M4 small-checkpoint runner design r2 | `16922e4` | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` |
 | M3 TP4 layer-6 replay and layer-7 indexer-reuse design | `4a1e376` | `docs/fable-tp4-layer6-replay-v1-handoff.md` |
-| profile-specific physical M3 replay program and ten-arena binding r2 | `9943bb0` | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` |
-| physical 533-binding deterministic M4 runner design r3 | `9943bb0` | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` |
-| full-checkpoint four-row, sixteen-token MTP0 batch-smoke design | `c96a231` | `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md` |
+| profile-specific physical M3 replay program and ten-arena binding r2 | `2d5721d` | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` |
+| physical 533-binding deterministic M4 runner design r3 | `2d5721d` | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` |
+| full-checkpoint four-row, sixteen-token MTP0 batch-smoke design | `2d5721d` | `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md` |
 | hybrid-serving WeightPolicy.v2, manifest, catalog, budget, and load-plan design | `67db1a3` | `docs/fable-hybrid-serving-manifest-v1-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |

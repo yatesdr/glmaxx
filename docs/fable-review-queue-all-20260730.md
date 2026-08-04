@@ -6,7 +6,7 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`c96a2316d5942514d79f16e93c4e69558dccd103`
+`2d5721db1dfd03890e6c260bb5b9f95ba6c04266`
 
 On a clean tracked tree, `review-proof-all` must verify 171 current handoffs
 and skip the two historical umbrella handoffs
@@ -298,9 +298,9 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 166 | `docs/fable-target-graph-physical-memory-v1-handoff.md` | `f07b3e25716cd91112b48d3cc659fde51f667c50` | `fable-target-graph-physical-memory-v1.md` | `target-graph-physical-memory-v1-design-accepted` |
 | 167 | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` | `f94a272cfefdc76e974ebecb449ec6abf66d50ad` | `fable-mtp-layer-execution-v1-r3.md` | `mtp-layer-execution-v1-r3-design-accepted` |
 | 168 | `docs/fable-target-layer-execution-v1-r3-handoff.md` | `f94a272cfefdc76e974ebecb449ec6abf66d50ad` | `fable-target-layer-execution-v1-r3.md` | `target-layer-execution-v1-r3-design-accepted` |
-| 169 | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` | `9943bb0b58f2bf81cb8822762c04d03d55c9bfcb` | `docs/reviews/fable-tp4-layer6-replay-v1-r2.md` | `tp4-layer6-replay-v1-r2-design-accepted` |
-| 170 | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` | `9943bb0b58f2bf81cb8822762c04d03d55c9bfcb` | `docs/reviews/fable-small-checkpoint-runner-v1-r3.md` | `small-checkpoint-runner-v1-r3-design-accepted` |
-| 171 | `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md` | `c96a2316d5942514d79f16e93c4e69558dccd103` | `docs/reviews/fable-full-checkpoint-batch-smoke-v1.md` | `full-checkpoint-batch-smoke-v1-design-accepted` |
+| 169 | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` | `2d5721db1dfd03890e6c260bb5b9f95ba6c04266` | `docs/reviews/fable-tp4-layer6-replay-v1-r2.md` | `tp4-layer6-replay-v1-r2-design-accepted` |
+| 170 | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` | `2d5721db1dfd03890e6c260bb5b9f95ba6c04266` | `docs/reviews/fable-small-checkpoint-runner-v1-r3.md` | `small-checkpoint-runner-v1-r3-design-accepted` |
+| 171 | `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md` | `2d5721db1dfd03890e6c260bb5b9f95ba6c04266` | `docs/reviews/fable-full-checkpoint-batch-smoke-v1.md` | `full-checkpoint-batch-smoke-v1-design-accepted` |
 
 ## Verification command
 

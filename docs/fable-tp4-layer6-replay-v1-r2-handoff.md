@@ -10,7 +10,7 @@ Do not connect to cn4, inspect a checkpoint, launch CUDA, create a context, or
 modify a runtime resource for this review.
 
 Review candidate commit:
-`9943bb0b58f2bf81cb8822762c04d03d55c9bfcb`
+`2d5721db1dfd03890e6c260bb5b9f95ba6c04266`
 
 Required result path:
 `docs/reviews/fable-tp4-layer6-replay-v1-r2.md`
@@ -48,7 +48,7 @@ and finish. Any mismatch withholds the token.
 | `docs/hybrid-serving-manifest-v1.md` | `934787ea37a5dbd9b6778844adbeb0b40fd365d4653991fc7cbfe77df3c685cf` |
 | `docs/prefill-graph-profile-abi-v2.md` | `37154c9e31109acdf35a382c6be87b3a865e2b7f6ae8f801969526789dd41f91` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
-| `docs/small-checkpoint-runner-v1-r3.md` | `27b12a36d06c0509edd23bc8faa2654edf9623c831c5f7b3842c72978c59d0b5` |
+| `docs/small-checkpoint-runner-v1-r3.md` | `223042c553ce0584737590217251d841ca6bb8991c236f6167f47068fd452047` |
 | `crates/glm-engine/src/graph.rs` | `c85ca1aa52ba42294fc6a43524e8f70357523977d343e8c2f212787e7754cd22` |
 | `crates/glm-engine/src/checkpoint_load.rs` | `77a331e7a6ecae4e04c1677f9380007eef432ca4e21d2fd4c2bc64b42facfab3` |
 | `crates/glm-engine/src/worker.rs` | `52dbb32ef45bfa652ea113b7c3db7e4fb200bfd778015abb1aebceabaddf89d6` |

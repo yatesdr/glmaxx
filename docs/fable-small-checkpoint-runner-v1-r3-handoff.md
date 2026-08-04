@@ -10,7 +10,7 @@ Do not connect to cn4, inspect a checkpoint, launch CUDA, create a context, or
 modify a runtime resource for this review.
 
 Review candidate commit:
-`9943bb0b58f2bf81cb8822762c04d03d55c9bfcb`
+`2d5721db1dfd03890e6c260bb5b9f95ba6c04266`
 
 Required result path:
 `docs/reviews/fable-small-checkpoint-runner-v1-r3.md`
@@ -34,7 +34,7 @@ and finish. Any mismatch withholds the token.
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | `docs/small-checkpoint-runner-v1.md` | `f35c71debd3d74d22cda435b60d3a7485592f96e41889481cc479f2c283b75f7` |
 | `docs/small-checkpoint-runner-v1-r2.md` | `3e7bb597981c86ed63190c67463911e3aeca192c6aa818b7e58132cac716993e` |
-| `docs/small-checkpoint-runner-v1-r3.md` | `27b12a36d06c0509edd23bc8faa2654edf9623c831c5f7b3842c72978c59d0b5` |
+| `docs/small-checkpoint-runner-v1-r3.md` | `223042c553ce0584737590217251d841ca6bb8991c236f6167f47068fd452047` |
 | `docs/tp4-layer6-replay-v1-r2.md` | `1a9c1819548cb0550b3060e558991ce3b2a12844f1b853c28ae2f5d68811068a` |
 | `docs/nvfp4-laboratory-manifest-v1.md` | `8a0adb54dedfab1dba0afcf09579614ce567da92fda43134b0c404af5aafb0ee` |
 | `docs/nvfp4-fused-routed-moe-v1-r3.md` | `f60d3adb777321ed715ae465abcf20895dbbf470c20970855636ed9b2b3a4db0` |
@@ -81,8 +81,9 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
 6. Trace program-set, module-set, GraphMemoryPlan, GraphProfile v3, resource
    budget, final memory plan, and all ten rank-local arena bindings through
    graph readiness and each execution permit.
-7. Independently rederive arena-8/9 bytes, then derive class-30 CURRENT/NEXT
-   pending logits and exact rank-logit workspace for both graph buckets.
+7. Independently rederive arena-8/9 bytes, then prove class 30 owns exactly
+   309,760 bytes of arena-5 CURRENT/NEXT pending logits and class 26 owns
+   exactly 154,880 bytes of arena-2 rank-logit scratch for both graph shapes.
    Prove proposal/draft state and the MTP program remain absent.
 8. Enumerate every primary/auxiliary/metadata/page-table use and prove no raw
    address or descriptor-selected capacity reaches the executor.
@@ -114,7 +115,9 @@ Answer each with an unqualified `YES` or `NO`:
 6. Is the CPU/mock gate sufficient to implement the exact truncated
    layer-6-to-head runner, distributed greedy, repetition/fault matrix, and
    physical validation before CUDA?
-7. Are all implementation, cn4, checkpoint-result, full-model, quality,
+7. Is the diagnostic M4 sampler correctly isolated from production
+   prefill/decode token-feedback and unable to satisfy the full-batch gate?
+8. Are all implementation, cn4, checkpoint-result, full-model, quality,
    capacity, concurrency, serving, reload, and performance nonclaims
    accurate?
 
