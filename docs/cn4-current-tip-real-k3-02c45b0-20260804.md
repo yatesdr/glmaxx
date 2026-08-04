@@ -90,14 +90,20 @@ ownership and the second on a missing offline Cargo-registry mount. The second
 attempt remains preserved at
 `/home/derek/glmaxx/evidence/20260804T160000Z-current-real-k3-02c45b0`.
 
-Commit `45c56e90529f39a255c8698f6ecd6b43eb71ea18` adds
-`scripts/cn4-current-real-k3.sh` (SHA-256
-`6092ef112b78ae7a8fc5fbb77365f8758528adb9d2f3cbe7825ecdc7f36f196a`).
-The wrapper encodes the corrected read-only Cargo mount and ephemeral Git
+Commit `45c56e90529f39a255c8698f6ecd6b43eb71ea18` introduced
+`scripts/cn4-current-real-k3.sh`, but its first draft-layer use found that the
+inner manifest was verified from the outer working directory. The draft
+kernels passed, while the wrapper correctly published the outer generation as
+failed. Commit `be825f4bd62fecc431d1a1be65b7d692cdc24ceb` fixes the verifier
+working directory. The corrected wrapper SHA-256 is
+`59f5b0903a2c99653bd0dd1101bf21d0cd55ab00c25f1a8cc7389a60c4261494`.
+
+The corrected wrapper encodes the read-only Cargo mount and ephemeral Git
 ownership settings, records the exact Docker argument vector and container
 inspection, preserves failed runs, seals the inner and outer manifests, and
 rechecks global occupancy before delegating to the existing fail-closed
-qualification harness.
+qualification harness. Its successful end-to-end use is recorded in
+`docs/cn4-current-tip-draft-k3-be825f4-20260804.md`.
 
 ## Claim boundary and next gate
 
