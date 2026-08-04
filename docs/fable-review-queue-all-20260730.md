@@ -215,6 +215,7 @@ result path; follow the output instructions in that handoff.
 | 152 | `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md` | `99ab1351ba71982f69c5855a9dc2adb394f8be11` | `fable-hybrid-nvfp4-nf3-source-admission-v1-r2.md` | `hybrid-nvfp4-nf3-source-admission-v1-r2-design-accepted` |
 | 153 | `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md` | `f758c1ab82557b1a44fd746d9b36d76faeaa28d8` | `fable-tr3-325-publisher-manifest-reconciliation-v1.md` | `tr3-325-publisher-manifest-reconciliation-v1-design-accepted` |
 | 154 | `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` | `98ac16a98943d810cb3b8d86552e625aadc7be98` | `fable-distributed-sampling-abi-v1-r2.md` | `distributed-sampling-abi-v1-r2-design-accepted` |
+| 155 | `docs/fable-quality-acceptance-v1-r3-handoff.md` | `ab8dc028a708b2db78e276a8b01d9ad8c5d95703` | `fable-quality-acceptance-v1-r3.md` | `quality-acceptance-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -225,5 +226,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 154 current handoffs and two
+The expected queue count for this document is 155 current handoffs and two
 explicitly skipped historical umbrella handoffs.
