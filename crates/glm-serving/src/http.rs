@@ -77,6 +77,18 @@ pub enum StopSequences {
     Many(Vec<String>),
 }
 
+/// OpenAI-compatible streaming usage controls used by the pinned Local
+/// Inference Lab decode benchmark. `continuous_usage_stats` is the SGLang
+/// extension that reports cumulative usage on every generated-token event.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StreamOptions {
+    #[serde(default)]
+    pub include_usage: bool,
+    #[serde(default)]
+    pub continuous_usage_stats: bool,
+}
+
 impl StopSequences {
     fn into_vec(self) -> Vec<String> {
         match self {
@@ -107,6 +119,10 @@ pub struct ChatCompletionRequest {
     pub stop: Option<StopSequences>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default)]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(default)]
+    pub ignore_eos: Option<bool>,
     #[serde(default)]
     pub tools: Option<Vec<OrderedValue>>,
     #[serde(default)]
@@ -150,6 +166,8 @@ pub struct ValidatedChatRequest {
     pub mtp_depth: u8,
     pub stop: Vec<String>,
     pub stream: bool,
+    pub stream_options: StreamOptions,
+    pub ignore_eos: bool,
     pub tools: Option<Vec<OrderedValue>>,
     pub tool_choice: Option<OrderedValue>,
     pub template_options: ChatTemplateOptions,
@@ -279,6 +297,23 @@ impl ChatCompletionRequest {
                 "stop must contain at most 16 nonempty strings of at most 256 bytes",
             ));
         }
+        let stream_options = self.stream_options.unwrap_or_default();
+        if self.stream_options.is_some() && !self.stream {
+            return Err(ApiRequestError::new(
+                400,
+                "INVALID_STREAM_OPTIONS",
+                Some("stream_options"),
+                "stream_options requires stream=true",
+            ));
+        }
+        if stream_options.continuous_usage_stats && !stream_options.include_usage {
+            return Err(ApiRequestError::new(
+                400,
+                "INVALID_STREAM_OPTIONS",
+                Some("stream_options"),
+                "continuous_usage_stats requires include_usage=true",
+            ));
+        }
         let validated = ValidatedChatRequest {
             messages: self.messages,
             maximum_output_tokens,
@@ -291,6 +326,8 @@ impl ChatCompletionRequest {
             mtp_depth,
             stop,
             stream: self.stream,
+            stream_options,
+            ignore_eos: self.ignore_eos.unwrap_or(false),
             tools: self.tools,
             tool_choice: self.tool_choice,
             template_options: ChatTemplateOptions {
@@ -322,7 +359,10 @@ pub struct ApiUsage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApiCompletionEvent {
-    TextDelta(String),
+    Progress {
+        delta: String,
+        usage: ApiUsage,
+    },
     Finished {
         finish_reason: String,
         usage: ApiUsage,
@@ -663,11 +703,19 @@ fn handle_connection(
                 })?;
             let validated = wire.validate()?;
             let stream_response = validated.stream;
+            let stream_options = validated.stream_options;
             let handle = backend
                 .submit_chat(tenant, validated)
                 .map_err(backend_request_error)?;
             if stream_response {
-                write_streaming_completion(stream, backend, tenant, handle, config.request_timeout)
+                write_streaming_completion(
+                    stream,
+                    backend,
+                    tenant,
+                    handle,
+                    config.request_timeout,
+                    stream_options,
+                )
             } else {
                 write_buffered_completion(
                     stream,
@@ -721,7 +769,7 @@ fn write_buffered_completion(
     let mut content = String::new();
     loop {
         match recv_before(&handle.events, deadline) {
-            Ok(ApiCompletionEvent::TextDelta(delta)) => {
+            Ok(ApiCompletionEvent::Progress { delta, .. }) => {
                 if content
                     .len()
                     .checked_add(delta.len())
@@ -776,6 +824,7 @@ fn write_streaming_completion(
     tenant: u32,
     handle: ApiCompletionHandle,
     timeout: Duration,
+    stream_options: StreamOptions,
 ) -> Result<(), ApiRequestError> {
     let request_id = handle.request_id;
     if write_stream_headers(stream).is_err() {
@@ -797,14 +846,17 @@ fn write_streaming_completion(
     let deadline = Instant::now() + timeout;
     loop {
         match recv_before(&handle.events, deadline) {
-            Ok(ApiCompletionEvent::TextDelta(delta)) => {
-                let chunk = json!({
+            Ok(ApiCompletionEvent::Progress { delta, usage }) => {
+                let mut chunk = json!({
                     "id": format!("chatcmpl-{request_id}"),
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": GLMAXX_MODEL_ID,
                     "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": null}]
                 });
+                if stream_options.continuous_usage_stats {
+                    chunk["usage"] = json!(usage);
+                }
                 if write_sse(stream, &chunk).is_err() {
                     let _ = backend.cancel(tenant, request_id);
                     return Ok(());
@@ -814,14 +866,16 @@ fn write_streaming_completion(
                 finish_reason,
                 usage,
             }) => {
-                let final_chunk = json!({
+                let mut final_chunk = json!({
                     "id": format!("chatcmpl-{request_id}"),
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": GLMAXX_MODEL_ID,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                    "usage": usage
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
                 });
+                if stream_options.include_usage {
+                    final_chunk["usage"] = json!(usage);
+                }
                 let _ = write_sse(stream, &final_chunk);
                 let _ = stream.write_all(b"data: [DONE]\n\n");
                 let _ = stream.flush();
@@ -1239,7 +1293,14 @@ mod tests {
             let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let (sender, events) = mpsc::channel();
             sender
-                .send(ApiCompletionEvent::TextDelta("hello".to_owned()))
+                .send(ApiCompletionEvent::Progress {
+                    delta: "hello".to_owned(),
+                    usage: ApiUsage {
+                        prompt_tokens: 2,
+                        completion_tokens: 1,
+                        total_tokens: 3,
+                    },
+                })
                 .unwrap();
             sender
                 .send(ApiCompletionEvent::Finished {
@@ -1370,6 +1431,44 @@ mod tests {
     }
 
     #[test]
+    fn pinned_decode_benchmark_extensions_validate_fail_closed() {
+        let request: ChatCompletionRequest = serde_json::from_str(&chat_json(
+            true,
+            r#","max_tokens":4096,"ignore_eos":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true}"#,
+        ))
+        .unwrap();
+        let validated = request.validate().unwrap();
+        assert!(validated.ignore_eos);
+        assert_eq!(
+            validated.stream_options,
+            StreamOptions {
+                include_usage: true,
+                continuous_usage_stats: true,
+            }
+        );
+
+        let unstreamed: ChatCompletionRequest = serde_json::from_str(&chat_json(
+            false,
+            r#","stream_options":{"include_usage":true}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            unstreamed.validate().unwrap_err().body.error.code,
+            "INVALID_STREAM_OPTIONS"
+        );
+
+        let missing_parent: ChatCompletionRequest = serde_json::from_str(&chat_json(
+            true,
+            r#","stream_options":{"continuous_usage_stats":true}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            missing_parent.validate().unwrap_err().body.error.code,
+            "INVALID_STREAM_OPTIONS"
+        );
+    }
+
+    #[test]
     fn parser_enforces_exact_header_boundary_and_rejects_trailing_bytes() {
         let prefix = b"GET /health HTTP/1.1\r\nX-Fill: ";
         let suffix = b"\r\n\r\n";
@@ -1459,6 +1558,7 @@ mod tests {
                 events,
             },
             Duration::from_secs(1),
+            StreamOptions::default(),
         )
         .unwrap();
         assert_eq!(*backend.cancelled.lock().unwrap(), [(7, 91)]);
@@ -1521,12 +1621,16 @@ mod tests {
             "POST",
             "/v1/chat/completions",
             true,
-            &chat_json(true, ""),
+            &chat_json(
+                true,
+                r#","ignore_eos":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true}"#,
+            ),
         );
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("Content-Type: text/event-stream"));
         assert!(response.contains("\"delta\":{\"role\":\"assistant\"}"));
         assert!(response.contains("\"delta\":{\"content\":\"hello\"}"));
+        assert_eq!(response.matches("\"completion_tokens\":1").count(), 2);
         assert!(response.ends_with("data: [DONE]\n\n"));
     }
 
