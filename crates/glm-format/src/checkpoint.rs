@@ -770,21 +770,90 @@ impl SourceFingerprint {
     }
 }
 
+/// A source file held open across hashing and semantic inspection.
+///
+/// Construction rejects symlinks, non-regular files, and any file with more
+/// than one hard link. [`Self::revalidate`] proves that the path still names
+/// the same device/inode/length/mtime identity observed by both the pathname
+/// and the opened descriptor. Checkpoint admission must retain this value
+/// until it has consumed the authenticated bytes; reopening `path()` is not an
+/// equivalent operation.
+#[derive(Debug)]
+pub struct RetainedSourceFile {
+    path: PathBuf,
+    file: File,
+    fingerprint: SourceFingerprint,
+}
+
+impl RetainedSourceFile {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, PinnedSourceError> {
+        let path = path.as_ref();
+        let path_metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
+        if !path_metadata.file_type().is_file()
+            || path_metadata.file_type().is_symlink()
+            || path_metadata.nlink() != 1
+        {
+            return Err(PinnedSourceError::UnsafePath(path.to_owned()));
+        }
+        let file = File::open(path).map_err(PinnedSourceError::Io)?;
+        let file_metadata = file.metadata().map_err(PinnedSourceError::Io)?;
+        let fingerprint = SourceFingerprint::from_metadata(&path_metadata);
+        if SourceFingerprint::from_metadata(&file_metadata) != fingerprint {
+            return Err(PinnedSourceError::UnsafePath(path.to_owned()));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+            fingerprint,
+        })
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.fingerprint.bytes
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn sha256(&self) -> Result<[u8; 32], PinnedSourceError> {
+        let mut buffer = vec![
+            0_u8;
+            usize::try_from(self.len().clamp(1, SOURCE_HASH_BUFFER_BYTES as u64))
+                .map_err(|_| PinnedSourceError::Overflow)?
+        ];
+        let mut hasher = Sha256::new();
+        let mut consumed = 0_u64;
+        while consumed < self.len() {
+            let chunk = usize::try_from((self.len() - consumed).min(buffer.len() as u64))
+                .map_err(|_| PinnedSourceError::Overflow)?;
+            read_exact_source_at(&self.file, &mut buffer[..chunk], consumed)?;
+            hasher.update(&buffer[..chunk]);
+            consumed += chunk as u64;
+        }
+        self.revalidate()?;
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn revalidate(&self) -> Result<(), PinnedSourceError> {
+        let file_metadata = self.file.metadata().map_err(PinnedSourceError::Io)?;
+        if SourceFingerprint::from_metadata(&file_metadata) != self.fingerprint {
+            return Err(PinnedSourceError::SourceChanged(self.path.clone()));
+        }
+        verify_regular_fingerprint(&self.path, &self.fingerprint)
+    }
+}
+
 fn open_regular_file(path: &Path) -> Result<(File, SourceFingerprint), PinnedSourceError> {
-    let path_metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
-    if !path_metadata.file_type().is_file()
-        || path_metadata.file_type().is_symlink()
-        || path_metadata.nlink() != 1
-    {
-        return Err(PinnedSourceError::UnsafePath(path.to_owned()));
-    }
-    let file = File::open(path).map_err(PinnedSourceError::Io)?;
-    let file_metadata = file.metadata().map_err(PinnedSourceError::Io)?;
-    let fingerprint = SourceFingerprint::from_metadata(&path_metadata);
-    if SourceFingerprint::from_metadata(&file_metadata) != fingerprint {
-        return Err(PinnedSourceError::UnsafePath(path.to_owned()));
-    }
-    Ok((file, fingerprint))
+    let retained = RetainedSourceFile::open(path)?;
+    Ok((retained.file, retained.fingerprint))
 }
 
 fn read_small_regular_file(
@@ -803,28 +872,9 @@ fn read_small_regular_file(
 }
 
 fn hash_regular_file(path: &Path) -> Result<([u8; 32], u64), PinnedSourceError> {
-    let (file, fingerprint) = open_regular_file(path)?;
-    let mut buffer =
-        vec![
-            0_u8;
-            usize::try_from(fingerprint.bytes.clamp(1, SOURCE_HASH_BUFFER_BYTES as u64))
-                .map_err(|_| PinnedSourceError::Overflow)?
-        ];
-    let mut hasher = Sha256::new();
-    let mut consumed = 0_u64;
-    while consumed < fingerprint.bytes {
-        let chunk = usize::try_from((fingerprint.bytes - consumed).min(buffer.len() as u64))
-            .map_err(|_| PinnedSourceError::Overflow)?;
-        read_exact_source_at(&file, &mut buffer[..chunk], consumed)?;
-        hasher.update(&buffer[..chunk]);
-        consumed += chunk as u64;
-    }
-    let file_metadata = file.metadata().map_err(PinnedSourceError::Io)?;
-    if SourceFingerprint::from_metadata(&file_metadata) != fingerprint {
-        return Err(PinnedSourceError::SourceChanged(path.to_owned()));
-    }
-    verify_regular_fingerprint(path, &fingerprint)?;
-    Ok((hasher.finalize().into(), fingerprint.bytes))
+    let retained = RetainedSourceFile::open(path)?;
+    let bytes = retained.len();
+    Ok((retained.sha256()?, bytes))
 }
 
 fn verify_regular_fingerprint(
@@ -1822,6 +1872,50 @@ mod tests {
                 .count(),
             184
         );
+    }
+
+    #[test]
+    fn retained_source_file_closes_reopen_link_and_mutation_boundaries() {
+        let root = TempDirectory::new();
+        let source = root.0.join("source.bin");
+        fs::write(&source, b"authenticated source bytes").unwrap();
+        let retained = RetainedSourceFile::open(&source).unwrap();
+        let expected_sha256: [u8; 32] = Sha256::digest(b"authenticated source bytes").into();
+        assert_eq!(retained.path(), source);
+        assert_eq!(retained.len(), 26);
+        assert!(!retained.is_empty());
+        assert_eq!(retained.sha256().unwrap(), expected_sha256);
+
+        let replacement_target = root.0.join("original.bin");
+        fs::rename(&source, &replacement_target).unwrap();
+        fs::write(&source, b"replacement source bytes").unwrap();
+        assert!(matches!(
+            retained.revalidate(),
+            Err(PinnedSourceError::SourceChanged(path)) if path == source
+        ));
+
+        let linked_source = root.0.join("linked-source.bin");
+        let hard_link = root.0.join("hard-link.bin");
+        fs::write(&linked_source, b"linked").unwrap();
+        fs::hard_link(&linked_source, &hard_link).unwrap();
+        assert!(matches!(
+            RetainedSourceFile::open(&linked_source),
+            Err(PinnedSourceError::UnsafePath(path)) if path == linked_source
+        ));
+
+        let symlink = root.0.join("symbolic-link.bin");
+        std::os::unix::fs::symlink(&replacement_target, &symlink).unwrap();
+        assert!(matches!(
+            RetainedSourceFile::open(&symlink),
+            Err(PinnedSourceError::UnsafePath(path)) if path == symlink
+        ));
+
+        let empty = root.0.join("empty.bin");
+        fs::write(&empty, b"").unwrap();
+        let retained_empty = RetainedSourceFile::open(&empty).unwrap();
+        let empty_sha256: [u8; 32] = Sha256::digest([]).into();
+        assert!(retained_empty.is_empty());
+        assert_eq!(retained_empty.sha256().unwrap(), empty_sha256);
     }
 
     #[test]

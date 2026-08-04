@@ -19,8 +19,8 @@ pub use checkpoint::{
     PINNED_RANK_SOURCE_PAYLOAD_BYTES, PINNED_RANK_TENSOR_COUNT, PINNED_SOURCE_FILE_COUNT,
     PINNED_SOURCE_FILE_MAP_SHA256, PINNED_SOURCE_MANIFEST_SHA256, PinnedConversionProgress,
     PinnedManifestException, PinnedRankManifestTensor, PinnedRankPlan, PinnedSourceBinding,
-    PinnedSourceError, PinnedSourceVerification, ProtectedTensorContract, TP_DEGREE,
-    parse_exl3_component, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
+    PinnedSourceError, PinnedSourceVerification, ProtectedTensorContract, RetainedSourceFile,
+    TP_DEGREE, parse_exl3_component, pinned_exl3_rank_plan, pinned_exl3_weight_policy_sha256,
     protected_tensor_contracts, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 pub use container::{
