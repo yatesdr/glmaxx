@@ -1664,6 +1664,7 @@ fn safetensors_inventory(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
                     .checked_add(descriptor.bytes)
                     .ok_or("safetensors byte total overflow")?;
             }
+            files.revalidate_sources()?;
             (
                 if is_directory {
                     "shard-directory"
@@ -1685,6 +1686,7 @@ fn safetensors_inventory(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
                     .checked_add(descriptor.bytes)
                     .ok_or("safetensors byte total overflow")?;
             }
+            file.revalidate()?;
             (
                 "single-file",
                 file.header_sha256(),
