@@ -176,11 +176,11 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline after adding executor r5 and physical graph memory:
+Current verified baseline after adding recurrent-MTP r3:
 
 ```text
-166 handoffs
-148 configured result paths
+167 handoffs
+149 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```

@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`50797043019efdd8908c9db333784ee049ddde69`
+`3b709499e37c69e2e5411d382c56f21f8b3862a3`
 
-On a clean tracked tree, `review-proof-all` must verify 166 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 167 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 148 configured result artifacts are tracked and all 39 are
+Thirty-nine of 149 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -27,7 +27,7 @@ The immediate source-to-first-batch review order is:
 8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
 9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
 10. `docs/fable-target-graph-physical-memory-v1-handoff.md`;
-11. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
+11. `docs/fable-mtp-layer-execution-v1-r3-handoff.md`;
 12. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
 13. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
 14. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
@@ -56,10 +56,14 @@ r2 amendment fixes rank-local pointer identity, exact route serialization,
 span/alias validation, predecessor-failure suppression, and the complete
 48-stage recurrence. Do not issue the v1 token or implement from the v1 bytes.
 
-The rank-executor r4 handoff supersedes rows 90 and 159. It retains r3's C11
-ABI and adds an explicit validation-module handle so the owner thread can
-construct the required validation launch. Do not issue an older token or
-implement against an older header.
+The rank-executor r5 handoff supersedes rows 90, 159, and 160. It retains
+r4's explicit validation-module handle, broadens arena role 5 to recurrent
+state, and binds every module capability to the physical graph-memory ABI.
+Do not issue an older token or implement against an older header.
+
+The recurrent-MTP r3 handoff supersedes row 146. It binds corrected sampling,
+pending-logit double buffers, exact rank-logit scratch, GraphProfile v3, the
+physical graph plan, and executor r5. Do not issue the r2 token.
 
 The safetensors r3 handoff supersedes rows 125 and 140. It replaces r2's
 unattainable global-stability implication with a canonical publication sweep,
@@ -250,7 +254,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 143 | `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-hybrid-mtp3-capacity-ledger-v1-r2.md` | `hybrid-mtp3-capacity-ledger-v1-r2-design-accepted` |
 | 144 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md` | `fc5786dde5f88bc1f99efa8dd4c883f35b750c7e` | `fable-sm120-w4a16-nf3-fused-moe-v1.md` | superseded; do not issue `sm120-w4a16-nf3-fused-moe-v1-design-accepted` |
 | 145 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md` | `10f83f6862c6c345573ebef5bece69d95f4c58fc` | `fable-sm120-w4a16-nf3-fused-moe-v1-r2.md` | `sm120-w4a16-nf3-fused-moe-v1-r2-design-accepted` |
-| 146 | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` | `83bd1ba4dd14aa60224a4483a80ed85dbcf74d14` | `docs/reviews/fable-mtp-layer-execution-v1-r2.md` | `mtp-layer-execution-v1-accepted` |
+| 146 | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` | `83bd1ba4dd14aa60224a4483a80ed85dbcf74d14` | `docs/reviews/fable-mtp-layer-execution-v1-r2.md` | superseded; do not issue `mtp-layer-execution-v1-accepted` |
 | 147 | `docs/fable-fc1-cutlass-fp32-control-r1-handoff.md` | `18f4132535133a4830cc54e1e86ecb04e44fe42b` | `fable-fc1-cutlass-fp32-control-r1.md` | `fc1-cutlass-fp32-control-r1-design-accepted` |
 | 148 | `docs/fable-exl3-real-k3-scalar-v1-handoff.md` | `7c90d66560217e4d2b18763059a1e1ac71c4bff3` | `fable-exl3-real-k3-scalar-v1.md` | diagnostic verdict; no token requested |
 | 149 | `docs/fable-exl3-recurrent-draft-k3-scalar-v1-handoff.md` | `6e0c6bfa6a85eda2eae4cd588ebb413e33a9a0b6` | `fable-exl3-recurrent-draft-k3-scalar-v1.md` | diagnostic verdict; no token requested |
@@ -271,6 +275,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 164 | `docs/fable-tentative-page-preflight-v1-handoff.md` | `c6ebdc97cf84a0349a689a1f816f82ada5e95203` | `docs/reviews/fable-tentative-page-preflight-v1.md` | `tentative-page-preflight-v1-accepted` |
 | 165 | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` | `50797043019efdd8908c9db333784ee049ddde69` | `fable-sm120-rank-executor-v1-r5.md` | `sm120-rank-executor-v1-r5-design-accepted` |
 | 166 | `docs/fable-target-graph-physical-memory-v1-handoff.md` | `50797043019efdd8908c9db333784ee049ddde69` | `fable-target-graph-physical-memory-v1.md` | `target-graph-physical-memory-v1-design-accepted` |
+| 167 | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` | `3b709499e37c69e2e5411d382c56f21f8b3862a3` | `fable-mtp-layer-execution-v1-r3.md` | `mtp-layer-execution-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -281,5 +286,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 166 current handoffs and two
+The expected queue count for this document is 167 current handoffs and two
 explicitly skipped historical umbrella handoffs.

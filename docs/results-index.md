@@ -1334,7 +1334,8 @@ verdicts:
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | corrective target-layer program, table, and control design r2 | `d4817ff` | `docs/fable-target-layer-execution-v1-r2-handoff.md` |
 | target graph physical-memory plan, class spans, node uses, and rank bindings | `5079704` | `docs/fable-target-graph-physical-memory-v1-handoff.md` |
-| recurrent MTP0–6 execution corrective design r2 | `83bd1ba` | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` |
+| recurrent MTP0–6 execution corrective design r2, superseded | `83bd1ba` | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` |
+| recurrent MTP0–6 sampling, pending-logit, physical-memory, and executor integration r3 | `3b70949` | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` |
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
 | executor r5 recurrent-state role and graph-memory capability binding | `5079704` | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` |
