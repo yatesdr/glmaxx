@@ -1320,6 +1320,12 @@ fn open_retained_safetensor_files(
         return Err(SafeTensorError::Index);
     }
     let worker_count = requested_workers.min(relative_paths.len());
+    if worker_count == 1 {
+        return relative_paths
+            .iter()
+            .map(|relative| open_retained_safetensor_shard(root, relative))
+            .collect();
+    }
     let batches = thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         for worker in 0..worker_count {
