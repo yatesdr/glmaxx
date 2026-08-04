@@ -132,6 +132,17 @@ impl PinnedTokenizer {
         IncrementalDecoder::new(Arc::clone(self), stops)
     }
 
+    /// Creates a decoder with an explicit EOS policy. Fixed-duration decode
+    /// benchmarks can count EOS as an ordinary token while stop strings and
+    /// the configured output-token limit remain authoritative.
+    pub fn stream_with_eos_policy(
+        self: &Arc<Self>,
+        stops: Vec<String>,
+        ignore_eos: bool,
+    ) -> Result<IncrementalDecoder, TokenizerError> {
+        IncrementalDecoder::new_with_eos_policy(Arc::clone(self), stops, ignore_eos)
+    }
+
     #[must_use]
     pub fn output_table_sha256(&self) -> [u8; 32] {
         hash_output_table(&self.outputs)

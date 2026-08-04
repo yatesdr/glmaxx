@@ -42,7 +42,7 @@ pub use cache::{
 pub use http::{
     ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle, ApiErrorBody, ApiHealth,
     ApiHealthState, ApiHttpServer, ApiServerConfig, ApiUsage, ChatCompletionRequest, ChatMessage,
-    GLMAXX_MODEL_REVISION, SamplingParameters, StopSequences, ValidatedChatRequest,
+    GLMAXX_MODEL_REVISION, SamplingParameters, StopSequences, StreamOptions, ValidatedChatRequest,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,12 +152,14 @@ pub struct ServingCoordinator {
     pending_admissions: BTreeMap<u64, PendingAdmission>,
     request_tokens: BTreeMap<u64, Box<[u32]>>,
     request_sampling: BTreeMap<u64, StepSampling>,
+    request_ignore_eos: BTreeSet<u64>,
 }
 
 struct PendingAdmission {
     spec: RequestSpec,
     tokens: Box<[u32]>,
     sampling: StepSampling,
+    ignore_eos: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,6 +273,7 @@ impl ServingCoordinator {
             pending_admissions: BTreeMap::new(),
             request_tokens: BTreeMap::new(),
             request_sampling: BTreeMap::new(),
+            request_ignore_eos: BTreeSet::new(),
         })
     }
 
@@ -301,12 +304,22 @@ impl ServingCoordinator {
         &mut self,
         request: ServingRequest,
     ) -> Result<(), ServingError> {
+        self.admit_prevalidated_with_eos_policy(request, false)
+    }
+
+    #[cfg(test)]
+    fn admit_prevalidated_with_eos_policy(
+        &mut self,
+        request: ServingRequest,
+        ignore_eos: bool,
+    ) -> Result<(), ServingError> {
         self.admit_active_sequence(
             request.spec,
             request.cached_prompt_tokens,
             &[],
             request.cached_prompt_tokens,
             default_step_sampling(request.spec),
+            ignore_eos,
         )
     }
 
@@ -317,6 +330,7 @@ impl ServingCoordinator {
         prefix_pages: &[PrefixPageAttachment],
         private_cached_tokens: u32,
         sampling: StepSampling,
+        ignore_eos: bool,
     ) -> Result<(), ServingError> {
         validate_context_limit(spec)?;
         sampling.validate()?;
@@ -328,6 +342,7 @@ impl ServingCoordinator {
             || self.prefix_leases.contains_key(&spec.id)
             || self.request_tokens.contains_key(&spec.id)
             || self.request_sampling.contains_key(&spec.id)
+            || self.request_ignore_eos.contains(&spec.id)
         {
             return Err(ServingError::Backpressure);
         }
@@ -358,6 +373,10 @@ impl ServingCoordinator {
         self.active_pages = active_pages;
         self.sequence_table_generation = next_generation;
         self.request_sampling.insert(spec.id, sampling);
+        if ignore_eos {
+            let inserted = self.request_ignore_eos.insert(spec.id);
+            debug_assert!(inserted, "request EOS policy was preflighted");
+        }
         self.events.push_back(RequestEvent::Admitted {
             request_id: spec.id,
             cached_prompt_tokens,
@@ -401,6 +420,16 @@ impl ServingCoordinator {
         sampling: StepSampling,
         tokens: &[u32],
     ) -> Result<AdmissionStatus, ServingError> {
+        self.begin_admit_tokens_with_sampling_options(spec, sampling, tokens, false)
+    }
+
+    pub fn begin_admit_tokens_with_sampling_options(
+        &mut self,
+        spec: RequestSpec,
+        sampling: StepSampling,
+        tokens: &[u32],
+        ignore_eos: bool,
+    ) -> Result<AdmissionStatus, ServingError> {
         validate_context_limit(spec)?;
         sampling.validate()?;
         if sampling.kind != sampling_kind(spec.sampling) {
@@ -414,6 +443,7 @@ impl ServingCoordinator {
             || self.prefix_leases.contains_key(&spec.id)
             || self.request_tokens.contains_key(&spec.id)
             || self.request_sampling.contains_key(&spec.id)
+            || self.request_ignore_eos.contains(&spec.id)
             || self.pending_admissions.len() >= self.event_capacity
         {
             return Err(ServingError::Backpressure);
@@ -441,6 +471,7 @@ impl ServingCoordinator {
                         spec,
                         tokens: tokens.to_vec().into_boxed_slice(),
                         sampling,
+                        ignore_eos,
                     },
                 );
                 Ok(AdmissionStatus::Pending)
@@ -451,6 +482,7 @@ impl ServingCoordinator {
                 restored,
                 prior_retained_prompt_bytes,
                 sampling,
+                ignore_eos,
             ),
         }
     }
@@ -494,6 +526,7 @@ impl ServingCoordinator {
                     restored,
                     retained_prompt_bytes,
                     pending.sampling,
+                    pending.ignore_eos,
                 )
             }
         }
@@ -506,6 +539,7 @@ impl ServingCoordinator {
         mut restored: RestoredPrefix,
         retained_prompt_bytes: u64,
         sampling: StepSampling,
+        ignore_eos: bool,
     ) -> Result<AdmissionStatus, ServingError> {
         if let Err(error) = restored.validate() {
             self.prefix_cache
@@ -534,6 +568,7 @@ impl ServingCoordinator {
             restored.page_attachments(),
             0,
             sampling,
+            ignore_eos,
         );
         if let Err(error) = result {
             self.prefix_cache
@@ -690,26 +725,29 @@ impl ServingCoordinator {
             .map(|((request_id, _), output)| BatchCompletion {
                 request_id: *request_id,
                 committed_tokens: output.count(),
-                terminal: output
-                    .token_ids()
-                    .last()
-                    .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id)),
+                terminal: !self.request_ignore_eos.contains(request_id)
+                    && output
+                        .token_ids()
+                        .last()
+                        .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id)),
             })
             .collect();
         let output_fits_requests = match batch.kind {
             BatchKind::Prefill => output_rows.is_empty(),
             BatchKind::Decode | BatchKind::Verify { .. } => {
                 output_rows.len() == starting_progress.len()
-                    && starting_progress
-                        .iter()
-                        .zip(output_rows)
-                        .all(|((_, progress), output)| {
+                    && starting_progress.iter().zip(output_rows).all(
+                        |((request_id, progress), output)| {
                             progress
                                 .maximum_new_tokens
                                 .checked_sub(progress.generated)
                                 .is_some_and(|remaining| u32::from(output.count()) <= remaining)
-                                && output_has_valid_termination(output)
-                        })
+                                && output_has_valid_termination(
+                                    output,
+                                    self.request_ignore_eos.contains(request_id),
+                                )
+                        },
+                    )
             }
         };
         let reserved_pages = active_pages.clone();
@@ -937,10 +975,11 @@ impl ServingCoordinator {
                     if generated > starting.maximum_new_tokens {
                         return Err(ServingError::Output);
                     }
-                    let stopped = output
-                        .token_ids()
-                        .last()
-                        .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id));
+                    let stopped = !self.request_ignore_eos.contains(&request_id)
+                        && output
+                            .token_ids()
+                            .last()
+                            .is_some_and(|token_id| EOS_TOKEN_IDS.contains(token_id));
                     if stopped || generated == starting.maximum_new_tokens {
                         releases.push((request_id, RequestReleaseMode::Prefix))?;
                         events.push(RequestEvent::Finished {
@@ -1189,6 +1228,7 @@ impl ServingCoordinator {
             if mode == RequestReleaseMode::Prefix {
                 self.prefix_leases.remove(&request_id);
                 self.request_sampling.remove(&request_id);
+                self.request_ignore_eos.remove(&request_id);
             }
             self.request_tokens.remove(&request_id);
         }
@@ -1394,7 +1434,10 @@ fn validate_context_limit(spec: RequestSpec) -> Result<(), ServingError> {
         .ok_or(ServingError::Request)
 }
 
-fn output_has_valid_termination(output: &glm_engine::CommittedTokens) -> bool {
+fn output_has_valid_termination(output: &glm_engine::CommittedTokens, ignore_eos: bool) -> bool {
+    if ignore_eos {
+        return output.target_token_present();
+    }
     let token_ids = output.token_ids();
     let first_eos = token_ids
         .iter()
@@ -1830,7 +1873,14 @@ mod tests {
             sampling: SamplingCollective::Greedy,
         };
         serving
-            .admit_active_sequence(spec, 64, &[], 64, StepSampling::greedy(expected_seed))
+            .admit_active_sequence(
+                spec,
+                64,
+                &[],
+                64,
+                StepSampling::greedy(expected_seed),
+                false,
+            )
             .unwrap();
         let _ = serving.drain_events();
         assert!(serving.tick().unwrap());
@@ -2427,6 +2477,59 @@ mod tests {
                 RequestEvent::Finished {
                     request_id: 10,
                     reason: RequestFinishReason::Stop,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_target_eos_runs_to_the_requested_length() {
+        let mut serving = coordinator_with_workers(accepted_draft_eos_workers());
+        serving
+            .admit_prevalidated_with_eos_policy(
+                ServingRequest {
+                    spec: RequestSpec {
+                        id: 10,
+                        tenant: 1,
+                        prompt_tokens: 64,
+                        maximum_new_tokens: 2,
+                        mtp_depth: 0,
+                        sampling: SamplingCollective::Greedy,
+                    },
+                    cached_prompt_tokens: 64,
+                },
+                true,
+            )
+            .unwrap();
+        let _ = serving.drain_events();
+
+        assert!(serving.tick().unwrap());
+        assert_eq!(
+            serving.drain_events(),
+            vec![RequestEvent::Token {
+                request_id: 10,
+                position: 0,
+                token_id: EOS_TOKEN_IDS[0],
+                speculative: false,
+                draft_ordinal: None,
+            }]
+        );
+        assert_eq!(serving.request_progress(10).unwrap().generated, 1);
+
+        assert!(serving.tick().unwrap());
+        assert_eq!(
+            serving.drain_events(),
+            vec![
+                RequestEvent::Token {
+                    request_id: 10,
+                    position: 1,
+                    token_id: EOS_TOKEN_IDS[0],
+                    speculative: false,
+                    draft_ordinal: None,
+                },
+                RequestEvent::Finished {
+                    request_id: 10,
+                    reason: RequestFinishReason::Length,
                 },
             ]
         );

@@ -18,6 +18,7 @@ pub struct DecodeDelta {
 pub struct IncrementalDecoder {
     tokenizer: Arc<PinnedTokenizer>,
     stops: Vec<String>,
+    ignore_eos: bool,
     pending_utf8: Vec<u8>,
     held_text: String,
     finish: Option<StreamFinish>,
@@ -27,6 +28,14 @@ impl IncrementalDecoder {
     pub(crate) fn new(
         tokenizer: Arc<PinnedTokenizer>,
         stops: Vec<String>,
+    ) -> Result<Self, TokenizerError> {
+        Self::new_with_eos_policy(tokenizer, stops, false)
+    }
+
+    pub(crate) fn new_with_eos_policy(
+        tokenizer: Arc<PinnedTokenizer>,
+        stops: Vec<String>,
+        ignore_eos: bool,
     ) -> Result<Self, TokenizerError> {
         if stops.len() > 16
             || stops
@@ -38,6 +47,7 @@ impl IncrementalDecoder {
         Ok(Self {
             tokenizer,
             stops,
+            ignore_eos,
             pending_utf8: Vec::with_capacity(8),
             held_text: String::new(),
             finish: None,
@@ -48,7 +58,7 @@ impl IncrementalDecoder {
         if self.finish.is_some() {
             return Err(TokenizerError::StreamFinished);
         }
-        if self.tokenizer.is_eos(token_id) {
+        if self.tokenizer.is_eos(token_id) && !self.ignore_eos {
             let mut decoded = self.decode_utf8(true);
             decoded.push_str(&self.release_held());
             let finish = StreamFinish::EosToken(token_id);
@@ -249,6 +259,31 @@ mod tests {
                 text: "ST".to_owned(),
                 finish: Some(StreamFinish::EosToken(1))
             }
+        );
+    }
+
+    #[test]
+    fn ignored_eos_does_not_finish_the_stream() {
+        let tokenizer = test_tokenizer(
+            vec![
+                TokenOutput::Bytes(b"after".to_vec().into_boxed_slice()),
+                TokenOutput::Special,
+            ],
+            &[1],
+        );
+        let mut decoder =
+            IncrementalDecoder::new_with_eos_policy(tokenizer, Vec::new(), true).unwrap();
+        assert_eq!(
+            decoder.push(1).unwrap(),
+            DecodeDelta {
+                text: String::new(),
+                finish: None
+            }
+        );
+        assert_eq!(decoder.push(0).unwrap().text, "after");
+        assert_eq!(
+            decoder.finish().unwrap().finish,
+            Some(StreamFinish::EndOfStream)
         );
     }
 }

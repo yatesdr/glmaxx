@@ -97,6 +97,8 @@ enum BackendCommand {
         tenant: u32,
         maximum_output_tokens: u32,
         mtp_depth: u8,
+        ignore_eos: bool,
+        continuous_usage_stats: bool,
         sampling: StepSampling,
         request_started_at: Instant,
         enqueued_at: Instant,
@@ -140,7 +142,11 @@ impl OutputDecoder for PinnedOutputDecoder {
 
 trait RuntimeTokenizer: Send + Sync {
     fn encode_chat(&self, request: &ValidatedChatRequest) -> Result<Box<[u32]>, String>;
-    fn decoder(&self, stops: Vec<String>) -> Result<Box<dyn OutputDecoder>, String>;
+    fn decoder(
+        &self,
+        stops: Vec<String>,
+        ignore_eos: bool,
+    ) -> Result<Box<dyn OutputDecoder>, String>;
 }
 
 struct PinnedRuntimeTokenizer(Arc<PinnedTokenizer>);
@@ -154,9 +160,13 @@ impl RuntimeTokenizer for PinnedRuntimeTokenizer {
             .map_err(|error| error.to_string())
     }
 
-    fn decoder(&self, stops: Vec<String>) -> Result<Box<dyn OutputDecoder>, String> {
+    fn decoder(
+        &self,
+        stops: Vec<String>,
+        ignore_eos: bool,
+    ) -> Result<Box<dyn OutputDecoder>, String> {
         self.0
-            .stream(stops)
+            .stream_with_eos_policy(stops, ignore_eos)
             .map(PinnedOutputDecoder)
             .map(|decoder| Box::new(decoder) as Box<dyn OutputDecoder>)
             .map_err(|error| error.to_string())
@@ -169,6 +179,7 @@ struct ActiveRequest {
     prompt_done: u32,
     completion_tokens: u32,
     mtp_depth: u8,
+    continuous_usage_stats: bool,
     request_started_at: Instant,
     admission_started_at: Instant,
     admitted_at: Option<Instant>,
@@ -378,7 +389,7 @@ impl ApiBackend for CoordinatorApiBackend {
         }
         let decoder = self
             .tokenizer
-            .decoder(request.stop.clone())
+            .decoder(request.stop.clone(), request.ignore_eos)
             .map_err(|error| self.reject("TOKENIZATION_FAILED", error))?;
         let request_id = self
             .next_request_id
@@ -392,6 +403,8 @@ impl ApiBackend for CoordinatorApiBackend {
             tenant,
             maximum_output_tokens: request.maximum_output_tokens,
             mtp_depth: request.mtp_depth,
+            ignore_eos: request.ignore_eos,
+            continuous_usage_stats: request.stream_options.continuous_usage_stats,
             sampling: StepSampling::greedy(request.sampling.seed.unwrap_or(request_id)),
             request_started_at,
             enqueued_at: Instant::now(),
@@ -841,6 +854,8 @@ fn process_command(
             tenant,
             maximum_output_tokens,
             mtp_depth,
+            ignore_eos,
+            continuous_usage_stats,
             sampling,
             request_started_at,
             enqueued_at,
@@ -871,6 +886,7 @@ fn process_command(
                     prompt_done: 0,
                     completion_tokens: 0,
                     mtp_depth,
+                    continuous_usage_stats,
                     request_started_at,
                     admission_started_at,
                     admitted_at: None,
@@ -887,7 +903,9 @@ fn process_command(
                 mtp_depth,
                 sampling: SamplingCollective::Greedy,
             };
-            match coordinator.begin_admit_tokens_with_sampling(spec, sampling, &tokens) {
+            match coordinator
+                .begin_admit_tokens_with_sampling_options(spec, sampling, &tokens, ignore_eos)
+            {
                 Ok(AdmissionStatus::Pending) => {
                     pending_admissions.insert(request_id);
                 }
@@ -1052,10 +1070,25 @@ fn dispatch_events(
                             request.mtp_depth,
                             draft_ordinal,
                         );
-                        if !delta.text.is_empty()
+                        let Some(usage) = active_usage(&request) else {
+                            let request =
+                                cancel_dispatch_request(coordinator, active, request_id, request)?;
+                            fail_active_request(
+                                request,
+                                counters,
+                                "OUTPUT_USAGE_OVERFLOW",
+                                "completion usage overflowed u32",
+                            );
+                            remove_owner(owners, request_id);
+                            continue;
+                        };
+                        if (!delta.text.is_empty() || request.continuous_usage_stats)
                             && request
                                 .events
-                                .try_send(ApiCompletionEvent::TextDelta(delta.text))
+                                .try_send(ApiCompletionEvent::Progress {
+                                    delta: delta.text,
+                                    usage,
+                                })
                                 .is_err()
                         {
                             let request =
@@ -1091,10 +1124,23 @@ fn dispatch_events(
                 };
                 match request.decoder.finish() {
                     Ok(delta) => {
+                        let Some(usage) = active_usage(&request) else {
+                            fail_active_request(
+                                request,
+                                counters,
+                                "OUTPUT_USAGE_OVERFLOW",
+                                "completion usage overflowed u32",
+                            );
+                            remove_owner(owners, request_id);
+                            continue;
+                        };
                         if !delta.text.is_empty()
                             && request
                                 .events
-                                .try_send(ApiCompletionEvent::TextDelta(delta.text))
+                                .try_send(ApiCompletionEvent::Progress {
+                                    delta: delta.text,
+                                    usage,
+                                })
                                 .is_err()
                         {
                             counters.increment_slow_consumers();
@@ -1200,6 +1246,16 @@ fn finish_request(
         counters.increment_completed();
     }
     remove_owner(owners, request_id);
+}
+
+fn active_usage(request: &ActiveRequest) -> Option<ApiUsage> {
+    Some(ApiUsage {
+        prompt_tokens: request.prompt_tokens,
+        completion_tokens: request.completion_tokens,
+        total_tokens: request
+            .prompt_tokens
+            .checked_add(request.completion_tokens)?,
+    })
 }
 
 fn fail_request(
@@ -1363,7 +1419,11 @@ mod tests {
             Ok(vec![17].into_boxed_slice())
         }
 
-        fn decoder(&self, stops: Vec<String>) -> Result<Box<dyn OutputDecoder>, String> {
+        fn decoder(
+            &self,
+            stops: Vec<String>,
+            _ignore_eos: bool,
+        ) -> Result<Box<dyn OutputDecoder>, String> {
             Ok(Box::new(FakeDecoder {
                 stop_on_x: stops.iter().any(|stop| stop == "x"),
                 finished: false,
@@ -1593,7 +1653,7 @@ mod tests {
     fn terminal_event(handle: &ApiCompletionHandle) -> ApiCompletionEvent {
         loop {
             match handle.events.recv_timeout(Duration::from_secs(2)).unwrap() {
-                ApiCompletionEvent::TextDelta(_) => {}
+                ApiCompletionEvent::Progress { .. } => {}
                 terminal => return terminal,
             }
         }
@@ -1815,6 +1875,8 @@ mod tests {
                 tenant: 1,
                 maximum_output_tokens: 1,
                 mtp_depth: 0,
+                ignore_eos: false,
+                continuous_usage_stats: false,
                 sampling: StepSampling::greedy(50),
                 request_started_at: Instant::now(),
                 enqueued_at: Instant::now(),
@@ -1943,6 +2005,8 @@ mod tests {
                 tenant: 1,
                 maximum_output_tokens: 1,
                 mtp_depth: 0,
+                ignore_eos: false,
+                continuous_usage_stats: false,
                 sampling: StepSampling::greedy(60),
                 request_started_at: Instant::now(),
                 enqueued_at: Instant::now(),
@@ -2039,7 +2103,7 @@ mod tests {
         let mut text = String::new();
         let usage = loop {
             match handle.events.recv_timeout(Duration::from_secs(2)).unwrap() {
-                ApiCompletionEvent::TextDelta(delta) => text.push_str(&delta),
+                ApiCompletionEvent::Progress { delta, .. } => text.push_str(&delta),
                 ApiCompletionEvent::Finished {
                     finish_reason,
                     usage,
@@ -2092,6 +2156,35 @@ mod tests {
     }
 
     #[test]
+    fn continuous_stream_usage_is_cumulative_for_every_token() {
+        let root = temporary_store();
+        let backend = backend(&root);
+        let mut request = validated(2, None);
+        request.stream = true;
+        request.stream_options = crate::StreamOptions {
+            include_usage: true,
+            continuous_usage_stats: true,
+        };
+        let handle = backend.submit_chat(1, request).unwrap();
+        let mut completion_counts = Vec::new();
+        loop {
+            match handle.events.recv_timeout(Duration::from_secs(2)).unwrap() {
+                ApiCompletionEvent::Progress { usage, .. } => {
+                    completion_counts.push(usage.completion_tokens);
+                }
+                ApiCompletionEvent::Finished { usage, .. } => {
+                    assert_eq!(usage.completion_tokens, 2);
+                    break;
+                }
+                ApiCompletionEvent::Failed(error) => panic!("unexpected failure: {error:?}"),
+            }
+        }
+        assert_eq!(completion_counts, [1, 2]);
+        drop(backend);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn text_stop_cancels_remaining_model_work_without_leaking_stop() {
         let root = temporary_store();
         let backend = backend(&root);
@@ -2124,7 +2217,7 @@ mod tests {
         backend.cancel(1, handle.request_id).unwrap();
         let terminal = loop {
             match handle.events.recv_timeout(Duration::from_secs(2)).unwrap() {
-                ApiCompletionEvent::TextDelta(_) => {}
+                ApiCompletionEvent::Progress { .. } => {}
                 terminal => break terminal,
             }
         };
