@@ -35,6 +35,28 @@ Each projection consumed 1,192,964 source bytes and reconstructed 6,291,456
 FP16 bytes. The first three-projection pass, including container startup,
 took 0.619 seconds; the repeated pass took 0.653 seconds.
 
+## Expert and rank boundary cross-check
+
+A second no-GPU run repeated the complete proof at the opposite semantic
+boundaries: layer 3, expert 255, rank 3. The tier map also identifies expert
+255 as K3, and the index maps all twelve boundary component names to the same
+freshly rehashed owning shard. Both passes were byte-identical.
+
+| Projection | Source payload SHA-256 | Reconstructed FP16 SHA-256 |
+|---|---|---|
+| gate | `35320be2a483254664b3efcbe64cf81d7194b71cb422161fdff4e0e80677f33a` | `675f7c23a869ed712aa5a31606ee4e76ee421fbfd8ae42474f1b49184a6c8f1c` |
+| up | `4c0c0386bfe3525abeae896b54641f0885dfa649c6356257c48f9ece0c835ea6` | `1078be2dfd5b397805630b3f19e9b8b242c1f5293f94b037372bfdbbcdc7d6f4` |
+| down | `56e6f1ccae07a34bd8db05061eab8fb6ac874c4269c883a834679e315bb0ec89` | `86a784f00bad0c2296c189e44a9c74452b430b86feeae35e2836d5bc656e4259` |
+
+Boundary evidence:
+`/home/derek/glmaxx/evidence/20260804T045640Z-tr3-k3-boundary-cpu-1c8459e-r1`.
+Its artifact-manifest SHA-256 is
+`06008d4e75e5f67d91223992194cb12100a45ed39ce1c9c98e2344fd58e5390a`.
+The gate/up/down report hashes are respectively
+`6701f76359085a3c4532c20f34770e26965c4d6c4c1b4be9b617e0b333566422`,
+`42c0f23983b0b48b4ae0b347766425cfc1386161130abc9e542b701a3f576c11`,
+and `0bc2fb8425d947cd035b8abc9e8e513d02584de5c174658ec0c6dc63aa54bd07`.
+
 ## Provenance
 
 - Checkpoint:
@@ -63,12 +85,12 @@ The proof containers used `NVIDIA_VISIBLE_DEVICES=void`. Host GPU state was
 ## Claim boundary
 
 This establishes deterministic source import and complete CPU reconstruction
-for one real target K3 expert on rank 0 at all three production projection
-shapes. It supplies a full-hash-gated payload for the later scalar-versus-
-staged SM120 comparison.
+for two real target K3 experts spanning expert and rank boundaries at all
+three production projection shapes. It supplies full-hash-gated payloads for
+the later scalar-versus-staged SM120 comparison.
 
-It does not admit the globally sharded checkpoint, implement K4, prove other
-experts/ranks/layers, launch CUDA, establish kernel performance, replay a TP4
-layer, run the checkpoint, measure quality, serve requests, or prove KV
-capacity. K4 and the mixed 192:64 program remain behind their separate review
-and CPU-proof gates.
+It does not admit the globally sharded checkpoint, implement K4, exhaustively
+prove other experts or layers, launch CUDA, establish kernel performance,
+replay a TP4 layer, run the checkpoint, measure quality, serve requests, or
+prove KV capacity. K4 and the mixed 192:64 program remain behind their
+separate review and CPU-proof gates.
