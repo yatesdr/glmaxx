@@ -888,6 +888,11 @@ struct NativeCheckpointLoadRankReport {
     verification_evidence_sha256: String,
     verified_file_payload_bytes: u64,
     uploaded_plane_bytes: u64,
+    storage_read_nanoseconds: u64,
+    host_to_pinned_copy_nanoseconds: u64,
+    h2d_submission_nanoseconds: u64,
+    h2d_drain_nanoseconds: u64,
+    full_arena_readback_nanoseconds: u64,
     finalized_adopted_rank_set_sha256: String,
     cleanup_load_attempt_generation: u64,
     cleanup_acknowledged: bool,
@@ -921,6 +926,11 @@ struct NativeCheckpointLoadSmokeReport {
     startup_and_load_elapsed_nanoseconds: u128,
     shutdown_elapsed_nanoseconds: u128,
     total_elapsed_nanoseconds: u128,
+    collectives_elapsed_nanoseconds: Option<u128>,
+    graphs_elapsed_nanoseconds: Option<u128>,
+    kv_elapsed_nanoseconds: Option<u128>,
+    health_publication_elapsed_nanoseconds: Option<u128>,
+    timing_coverage: &'static str,
     full_payload_sha256_verified: bool,
     full_arena_readback_verified: bool,
     model_kernel_launched: bool,
@@ -1030,6 +1040,7 @@ fn gpu_checkpoint_load_smoke(
     let plan_ranks = loaded.plan().ranks();
     let load_outcome = loaded.load_outcome().clone();
     let device_identity_sha256 = loaded.device_identity_sha256();
+    let rank_load_verification_evidence = loaded.rank_load_verification_evidence();
     let shutdown_started = Instant::now();
     let shutdown = loaded.shutdown(phase_timeout)?;
     let shutdown_elapsed_nanoseconds = shutdown_started.elapsed().as_nanos();
@@ -1040,6 +1051,7 @@ fn gpu_checkpoint_load_smoke(
             let prepared = load_outcome.prepared_receipts[rank];
             let finalized = load_outcome.finalize_acknowledgements[rank];
             let cleanup = shutdown.cleanup_acknowledgements[rank];
+            let timings = rank_load_verification_evidence[rank].timings();
             NativeCheckpointLoadRankReport {
                 rank: u8::try_from(rank).expect("four ranks fit u8"),
                 device_identity_sha256: hex(&device_identity_sha256[rank]),
@@ -1058,6 +1070,11 @@ fn gpu_checkpoint_load_smoke(
                 verification_evidence_sha256: hex(&prepared.verification_evidence_sha256),
                 verified_file_payload_bytes: prepared.verified_file_payload_bytes,
                 uploaded_plane_bytes: prepared.uploaded_plane_metadata_bytes,
+                storage_read_nanoseconds: timings.storage_read_nanoseconds,
+                host_to_pinned_copy_nanoseconds: timings.host_to_pinned_copy_nanoseconds,
+                h2d_submission_nanoseconds: timings.h2d_submission_nanoseconds,
+                h2d_drain_nanoseconds: timings.h2d_drain_nanoseconds,
+                full_arena_readback_nanoseconds: timings.full_arena_readback_nanoseconds,
                 finalized_adopted_rank_set_sha256: hex(&finalized.adopted_rank_set_sha256()),
                 cleanup_load_attempt_generation: cleanup.load_attempt_generation(),
                 cleanup_acknowledged: cleanup.rank() == entry.rank
@@ -1097,6 +1114,11 @@ fn gpu_checkpoint_load_smoke(
         startup_and_load_elapsed_nanoseconds,
         shutdown_elapsed_nanoseconds,
         total_elapsed_nanoseconds: total_started.elapsed().as_nanos(),
+        collectives_elapsed_nanoseconds: None,
+        graphs_elapsed_nanoseconds: None,
+        kv_elapsed_nanoseconds: None,
+        health_publication_elapsed_nanoseconds: None,
+        timing_coverage: "native rank images, storage read, host staging, H2D submission/drain, full arena readback, adoption, and shutdown only; collectives, graphs, KV, and production health are not implemented",
         full_payload_sha256_verified: true,
         full_arena_readback_verified: true,
         model_kernel_launched: false,

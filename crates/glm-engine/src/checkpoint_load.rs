@@ -728,6 +728,11 @@ impl RankLoadVerificationEvidence {
     pub const fn owner_allocation_generation(self) -> u64 {
         self.owner_allocation_generation
     }
+
+    #[must_use]
+    pub const fn timings(self) -> RankLoadTimingEvidence {
+        self.timings
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2536,6 +2541,16 @@ mod tests {
         assert_eq!(
             &encoded[144..152],
             (2_u64 * u64::from(READER_CHUNK_BYTES)).to_le_bytes()
+        );
+        assert_eq!(
+            evidence.timings(),
+            RankLoadTimingEvidence {
+                storage_read_nanoseconds: 11,
+                host_to_pinned_copy_nanoseconds: 12,
+                h2d_submission_nanoseconds: 13,
+                h2d_drain_nanoseconds: 14,
+                full_arena_readback_nanoseconds: 15,
+            }
         );
         assert_eq!(
             evidence.evidence_sha256(),

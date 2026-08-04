@@ -1,7 +1,7 @@
 use std::{
     fmt, mem,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -15,13 +15,14 @@ use crate::{
     AcknowledgedCudaRank, AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule,
     CudaWeightArena, LoadPlanError, LoadProfile, LoadVerificationMode, PreparedCudaRank,
     PreparedRankReceipt, PreparedRankSet, RANK_SET_SIZE, RankCheckpointLoadError,
-    RankExecutionError, RankExecutor, RankExecutorFactory, RankSetAbortCommand,
-    RankSetLoadEnvironment, RankSetLoadPlan, StepInput, StepOutput, StepPlan, SystemMemoryPlan,
-    Tp4WorkerPool, WeightLoadFailure, WeightLoadOutcome, WeightShutdownFailure,
+    RankExecutionError, RankExecutor, RankExecutorFactory, RankLoadVerificationEvidence,
+    RankSetAbortCommand, RankSetLoadEnvironment, RankSetLoadPlan, StepInput, StepOutput, StepPlan,
+    SystemMemoryPlan, Tp4WorkerPool, WeightLoadFailure, WeightLoadOutcome, WeightShutdownFailure,
     WeightShutdownOutcome, WorkerError, WorkerExecutionPosture, build_rank_set_load_plan,
 };
 
 const NATIVE_PROGRAM_NOT_IMPLEMENTED: i32 = -1;
+type RankLoadEvidenceSink = Arc<Mutex<Option<RankLoadVerificationEvidence>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ActiveWeightLoad {
@@ -51,6 +52,7 @@ pub struct NativeCheckpointRankExecutor {
     context: NativeRankContext,
     reader: NativeRankReader,
     active_weight_load: Option<ActiveWeightLoad>,
+    load_evidence_sink: Option<RankLoadEvidenceSink>,
     software_provenance_sha256: [u8; 32],
     required_hbm_bytes: u64,
     rank: u8,
@@ -112,6 +114,7 @@ pub struct LoadedNativeCheckpoint {
     plan: Arc<RankSetLoadPlan>,
     load_outcome: WeightLoadOutcome,
     device_identity_sha256: [[u8; 32]; RANK_SET_SIZE],
+    rank_load_verification_evidence: [RankLoadVerificationEvidence; RANK_SET_SIZE],
 }
 
 impl LoadedNativeCheckpoint {
@@ -135,6 +138,13 @@ impl LoadedNativeCheckpoint {
         self.device_identity_sha256
     }
 
+    #[must_use]
+    pub const fn rank_load_verification_evidence(
+        &self,
+    ) -> [RankLoadVerificationEvidence; RANK_SET_SIZE] {
+        self.rank_load_verification_evidence
+    }
+
     /// Releases all four resident arenas and joins the persistent owner
     /// threads before returning.
     ///
@@ -149,6 +159,7 @@ impl LoadedNativeCheckpoint {
             plan,
             load_outcome,
             device_identity_sha256: _,
+            rank_load_verification_evidence: _,
         } = self;
         let owner_allocation_generations = load_outcome
             .finalize_acknowledgements
@@ -191,6 +202,22 @@ impl NativeCheckpointRankExecutor {
         software_provenance_sha256: [u8; 32],
         required_hbm_bytes: u64,
     ) -> Result<Self, RankCheckpointLoadError> {
+        Self::open_with_evidence_sink(
+            rank,
+            rank_file,
+            software_provenance_sha256,
+            required_hbm_bytes,
+            None,
+        )
+    }
+
+    fn open_with_evidence_sink(
+        rank: u8,
+        rank_file: impl AsRef<Path>,
+        software_provenance_sha256: [u8; 32],
+        required_hbm_bytes: u64,
+        load_evidence_sink: Option<RankLoadEvidenceSink>,
+    ) -> Result<Self, RankCheckpointLoadError> {
         if usize::from(rank) >= RANK_SET_SIZE {
             return Err(LoadPlanError::Rank.into());
         }
@@ -207,6 +234,7 @@ impl NativeCheckpointRankExecutor {
             context,
             reader,
             active_weight_load: None,
+            load_evidence_sink,
             software_provenance_sha256,
             required_hbm_bytes,
             rank,
@@ -334,6 +362,19 @@ impl RankExecutor for NativeCheckpointRankExecutor {
         )
         .map_err(map_checkpoint_error)?;
         let receipt = prepared.receipt();
+        let verification_evidence = prepared
+            .verification_evidence()
+            .ok_or(LoadPlanError::Evidence)?;
+        if verification_evidence.evidence_sha256() != receipt.verification_evidence_sha256 {
+            return Err(LoadPlanError::Evidence);
+        }
+        if let Some(sink) = &self.load_evidence_sink {
+            let mut slot = sink.lock().map_err(|_| LoadPlanError::Writer)?;
+            if slot.is_some() {
+                return Err(LoadPlanError::Transition);
+            }
+            *slot = Some(verification_evidence);
+        }
         self.weights = NativeWeightState::Prepared(prepared);
         Ok(receipt)
     }
@@ -440,6 +481,13 @@ impl RankExecutor for NativeCheckpointRankExecutor {
         };
         match cleanup {
             Ok(()) => {
+                if let Some(sink) = &self.load_evidence_sink {
+                    let Ok(mut slot) = sink.lock() else {
+                        self.weights = NativeWeightState::CleanupFailed;
+                        return Err(LoadPlanError::Writer);
+                    };
+                    *slot = None;
+                }
                 self.weights = NativeWeightState::Vacant;
                 self.active_weight_load = None;
                 Ok(())
@@ -539,11 +587,14 @@ pub fn load_native_checkpoint(
     validate_checkpoint_arena_budget(&preflight_plan, &config.memory_plan)
         .map_err(NativeCheckpointStartupError::Plan)?;
 
-    let pool = Tp4WorkerPool::spawn_native_checkpoint_loaders(
+    let evidence_sinks: [RankLoadEvidenceSink; RANK_SET_SIZE] =
+        std::array::from_fn(|_| Arc::new(Mutex::new(None)));
+    let pool = Tp4WorkerPool::spawn_native_checkpoint_loaders_with_evidence(
         config.maximum_outstanding,
         rank_files,
         config.software_provenance_sha256,
         required_hbm_bytes,
+        std::array::from_fn(|rank| Some(Arc::clone(&evidence_sinks[rank]))),
     )
     .map_err(NativeCheckpointStartupError::Worker)?;
     let device_identity_sha256 = pool
@@ -564,11 +615,32 @@ pub fn load_native_checkpoint(
             config.phase_timeout,
         )
         .map_err(NativeCheckpointStartupError::Load)?;
+    let mut rank_evidence = Vec::with_capacity(RANK_SET_SIZE);
+    for (rank, sink) in evidence_sinks.iter().enumerate() {
+        let evidence = sink
+            .lock()
+            .map_err(|_| NativeCheckpointStartupError::Plan(LoadPlanError::Writer))?
+            .ok_or(NativeCheckpointStartupError::Plan(LoadPlanError::Evidence))?;
+        let receipt = load_outcome.prepared_receipts[rank];
+        if evidence.rank()
+            != u8::try_from(rank).map_err(|_| NativeCheckpointStartupError::Config)?
+            || evidence.plan_sha256() != plan.plan_sha256()
+            || evidence.owner_allocation_generation() != receipt.owner_allocation_generation
+            || evidence.evidence_sha256() != receipt.verification_evidence_sha256
+        {
+            return Err(NativeCheckpointStartupError::Plan(LoadPlanError::Evidence));
+        }
+        rank_evidence.push(evidence);
+    }
+    let rank_load_verification_evidence = rank_evidence
+        .try_into()
+        .map_err(|_| NativeCheckpointStartupError::Config)?;
     Ok(LoadedNativeCheckpoint {
         pool,
         plan,
         load_outcome,
         device_identity_sha256,
+        rank_load_verification_evidence,
     })
 }
 
@@ -674,6 +746,22 @@ impl Tp4WorkerPool {
         software_provenance_sha256: [u8; 32],
         required_hbm_bytes: [u64; RANK_SET_SIZE],
     ) -> Result<Self, WorkerError> {
+        Self::spawn_native_checkpoint_loaders_with_evidence(
+            maximum_outstanding,
+            rank_files,
+            software_provenance_sha256,
+            required_hbm_bytes,
+            std::array::from_fn(|_| None),
+        )
+    }
+
+    fn spawn_native_checkpoint_loaders_with_evidence(
+        maximum_outstanding: usize,
+        rank_files: [PathBuf; RANK_SET_SIZE],
+        software_provenance_sha256: [u8; 32],
+        required_hbm_bytes: [u64; RANK_SET_SIZE],
+        evidence_sinks: [Option<RankLoadEvidenceSink>; RANK_SET_SIZE],
+    ) -> Result<Self, WorkerError> {
         if software_provenance_sha256 == [0; 32] || required_hbm_bytes.contains(&0) {
             return Err(WorkerError::Config);
         }
@@ -681,12 +769,14 @@ impl Tp4WorkerPool {
             std::array::from_fn(|rank| {
                 let rank_file = rank_files[rank].clone();
                 let required_hbm_bytes = required_hbm_bytes[rank];
+                let evidence_sink = evidence_sinks[rank].clone();
                 Box::new(move |rank| {
-                    NativeCheckpointRankExecutor::open(
+                    NativeCheckpointRankExecutor::open_with_evidence_sink(
                         rank,
                         &rank_file,
                         software_provenance_sha256,
                         required_hbm_bytes,
+                        evidence_sink,
                     )
                     .map(|executor| Box::new(executor) as Box<dyn RankExecutor>)
                     .map_err(|error| WorkerError::RankCheckpointLoad { rank, error })

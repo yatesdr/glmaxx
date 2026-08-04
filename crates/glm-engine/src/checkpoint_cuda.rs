@@ -677,6 +677,7 @@ pub struct PreparedCudaRank<B: RankLoadBackend> {
     tensor_layout: Arc<[TensorArenaEntry]>,
     lifecycle: RankArenaLifecycle,
     receipt: PreparedRankReceipt,
+    verification_evidence: Option<Box<RankLoadVerificationEvidence>>,
 }
 
 impl<B: RankLoadBackend> PreparedCudaRank<B> {
@@ -735,12 +736,18 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
             tensor_layout,
             lifecycle,
             receipt,
+            verification_evidence: Some(Box::new(verification_evidence)),
         })
     }
 
     #[must_use]
     pub const fn receipt(&self) -> PreparedRankReceipt {
         self.receipt
+    }
+
+    #[must_use]
+    pub fn verification_evidence(&self) -> Option<RankLoadVerificationEvidence> {
+        self.verification_evidence.as_deref().copied()
     }
 
     pub fn acknowledge_adoption(
@@ -752,6 +759,7 @@ impl<B: RankLoadBackend> PreparedCudaRank<B> {
             tensor_layout,
             mut lifecycle,
             receipt,
+            verification_evidence: _,
         } = self;
         let acknowledgement = lifecycle.acknowledge_adoption(prepared)?;
         Ok((
@@ -1935,6 +1943,7 @@ mod tests {
             tensor_layout: plan.tensors[2].clone(),
             lifecycle,
             receipt: receipts[2],
+            verification_evidence: None,
         };
         assert_eq!(local.receipt(), receipts[2]);
 
