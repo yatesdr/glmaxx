@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`ab8dc028a708b2db78e276a8b01d9ad8c5d95703`
+`7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91`
 
-On a clean tracked tree, `review-proof-all` must verify 155 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 156 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 137 configured result artifacts are tracked and all 39 are
+Thirty-nine of 138 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -19,28 +19,30 @@ The immediate source-to-first-batch review order is:
 
 1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
 2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
-3. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
-4. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
-5. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
-6. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
-7. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
-8. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
-9. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
-10. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
-11. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
-12. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
-13. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
-14. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
-15. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
-16. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
-17. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
-18. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
-19. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
+3. `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md`;
+4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
+5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
+6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
+7. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
+9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+10. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
+11. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
+12. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
+13. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
+14. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
+15. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
+16. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
+17. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
+18. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
+19. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
+20. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
-Items 1 and 2 are sequential and open the measured optimized K=3 route.
-Items 3 through 5 can review in parallel and unblock exact checkpoint ingest
-plus K=4. Items 6 through 11 then open the coordinated TP4 target/MTP program,
-checkpoint smoke, and one-layer replay. Items 12 through 17 independently
+Items 1 and 2 are sequential and open the measured staged K=3 route. Item 3
+is its profiler-driven grouped successor. Items 4 through 6 can review in
+parallel and unblock exact checkpoint ingest plus K=4. Items 7 through 12 then
+open the coordinated TP4 target/MTP program, checkpoint smoke, and one-layer
+replay. Items 13 through 18 independently
 open the hybrid NVFP4/NF3 route and capacity ledger. The final two bind the
 bytes admitted to performance qualification. None conveys cn4 or CUDA
 authorization.
@@ -228,6 +230,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 153 | `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md` | `f758c1ab82557b1a44fd746d9b36d76faeaa28d8` | `fable-tr3-325-publisher-manifest-reconciliation-v1.md` | `tr3-325-publisher-manifest-reconciliation-v1-design-accepted` |
 | 154 | `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` | `98ac16a98943d810cb3b8d86552e625aadc7be98` | `fable-distributed-sampling-abi-v1-r2.md` | `distributed-sampling-abi-v1-r2-design-accepted` |
 | 155 | `docs/fable-quality-acceptance-v1-r3-handoff.md` | `ab8dc028a708b2db78e276a8b01d9ad8c5d95703` | `fable-quality-acceptance-v1-r3.md` | `quality-acceptance-v1-r3-design-accepted` |
+| 156 | `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md` | `7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91` | `fable-exl3-grouped-gate-up-sm120-v1.md` | `exl3-grouped-gate-up-sm120-v1-design-accepted` |
 
 ## Verification command
 
@@ -238,5 +241,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 155 current handoffs and two
+The expected queue count for this document is 156 current handoffs and two
 explicitly skipped historical umbrella handoffs.
