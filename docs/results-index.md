@@ -1,9 +1,22 @@
 # Results index
 
-Date: 2026-08-03
+Date: 2026-08-04
 
 Current tracked tooling baseline before this result record:
 `8a2a617`
+
+## 2026-08-04 integration admission diagnostic
+
+Clean integration commit `6e073f3` was compiled in the pinned GLMAXX-only
+container and run without GPU access against both real read-only checkpoint
+indexes. The hybrid NVFP4/NF3 source admitted structurally with 184 shards,
+148,289 tensors, and 365,968,736,768 payload bytes. The same binary reproduced
+the current TR3 3.25-bpw `metadata.total_size` defect as exact `glmaxx: Index`.
+The sealed paired evidence manifest hashes to
+`ab96339f80f735ea19c5e767aa32105be496599f4b6dd6d276582cdf6c7de3b3`;
+full scope, hashes, timings, failed-attempt disposition, and nonclaims are in
+`docs/cn4-integration-checkpoint-admission-6e073f3-20260804.md`. The corrective
+r2 design token remains mandatory before parser implementation.
 
 ## 2026-08-03 active-goal ledger
 
