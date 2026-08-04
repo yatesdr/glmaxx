@@ -45,8 +45,8 @@ use glm_reference::{
 };
 #[cfg(feature = "cuda-ffi")]
 use glm_reference::{
-    NumericalCase, Route, RoutedExpertWeights, RoutingCase, bf16_round, routed_fc1_oracle,
-    routed_fc2_oracle,
+    NumericalCase, Route, RoutedExpertWeights, RoutingCase, bf16_round, routed_fc1_fixed_tree_at,
+    routed_fc1_oracle, routed_fc2_oracle,
 };
 use glm_scheduler::{
     RequestSpec, RequestState, RouteCatalog, SamplingCollective, SchedulerConfig, TenantConfig,
@@ -545,6 +545,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             gpu_dense_control(Path::new(path))?;
         }
         #[cfg(feature = "cuda-ffi")]
+        Some("gpu-fc1-reduction-probe") => {
+            let path = arguments
+                .get(2)
+                .ok_or("gpu-fc1-reduction-probe requires an external evidence directory")?;
+            gpu_fc1_reduction_probe(Path::new(path))?;
+        }
+        #[cfg(feature = "cuda-ffi")]
         Some("gpu-grouped-control") => {
             let path = arguments
                 .get(2)
@@ -577,7 +584,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-fc1-reduction-probe evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
                     .into(),
             );
         }
@@ -3839,6 +3846,36 @@ struct GpuDenseControlSummary {
 
 #[cfg(feature = "cuda-ffi")]
 #[derive(Serialize)]
+struct GpuFc1ReductionProbeValue {
+    bf16_bits: u16,
+    value: f32,
+    absolute_from_semantic: f32,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct GpuFc1ReductionProbeReport {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    numerical: &'static str,
+    full_rows: usize,
+    selected_row: usize,
+    selected_column: usize,
+    semantic_sequential: GpuFc1ReductionProbeValue,
+    fixed_cuda_core_tree: GpuFc1ReductionProbeValue,
+    cuda_core_m1_selected_row: GpuFc1ReductionProbeValue,
+    cutlass_dense_m1_selected_row: GpuFc1ReductionProbeValue,
+    cutlass_dense_m256_selected_row: GpuFc1ReductionProbeValue,
+    cuda_core_matches_fixed_tree: bool,
+    cutlass_m1_equals_m256: bool,
+    cutlass_m256_repeat_bitwise: bool,
+    runtime_weight_repack_bytes: u64,
+    persistent_dequant_bytes: u64,
+    verdict: &'static str,
+}
+
+#[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
 struct GpuGroupedControlSummary {
     schema: &'static str,
     kernel_abi: &'static str,
@@ -4917,6 +4954,114 @@ fn gpu_dense_control(evidence_directory: &Path) -> Result<(), Box<dyn std::error
         return Err("SM120 CUTLASS dense control correctness gate failed".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn gpu_fc1_reduction_probe(evidence_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    validate_empty_external_gpu_directory(evidence_directory, "gpu-fc1-reduction-probe")?;
+
+    const FULL_ROWS: usize = 256;
+    const SELECTED_ROW: usize = 239;
+    const SELECTED_COLUMN: usize = 20;
+    let constants = ModelConstants::default();
+    let n = constants.local_gate_up_rows as usize;
+    let k = constants.hidden as usize;
+    let fixture = generate_numerical_fixture(NumericalCase::DeterministicRandom, FULL_ROWS, n, k)?;
+    let packed = PackedNvfp4::pack(&fixture.weights, n, k, Codec::OneDimensional)?;
+    let device = glm_cuda::NativeFc1Fixture::replicated(&packed, &[0])?;
+
+    let selected = &fixture.activations[SELECTED_ROW * k..(SELECTED_ROW + 1) * k];
+    let semantic = routed_fc1_oracle(selected, 1, k, &packed)?[SELECTED_COLUMN];
+    let fixed_tree = routed_fc1_fixed_tree_at(selected, k, &packed, SELECTED_COLUMN)?;
+    let selected_bf16 = to_bf16_bits(selected);
+    let direct_m1 = device.run(&selected_bf16, 1, &[0], &[0], &[0])?[SELECTED_COLUMN];
+    let dense_m1 = device.run_dense_control(&selected_bf16, 1, &[0], &[0], &[0])?[SELECTED_COLUMN];
+
+    let full_bf16 = to_bf16_bits(&fixture.activations);
+    let full_routes = compact_routes(
+        &generate_routes(RoutingCase::OneHotExpert0, FULL_ROWS)?,
+        FULL_ROWS,
+    )?;
+    let full_experts: Vec<u16> = full_routes.iter().map(|route| route.expert).collect();
+    let full_tokens: Vec<u32> = full_routes.iter().map(|route| route.token).collect();
+    let full_slots: Vec<u8> = full_routes.iter().map(|route| route.slot).collect();
+    let dense_m256 = device.run_dense_control(
+        &full_bf16,
+        u32::try_from(FULL_ROWS)?,
+        &full_experts,
+        &full_tokens,
+        &full_slots,
+    )?;
+    let dense_m256_repeat = device.run_dense_control(
+        &full_bf16,
+        u32::try_from(FULL_ROWS)?,
+        &full_experts,
+        &full_tokens,
+        &full_slots,
+    )?;
+    let selected_linear = SELECTED_ROW
+        .checked_mul(constants.local_intermediate as usize)
+        .and_then(|offset| offset.checked_add(SELECTED_COLUMN))
+        .ok_or("FC1 reduction probe output offset overflow")?;
+    let dense_m256_bits = *dense_m256
+        .get(selected_linear)
+        .ok_or("FC1 reduction probe output offset out of bounds")?;
+
+    let direct_m1_value = bf16_bits_to_f32(direct_m1);
+    let dense_m1_value = bf16_bits_to_f32(dense_m1);
+    let dense_m256_value = bf16_bits_to_f32(dense_m256_bits);
+    let values = [
+        semantic,
+        fixed_tree,
+        direct_m1_value,
+        dense_m1_value,
+        dense_m256_value,
+    ];
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("FC1 reduction probe produced a non-finite value".into());
+    }
+
+    let report = GpuFc1ReductionProbeReport {
+        schema: "glmaxx.sm120-fc1-reduction-order-probe.v1",
+        kernel_abi: KERNEL_ABI,
+        numerical: NumericalCase::DeterministicRandom.id(),
+        full_rows: FULL_ROWS,
+        selected_row: SELECTED_ROW,
+        selected_column: SELECTED_COLUMN,
+        semantic_sequential: reduction_probe_value(semantic, semantic),
+        fixed_cuda_core_tree: reduction_probe_value(fixed_tree, semantic),
+        cuda_core_m1_selected_row: reduction_probe_value(direct_m1_value, semantic),
+        cutlass_dense_m1_selected_row: reduction_probe_value(dense_m1_value, semantic),
+        cutlass_dense_m256_selected_row: reduction_probe_value(dense_m256_value, semantic),
+        cuda_core_matches_fixed_tree: direct_m1_value.to_bits() == fixed_tree.to_bits(),
+        cutlass_m1_equals_m256: dense_m1 == dense_m256_bits,
+        cutlass_m256_repeat_bitwise: dense_m256 == dense_m256_repeat,
+        runtime_weight_repack_bytes: 0,
+        persistent_dequant_bytes: 0,
+        verdict: "DIAGNOSTIC_ONLY_NO_CORRECTNESS_ACCEPTANCE",
+    };
+    let mut json = serde_json::to_vec_pretty(&report)?;
+    json.push(b'\n');
+    fs::write(evidence_directory.join("reduction-order-probe.json"), &json)?;
+    println!("{}", String::from_utf8(json)?);
+    if !report.cutlass_m256_repeat_bitwise {
+        return Err("FC1 reduction probe was not bitwise repeatable".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn reduction_probe_value(value: f32, semantic: f32) -> GpuFc1ReductionProbeValue {
+    GpuFc1ReductionProbeValue {
+        bf16_bits: (value.to_bits() >> 16) as u16,
+        value,
+        absolute_from_semantic: (value - semantic).abs(),
+    }
+}
+
+#[cfg(feature = "cuda-ffi")]
+fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits(u32::from(bits) << 16)
 }
 
 #[cfg(feature = "cuda-ffi")]

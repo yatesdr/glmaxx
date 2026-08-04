@@ -104,6 +104,54 @@ pub fn routed_fc1_oracle(
     Ok(output)
 }
 
+/// CPU control for one output element of the retained 256-thread CUDA-core
+/// FC1 reduction. This is not the semantic reference: it intentionally
+/// reproduces the fixed lane-strided FMA and binary-tree reduction order so
+/// device diagnostics can distinguish an accumulation-order difference from
+/// bad packed bytes or addressing.
+pub fn routed_fc1_fixed_tree_at(
+    activation: &[f32],
+    k: usize,
+    weights: &PackedNvfp4,
+    column: usize,
+) -> Result<f32, Fc1Error> {
+    const LANES: usize = 256;
+    if activation.len() != k
+        || weights.metadata.logical_k as usize != k
+        || !weights.metadata.logical_n.is_multiple_of(2)
+        || weights.metadata.codec != Codec::OneDimensional
+    {
+        return Err(Fc1Error::Shape);
+    }
+    let n = weights.metadata.logical_n as usize;
+    let local_intermediate = n / 2;
+    if column >= local_intermediate {
+        return Err(Fc1Error::Shape);
+    }
+
+    let bf16_row: Vec<f32> = activation.iter().copied().map(bf16_round).collect();
+    let packed_activation =
+        PackedNvfp4::pack(&bf16_row, 1, k, Codec::OneDimensional).map_err(Fc1Error::Nvfp4)?;
+    let input = packed_activation.dequantize().map_err(Fc1Error::Nvfp4)?;
+    let weight = weights.dequantize().map_err(Fc1Error::Nvfp4)?;
+    let mut gate = [0.0_f32; LANES];
+    let mut up = [0.0_f32; LANES];
+    for lane in 0..LANES {
+        for inner in (lane..k).step_by(LANES) {
+            gate[lane] = input[inner].mul_add(weight[column * k + inner], gate[lane]);
+            up[lane] =
+                input[inner].mul_add(weight[(local_intermediate + column) * k + inner], up[lane]);
+        }
+    }
+    for stride in [128, 64, 32, 16, 8, 4, 2, 1] {
+        for lane in 0..stride {
+            gate[lane] += gate[lane + stride];
+            up[lane] += up[lane + stride];
+        }
+    }
+    Ok(bf16_round(silu(gate[0]) * up[0]))
+}
+
 #[must_use]
 pub fn bf16_round(value: f32) -> f32 {
     if !value.is_finite() {
@@ -219,5 +267,30 @@ mod tests {
         let output = routed_fc1_oracle(&activation, 1, k, &packed).unwrap();
         assert_eq!(output.len(), 512);
         assert!(output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn fixed_tree_control_exposes_the_actual_shape_cancellation_boundary() {
+        const ROWS: usize = 256;
+        const N: usize = 1_024;
+        const K: usize = 6_144;
+        const ROW: usize = 239;
+        const COLUMN: usize = 20;
+
+        let fixture = crate::generate_numerical_fixture(
+            crate::NumericalCase::DeterministicRandom,
+            ROWS,
+            N,
+            K,
+        )
+        .unwrap();
+        let weights = PackedNvfp4::pack(&fixture.weights, N, K, Codec::OneDimensional).unwrap();
+        let input = &fixture.activations[ROW * K..(ROW + 1) * K];
+        let sequential = routed_fc1_oracle(input, 1, K, &weights).unwrap()[COLUMN];
+        let fixed_tree = routed_fc1_fixed_tree_at(input, K, &weights, COLUMN).unwrap();
+
+        assert_eq!(sequential.to_bits(), 0xc32c_0000);
+        assert_eq!(fixed_tree.to_bits(), 0xc331_0000);
+        assert_eq!((sequential - fixed_tree).abs(), 5.0);
     }
 }

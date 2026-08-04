@@ -15,7 +15,8 @@ pub use matrix::{
     RoutingCase, generate_numerical_fixture, generate_routes,
 };
 pub use routed_fc1::{
-    CompactedRoute, Fc1Error, Route, bf16_round, compact_routes, routed_fc1_oracle,
+    CompactedRoute, Fc1Error, Route, bf16_round, compact_routes, routed_fc1_fixed_tree_at,
+    routed_fc1_oracle,
 };
 pub use routed_fc2::{
     Fc2Error, LayerOperation, RankLayerPartial, RoutedExpertWeights, SparseLayerDescriptor,
