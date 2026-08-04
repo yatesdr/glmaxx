@@ -7,6 +7,18 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-04 integration admission diagnostic
 
+The exact NF3/ModelOpt native rank-manifest r2 candidate `2b87859` has now
+completed a real-source preflight using freshly copied, hash-matched cn4
+config, index, and protection metadata. A standalone verifier matched every
+one of the 148,289 source names to the independently generated 147,072 routed
+components and 1,217 protected tensors, generated and sorted all 40,129 native
+names, simulated every payload/metadata range with zero payload gap, and
+reproduced the 94,016,235,456-byte immutable charge and 4,330,317,824-byte
+MTP3 cache sensitivity. The deterministic output and full nonclaims are in
+`docs/nf3-modelopt-native-rank-manifest-r2-preflight-20260804.md`. This is not
+Fable acceptance or fit evidence; the checked planner remains closed until
+the exact r2 design token arrives.
+
 The exact TR3 3.25-bpw publisher-identity candidate `f758c1a` has completed a
 separate review-readiness preflight. All nine pinned candidate inputs matched
 before and after the complete local gate, which passed 417 tests. Fresh reads
