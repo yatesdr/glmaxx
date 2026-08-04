@@ -112,10 +112,10 @@ docker run --rm --network none --cpuset-cpus 0-15 \
             2>"${GLMAXX_RESULT_DIR}/build.stderr.txt"
         binary="${CARGO_TARGET_DIR}/release/glmaxx"
         sha256sum "${binary}" >"${GLMAXX_RESULT_DIR}/binary-sha256.txt"
-        /usr/bin/time -v "${binary}" serving-host-profile \
+        "${binary}" serving-host-profile \
             "${GLMAXX_RESULT_DIR}/profile" "${GLMAXX_EXPECTED_COMMIT}" 100 1000 \
             >"${GLMAXX_RESULT_DIR}/profile.stdout.txt" \
-            2>"${GLMAXX_RESULT_DIR}/profile.time.txt"
+            2>"${GLMAXX_RESULT_DIR}/profile.stderr.txt"
     ' >"${run}/container.stdout.txt" 2>"${run}/container.stderr.txt"
 
 uptime >"${run}/uptime-after.txt"
