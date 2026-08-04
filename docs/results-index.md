@@ -33,6 +33,17 @@ not Fable acceptance, and the previously audited incomplete implementation
 must not be promoted before the r2 token and its missing shared probe/domain
 corrections.
 
+The exact hybrid NVFP4/NF3 source-admission r2 candidate `99ab135` passed its
+own preflight with all twelve inputs stable and 417 local tests passing. A
+fresh immutable-revision query matched all 194 names and 366,021,385,004
+bytes: 186 LFS digest/size identities, all eight Git-backed bodies, and all
+184 safetensors shards. A separate Ruby derivation reproduced the same sets,
+counts, bytes, and source/shard/non-shard manifest hashes. The concise record
+is `docs/hybrid-source-admission-r2-preflight-20260804.md`. This authenticates
+the review candidate and public anchors only; it is not Fable acceptance or
+runtime admission, and the real checkpoint must still pass retained-descriptor
+hashing after implementation.
+
 Clean integration commit `6e073f3` was compiled in the pinned GLMAXX-only
 container and run without GPU access against both real read-only checkpoint
 indexes. The hybrid NVFP4/NF3 source admitted structurally with 184 shards,
