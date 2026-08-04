@@ -35,11 +35,14 @@ or empty `weight_map`. `metadata` may be absent. If present, it must be an
 object; its non-`total_size` values remain ignored metadata, but duplicate keys
 are never collapsed before validation.
 
-A present `total_size` must be a JSON integer representable as `u64`. Negative,
-fractional, exponent-spelled noninteger, string, boolean, null, and out-of-range
-values fail. Equality with exactly one of the checked actual payload or complete
-shard-file totals selects the r2 interpretation. Absence selects
-`None/Unspecified`; no producer or path identity participates.
+A present `total_size` must use the exact JSON number-token grammar
+`0|[1-9][0-9]*` and its value must be representable as `u64`. A leading minus,
+fractional part, exponent, leading zero, string, boolean, null, malformed JSON,
+or out-of-range value fails; consequently `-0`, `1.0`, and `1e3` are rejected
+even though some generic numeric decoders can coerce them to integral values.
+Equality with exactly one of the checked actual payload or complete shard-file
+totals selects the r2 interpretation. Absence selects `None/Unspecified`; no
+producer or path identity participates.
 
 ## Retained source transaction
 
@@ -102,6 +105,14 @@ the common load. Read-only Unix permission bits are not a substitute. The
 general structural reader does not silently assume or require this production
 posture.
 
+The production threat model trusts the cn4 kernel, host root, pinned hash
+authority, and operator-selected checkpoint mount. Checkpoint bytes, pathnames,
+and the unprivileged loader process are not trusted. A concurrent external
+writer that cannot forge descriptor identity, inode `ctime`, or the pinned
+content hashes is detected by the per-access checks and final publication
+sweep. A malicious host root able to falsify those kernel observations or
+replace the pinned hash authority is outside this contract.
+
 ## Directory diagnostic transaction
 
 Directory inventory remains diagnostic and has no producer declaration or
@@ -131,9 +142,13 @@ SHA256(
   "glmaxx.safetensors-directory-members.v1\0" ||
   u32_le(member_count) ||
   for name in sorted members:
-    u32_le(utf8_name_bytes) || utf8_name
+    u32_le(byte_length(utf8_name)) || utf8_name
 )
 ```
+
+`member_count` and every byte length must fit `u32`; overflow fails before a
+digest is returned. Sorting is lexicographic over the exact UTF-8 name bytes,
+and `utf8_name` contributes those bytes without a terminator.
 
 ## Accounting retained from r2
 
