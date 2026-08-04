@@ -5,6 +5,19 @@ Date: 2026-08-04
 Current tracked tooling baseline before this result record:
 `8a2a617`
 
+## 2026-08-04 current-tip no-launch preparation
+
+Clean integration commit `1661575` was rebuilt in an isolated cn4 worktree and
+no-device container. All 429 Rust tests passed, five real `sm_120f` cubins were
+produced, both CUTLASS layout probes passed, the expected 256 Blackwell OMMA
+instructions and required exports were present, and the release Rust binary
+linked to the newly built CUDA library. The sealed 4,428-file evidence manifest
+hashes to `8d430acfeae11c8bc68efd00e1e0b5da42eabcbe8761ffdbe587c72c4c26c219`.
+Exact provenance, artifact hashes, failed-attempt disposition, and nonclaims
+are in `docs/cn4-current-tip-no-launch-prepare-1661575-20260804.md`. This was
+explicitly a no-launch preparation result; it is not a TP4 layer replay,
+checkpoint smoke, quality result, capacity proof, or performance result.
+
 ## 2026-08-04 integration admission diagnostic
 
 Current integration tip `b00b4cc` was rebuilt in the isolated GLMAXX CUDA
