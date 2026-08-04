@@ -2,7 +2,7 @@ use std::{
     fmt, mem,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use glm_cuda::{
@@ -75,6 +75,45 @@ pub struct NativeCheckpointStartupConfig {
     pub phase_timeout: Duration,
 }
 
+/// Host-side wall-time partition for one successful native checkpoint
+/// startup. Adjacent `Instant` boundaries are captured inside
+/// `load_native_checkpoint`, so these terms cover the complete function from
+/// configuration validation through evidence consensus without overlap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeCheckpointStartupTimingEvidence {
+    pub configuration_and_capability_nanoseconds: u128,
+    pub preflight_reader_and_plan_nanoseconds: u128,
+    pub rank_worker_context_and_reader_setup_nanoseconds: u128,
+    pub device_identity_handshake_nanoseconds: u128,
+    pub final_load_plan_nanoseconds: u128,
+    pub weight_load_and_adoption_nanoseconds: u128,
+    pub evidence_consensus_nanoseconds: u128,
+    pub total_nanoseconds: u128,
+}
+
+impl NativeCheckpointStartupTimingEvidence {
+    #[must_use]
+    pub fn accounted_nanoseconds(self) -> Option<u128> {
+        [
+            self.configuration_and_capability_nanoseconds,
+            self.preflight_reader_and_plan_nanoseconds,
+            self.rank_worker_context_and_reader_setup_nanoseconds,
+            self.device_identity_handshake_nanoseconds,
+            self.final_load_plan_nanoseconds,
+            self.weight_load_and_adoption_nanoseconds,
+            self.evidence_consensus_nanoseconds,
+        ]
+        .into_iter()
+        .try_fold(0_u128, u128::checked_add)
+    }
+
+    #[must_use]
+    pub fn unattributed_nanoseconds(self) -> Option<u128> {
+        self.total_nanoseconds
+            .checked_sub(self.accounted_nanoseconds()?)
+    }
+}
+
 #[derive(Debug)]
 pub enum NativeCheckpointStartupError {
     Config,
@@ -115,6 +154,7 @@ pub struct LoadedNativeCheckpoint {
     load_outcome: WeightLoadOutcome,
     device_identity_sha256: [[u8; 32]; RANK_SET_SIZE],
     rank_load_verification_evidence: [RankLoadVerificationEvidence; RANK_SET_SIZE],
+    startup_timing_evidence: NativeCheckpointStartupTimingEvidence,
 }
 
 impl LoadedNativeCheckpoint {
@@ -145,6 +185,11 @@ impl LoadedNativeCheckpoint {
         self.rank_load_verification_evidence
     }
 
+    #[must_use]
+    pub const fn startup_timing_evidence(&self) -> NativeCheckpointStartupTimingEvidence {
+        self.startup_timing_evidence
+    }
+
     /// Releases all four resident arenas and joins the persistent owner
     /// threads before returning.
     ///
@@ -160,6 +205,7 @@ impl LoadedNativeCheckpoint {
             load_outcome,
             device_identity_sha256: _,
             rank_load_verification_evidence: _,
+            startup_timing_evidence: _,
         } = self;
         let owner_allocation_generations = load_outcome
             .finalize_acknowledgements
@@ -514,6 +560,7 @@ pub fn load_native_checkpoint(
     rank_files: [PathBuf; RANK_SET_SIZE],
     config: NativeCheckpointStartupConfig,
 ) -> Result<LoadedNativeCheckpoint, NativeCheckpointStartupError> {
+    let startup_started = Instant::now();
     if config.maximum_outstanding == 0
         || config.software_provenance_sha256 == [0; 32]
         || config.operation_manifest_sha256 == [0; 32]
@@ -549,6 +596,7 @@ pub fn load_native_checkpoint(
             LoadPlanError::Capability,
         ));
     }
+    let configuration_done = Instant::now();
 
     let mut opened = Vec::with_capacity(RANK_SET_SIZE);
     for (rank, path) in rank_files.iter().enumerate() {
@@ -586,6 +634,7 @@ pub fn load_native_checkpoint(
     .map_err(NativeCheckpointStartupError::Plan)?;
     validate_checkpoint_arena_budget(&preflight_plan, &config.memory_plan)
         .map_err(NativeCheckpointStartupError::Plan)?;
+    let preflight_done = Instant::now();
 
     let evidence_sinks: [RankLoadEvidenceSink; RANK_SET_SIZE] =
         std::array::from_fn(|_| Arc::new(Mutex::new(None)));
@@ -597,9 +646,11 @@ pub fn load_native_checkpoint(
         std::array::from_fn(|rank| Some(Arc::clone(&evidence_sinks[rank]))),
     )
     .map_err(NativeCheckpointStartupError::Worker)?;
+    let worker_context_setup_done = Instant::now();
     let device_identity_sha256 = pool
         .checkpoint_device_identities(config.phase_timeout)
         .map_err(NativeCheckpointStartupError::Worker)?;
+    let device_identity_done = Instant::now();
     let plan = Arc::new(
         build_rank_set_load_plan(
             reader_refs,
@@ -607,6 +658,7 @@ pub fn load_native_checkpoint(
         )
         .map_err(NativeCheckpointStartupError::Plan)?,
     );
+    let final_load_plan_done = Instant::now();
     let load_outcome = pool
         .load_weights(
             Arc::clone(&plan),
@@ -615,6 +667,7 @@ pub fn load_native_checkpoint(
             config.phase_timeout,
         )
         .map_err(NativeCheckpointStartupError::Load)?;
+    let weight_adoption_done = Instant::now();
     let mut rank_evidence = Vec::with_capacity(RANK_SET_SIZE);
     for (rank, sink) in evidence_sinks.iter().enumerate() {
         let evidence = sink
@@ -635,12 +688,43 @@ pub fn load_native_checkpoint(
     let rank_load_verification_evidence = rank_evidence
         .try_into()
         .map_err(|_| NativeCheckpointStartupError::Config)?;
+    let evidence_consensus_done = Instant::now();
+    let startup_timing_evidence = NativeCheckpointStartupTimingEvidence {
+        configuration_and_capability_nanoseconds: configuration_done
+            .duration_since(startup_started)
+            .as_nanos(),
+        preflight_reader_and_plan_nanoseconds: preflight_done
+            .duration_since(configuration_done)
+            .as_nanos(),
+        rank_worker_context_and_reader_setup_nanoseconds: worker_context_setup_done
+            .duration_since(preflight_done)
+            .as_nanos(),
+        device_identity_handshake_nanoseconds: device_identity_done
+            .duration_since(worker_context_setup_done)
+            .as_nanos(),
+        final_load_plan_nanoseconds: final_load_plan_done
+            .duration_since(device_identity_done)
+            .as_nanos(),
+        weight_load_and_adoption_nanoseconds: weight_adoption_done
+            .duration_since(final_load_plan_done)
+            .as_nanos(),
+        evidence_consensus_nanoseconds: evidence_consensus_done
+            .duration_since(weight_adoption_done)
+            .as_nanos(),
+        total_nanoseconds: evidence_consensus_done
+            .duration_since(startup_started)
+            .as_nanos(),
+    };
+    if startup_timing_evidence.unattributed_nanoseconds().is_none() {
+        return Err(NativeCheckpointStartupError::Plan(LoadPlanError::Overflow));
+    }
     Ok(LoadedNativeCheckpoint {
         pool,
         plan,
         load_outcome,
         device_identity_sha256,
         rank_load_verification_evidence,
+        startup_timing_evidence,
     })
 }
 
@@ -810,5 +894,39 @@ fn map_kernel_error(error: KernelError) -> LoadPlanError {
         | KernelError::Workspace { .. }
         | KernelError::Driver(_)
         | KernelError::Async(_) => LoadPlanError::Writer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeCheckpointStartupTimingEvidence;
+
+    #[test]
+    fn startup_timing_partition_is_exact_and_overflow_safe() {
+        let evidence = NativeCheckpointStartupTimingEvidence {
+            configuration_and_capability_nanoseconds: 1,
+            preflight_reader_and_plan_nanoseconds: 2,
+            rank_worker_context_and_reader_setup_nanoseconds: 3,
+            device_identity_handshake_nanoseconds: 4,
+            final_load_plan_nanoseconds: 5,
+            weight_load_and_adoption_nanoseconds: 6,
+            evidence_consensus_nanoseconds: 7,
+            total_nanoseconds: 28,
+        };
+        assert_eq!(evidence.accounted_nanoseconds(), Some(28));
+        assert_eq!(evidence.unattributed_nanoseconds(), Some(0));
+
+        let short_total = NativeCheckpointStartupTimingEvidence {
+            total_nanoseconds: 27,
+            ..evidence
+        };
+        assert_eq!(short_total.unattributed_nanoseconds(), None);
+
+        let overflow = NativeCheckpointStartupTimingEvidence {
+            configuration_and_capability_nanoseconds: u128::MAX,
+            ..evidence
+        };
+        assert_eq!(overflow.accounted_nanoseconds(), None);
+        assert_eq!(overflow.unattributed_nanoseconds(), None);
     }
 }

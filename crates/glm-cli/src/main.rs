@@ -923,7 +923,11 @@ struct NativeCheckpointLoadSmokeReport {
     adopted_rank_set_sha256: String,
     rank_set_receipt_sha256: String,
     phase_timeout_seconds: u64,
+    command_rank_set_preflight_elapsed_nanoseconds: u128,
+    command_budget_and_manifest_preflight_elapsed_nanoseconds: u128,
+    command_executable_and_evidence_setup_elapsed_nanoseconds: u128,
     startup_and_load_elapsed_nanoseconds: u128,
+    native_startup_timing: NativeCheckpointStartupTimingReport,
     shutdown_elapsed_nanoseconds: u128,
     total_elapsed_nanoseconds: u128,
     collectives_elapsed_nanoseconds: Option<u128>,
@@ -938,12 +942,28 @@ struct NativeCheckpointLoadSmokeReport {
 }
 
 #[cfg(feature = "cuda-ffi")]
+#[derive(Serialize)]
+struct NativeCheckpointStartupTimingReport {
+    configuration_and_capability_nanoseconds: u128,
+    preflight_reader_and_plan_nanoseconds: u128,
+    rank_worker_context_and_reader_setup_nanoseconds: u128,
+    device_identity_handshake_nanoseconds: u128,
+    final_load_plan_nanoseconds: u128,
+    weight_load_and_adoption_nanoseconds: u128,
+    evidence_consensus_nanoseconds: u128,
+    accounted_nanoseconds: u128,
+    unattributed_nanoseconds: u128,
+    total_nanoseconds: u128,
+}
+
+#[cfg(feature = "cuda-ffi")]
 fn gpu_checkpoint_load_smoke(
     rank_set_directory: &Path,
     profile_budget_path: &Path,
     evidence_directory: &Path,
     phase_timeout_seconds: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let total_started = Instant::now();
     if !(1..=3_600).contains(&phase_timeout_seconds) {
         return Err("phase timeout must be in 1..=3600 seconds".into());
     }
@@ -960,6 +980,7 @@ fn gpu_checkpoint_load_smoke(
         .ok_or("binary lacks GLMAXX_SOURCE_COMMIT build provenance")?;
     validate_conversion_commit(source_commit)?;
 
+    let rank_set_preflight_started = Instant::now();
     let rank_files = native_rank_paths(rank_set_directory)?;
     let readers: Vec<NativeRankReader> = rank_files
         .iter()
@@ -969,7 +990,10 @@ fn gpu_checkpoint_load_smoke(
         .try_into()
         .map_err(|_| "native rank-set reader count was not four")?;
     NativeRankReader::validate_rank_set([&readers[0], &readers[1], &readers[2], &readers[3]])?;
+    let command_rank_set_preflight_elapsed_nanoseconds =
+        rank_set_preflight_started.elapsed().as_nanos();
 
+    let budget_preflight_started = Instant::now();
     let profile_budget_bytes = read_bounded_regular(profile_budget_path, 4 * 1024 * 1024)?;
     let profile_budget_sha256 = sha256(&profile_budget_bytes);
     let profile_budget: ProfileBudgetArtifact = serde_json::from_slice(&profile_budget_bytes)?;
@@ -993,7 +1017,10 @@ fn gpu_checkpoint_load_smoke(
             .into());
         }
     }
+    let command_budget_and_manifest_preflight_elapsed_nanoseconds =
+        budget_preflight_started.elapsed().as_nanos();
 
+    let executable_setup_started = Instant::now();
     let codec_capability_sha256 = glm_cuda::native_checkpoint_codec_capability_sha256()?;
     let executable = env::current_exe()?;
     let executable_bytes = read_bounded_regular(&executable, GIB)?;
@@ -1002,6 +1029,8 @@ fn gpu_checkpoint_load_smoke(
         evidence_directory.join("memory-plan.json"),
         &memory_plan_bytes,
     )?;
+    let command_executable_and_evidence_setup_elapsed_nanoseconds =
+        executable_setup_started.elapsed().as_nanos();
 
     let phase_timeout = Duration::from_secs(phase_timeout_seconds);
     let load_attempt_generation = 1;
@@ -1013,7 +1042,6 @@ fn gpu_checkpoint_load_smoke(
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| "validated memory plan did not contain four ranks")?;
-    let total_started = Instant::now();
     let load_started = Instant::now();
     let loaded = load_native_checkpoint(
         rank_files,
@@ -1034,6 +1062,25 @@ fn gpu_checkpoint_load_smoke(
         },
     )?;
     let startup_and_load_elapsed_nanoseconds = load_started.elapsed().as_nanos();
+    let startup_timing = loaded.startup_timing_evidence();
+    let native_startup_timing = NativeCheckpointStartupTimingReport {
+        configuration_and_capability_nanoseconds: startup_timing
+            .configuration_and_capability_nanoseconds,
+        preflight_reader_and_plan_nanoseconds: startup_timing.preflight_reader_and_plan_nanoseconds,
+        rank_worker_context_and_reader_setup_nanoseconds: startup_timing
+            .rank_worker_context_and_reader_setup_nanoseconds,
+        device_identity_handshake_nanoseconds: startup_timing.device_identity_handshake_nanoseconds,
+        final_load_plan_nanoseconds: startup_timing.final_load_plan_nanoseconds,
+        weight_load_and_adoption_nanoseconds: startup_timing.weight_load_and_adoption_nanoseconds,
+        evidence_consensus_nanoseconds: startup_timing.evidence_consensus_nanoseconds,
+        accounted_nanoseconds: startup_timing
+            .accounted_nanoseconds()
+            .ok_or("native startup timing overflow")?,
+        unattributed_nanoseconds: startup_timing
+            .unattributed_nanoseconds()
+            .ok_or("native startup timing terms exceed total")?,
+        total_nanoseconds: startup_timing.total_nanoseconds,
+    };
 
     let plan_sha256 = loaded.plan().plan_sha256();
     let plan_header = loaded.plan().header();
@@ -1089,7 +1136,7 @@ fn gpu_checkpoint_load_smoke(
     }
 
     let report = NativeCheckpointLoadSmokeReport {
-        schema: "glmaxx.sm120-tp4-native-checkpoint-load-smoke.v1",
+        schema: "glmaxx.sm120-tp4-native-checkpoint-load-smoke.v2",
         verdict: "SM120_TP4_CHECKPOINT_LOAD_PASS",
         source_commit: source_commit.to_owned(),
         executable_sha256: hex(&executable_sha256),
@@ -1111,14 +1158,18 @@ fn gpu_checkpoint_load_smoke(
         adopted_rank_set_sha256: hex(&load_outcome.adopted_receipt.adopted_rank_set_sha256()),
         rank_set_receipt_sha256: hex(&load_outcome.adopted_receipt.rank_set_receipt_sha256()),
         phase_timeout_seconds,
+        command_rank_set_preflight_elapsed_nanoseconds,
+        command_budget_and_manifest_preflight_elapsed_nanoseconds,
+        command_executable_and_evidence_setup_elapsed_nanoseconds,
         startup_and_load_elapsed_nanoseconds,
+        native_startup_timing,
         shutdown_elapsed_nanoseconds,
         total_elapsed_nanoseconds: total_started.elapsed().as_nanos(),
         collectives_elapsed_nanoseconds: None,
         graphs_elapsed_nanoseconds: None,
         kv_elapsed_nanoseconds: None,
         health_publication_elapsed_nanoseconds: None,
-        timing_coverage: "native rank images, storage read, host staging, H2D submission/drain, full arena readback, adoption, and shutdown only; collectives, graphs, KV, and production health are not implemented",
+        timing_coverage: "configuration/capability validation, rank-image preflight, context/stream setup, device-identity consensus, final load planning, storage read, host staging, H2D submission/drain, full arena readback, adoption, evidence consensus, and shutdown only; collectives, graphs, KV, and production health are not implemented",
         full_payload_sha256_verified: true,
         full_arena_readback_verified: true,
         model_kernel_launched: false,
