@@ -37,9 +37,10 @@ after execution.
 
 ## Required GLMAXX sustained-decode invocation
 
-Bind `<host>`, `<port>`, `<model>`, `<kv_tokens>`, and `<output>` to the exact
-healthy GLMAXX runtime and evidence directory. The fixed workload arguments
-are:
+Bind `<host>`, `<port>`, `<model>`, `<kv_tokens>`, `<api_key>`, and `<output>`
+to the exact healthy GLMAXX runtime and evidence directory. Use a dedicated
+GLMAXX benchmark key whose tenant mapping is captured in the run record. The
+fixed workload arguments are:
 
 ```text
 export HTTPS_PROXY=http://127.0.0.1:9
@@ -49,6 +50,7 @@ export NO_PROXY=127.0.0.1,localhost,<host>
 python3 llm_decode_bench.py
   --host <host>
   --port <port>
+  --api-key <api_key>
   --model <model>
   --concurrency 1,2,4,8
   --contexts 0,16k,32k,64k,128k
