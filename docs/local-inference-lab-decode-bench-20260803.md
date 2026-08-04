@@ -6,10 +6,15 @@ Status: benchmark input pinned; no engine benchmark run
 
 ## Rust API compatibility candidate
 
-Commit `1cb3b614f0d8d16ef1de0b1f603d2adaa6bcc1f3` closes the known request and
+Commit `1cb3b614f0d8d16ef1de0b1f603d2adaa6bcc1f3` closes the request and
 streaming incompatibilities between the pinned script and GLMAXX without
-claiming a model run. The fail-closed Rust request schema now accepts exactly
-the script's `stream_options.include_usage`,
+claiming a model run. Follow-up commit
+`0a611b3bba8bb59f2d1966a96db0a761a3918d53` also implements the driver's
+mandatory authenticated `GET /v1/models` discovery call with exactly one
+`glm-5.2` model and `max_model_len=1048576`. Its SGLang and vLLM probes remain
+404 and GLMAXX metrics use neither vendor prefix, so the driver selects its
+honest generic OpenAI-compatible route. The fail-closed Rust request schema
+accepts exactly the script's `stream_options.include_usage`,
 `stream_options.continuous_usage_stats`, and `ignore_eos` controls. Continuous
 usage emits cumulative prompt/completion/total counts for every generated
 token, including tokens that decode to no text, and repeats the final total
@@ -22,13 +27,15 @@ request before its configured output length; custom stop strings remain
 active. The coordinator retains this policy through asynchronous prefix
 admission and removes it with the request's terminal page/prefix transaction.
 
-The exact sustained-decode payload shape from script version 0.4.29 is a Rust
-test vector. Focused tests prove cumulative completion counts `[1,2]`, two SSE
-usage observations for a one-token stream (progress plus final), ordinary EOS
-handling through the requested length, and preservation of the default
-stop-on-EOS path. The repository-wide local gate passes 426 tests plus Clippy
-and deterministic CPU proofs. No HTTP process using model outputs was started,
-and no throughput number is claimed by this compatibility result.
+The exact sustained-decode payload and discovery flow from script version
+0.4.29 are Rust test vectors. Focused tests prove cumulative completion counts
+`[1,2]`, two SSE usage observations for a one-token stream (progress plus
+final), ordinary EOS handling through the requested length, preservation of
+the default stop-on-EOS path, strict bearer authentication, and exact model
+context discovery. No HTTP process using model outputs was started, and no
+throughput number is claimed by this compatibility result. The exact
+candidate passes 427 Rust tests, Clippy, deterministic CPU proofs, and the
+review-provenance scan.
 
 The benchmark authority is the public
 `https://github.com/local-inference-lab/llm-inference-bench.git` repository at commit
@@ -54,5 +61,5 @@ the complete command and Python dependency lock, and preserve the produced
 JSON without post-processing in place. Derived tables hash their raw JSON
 inputs and report useful tokens, not accepted draft tokens or physical steps.
 
-This pin does not claim API compatibility, successful execution, or any
+This pin and Rust proof do not claim successful model execution or any
 throughput result.
