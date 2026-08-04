@@ -53,6 +53,14 @@ Hash-verify every manifest row if cn4 is reachable. Lack of cn4 access is a
 provenance limitation and cannot be replaced by trusting the preparation
 document.
 
+The retained manifest does not include the originating Docker command,
+container-inspect record, mount table, or network-mode record. The result
+document's read-only/network-disabled-container sentence is therefore an
+unverified operator-setup statement, not independently retained evidence and
+not part of the requested acceptance. The manifest does retain the complete
+source-shard hash, offline build inputs, source cleanliness, and a script with
+no source-write operation; judge only those recorded properties.
+
 ## Required decisions
 
 1. Does the harness fail closed unless the ABI is exactly scalar source
@@ -75,8 +83,10 @@ document.
    trellis contract?
 7. Do the script and records prove exact four-SM120 inventory, zero compute
    PIDs before each launch, isolated worktree/build/evidence paths, clean
-   source before/after, read-only checkpoint/source mounts, and a complete
-   post-run evidence manifest?
+   source before/after, exact source-shard identity, no source-write operation
+   in the retained script, and a complete post-run evidence manifest, while
+   making no independent acceptance claim for the unrecorded mount/network
+   posture?
 8. Are the result document's 24 exact-hash matches, timing table, evidence
    hashes, K=4 exclusion, and remaining-gate statements accurate?
 9. Does this evidence close only the real K=3 scalar projection control,

@@ -54,6 +54,14 @@ Hash-verify every manifest row if cn4 is reachable. Lack of cn4 access is a
 provenance limitation and cannot be replaced by trusting the preparation
 document.
 
+The retained manifest does not include the originating Docker command,
+container-inspect record, mount table, or network-mode record. The result
+document's read-only/network-disabled-container sentence is therefore an
+unverified operator-setup statement, not independently retained evidence and
+not part of the requested acceptance. The manifest does retain the complete
+source-shard hash, offline build inputs, source cleanliness, and a script with
+no source-write operation; judge only those recorded properties.
+
 ## Required decisions
 
 1. Does the runner fail closed unless the caller supplies one explicit,
@@ -70,8 +78,10 @@ document.
 5. Are the 1,000-sample nearest-rank p50/p95/p99 summaries implemented and
    labeled only as scalar projection controls?
 6. Do the script and records prove four SM120 devices, no compute PIDs before
-   launch, isolated paths, clean source before/after, read-only mounts, and a
-   complete manifest that verifies all rows?
+   each launch, isolated paths, clean source before/after, exact source-shard
+   identity, no source-write operation in the retained script, and a complete
+   manifest that verifies all rows, while making no independent acceptance
+   claim for the unrecorded mount/network posture?
 7. Are the result document's 24 exact-hash matches, timing table, identities,
    evidence hashes, and K=4 posture accurate?
 8. Does the evidence remain explicitly insufficient for MTP execution,
