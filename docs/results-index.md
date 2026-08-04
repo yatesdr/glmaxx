@@ -7,6 +7,17 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-04 integration admission diagnostic
 
+An independent implementation-readiness audit found four unresolved quality
+r2 ambiguities: policy-dependent run UUIDs had no policy-independent family,
+`PositionQuality.v2` had no binary ABI or deterministic centered-error math,
+the open-ended logit corpus conflicted with the exact 64-window MTP gate, and
+the repetition confidence bound lacked an algorithm. The corrective design
+in `docs/quality-acceptance-v1-r3.md` adds explicit family/run/comparison
+identities, a fixed 320-byte per-position record, exact 64-window and
+retrieval-band counts, and a deterministic paired bootstrap without changing
+any quality threshold. It is a design candidate only and requires its own
+adversarial token before evaluator implementation.
+
 The hybrid MTP3 capacity-ledger r2 candidate `2b87859` now has a separate
 external-evidence preflight. Both retained cn4 memory evidence streams passed
 their complete hash lists; five lazy and five eager samples were each
