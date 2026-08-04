@@ -6,7 +6,9 @@ Status: adversarial corrective-design review requested
 
 GPU authorization conveyed by this handoff: none
 
-Do not connect to cn4 or allocate GPU/storage memory for this review.
+cn4 posture: read-only hash verification of the named existing GLMAXX evidence
+directory is allowed. Do not launch CUDA, start or stop a process, or allocate
+GPU/storage memory.
 
 Review candidate commit:
 `2b8785907c11d2b58d8c5fa7f782845fae03e3ad`
@@ -27,6 +29,7 @@ withhold the token for any mismatch.
 | `docs/hybrid-mtp3-capacity-ledger-v1-r2.md` | `6efeee90addafb4f8d645610bf617f1f4dd9b1bd630096f570193f407c49c9c6` |
 | `docs/nf3-nvfp4-native-rank-manifest-v1-r2.md` | `ee81b6fc50a9a948af48aaf60d992fceb4c1bcb0c1687ac8cbe6f133a15baf9a` |
 | `docs/nf3-nvfp4-hybrid-source-and-kernel-v1-r2.md` | `80a055c354971e7ff82b0eeeb54413cd6acafb7ee31611426f3154accc35b2aa` |
+| `docs/cn4-tp4-memory-baseline-20260803.md` | `2f4eed1617919427045bcc101c5a6e1a1b68d97b626ee889cd3ac4dbb71971fc` |
 | `docs/offline-engine-contract.md` | `b5a51b15a0a600031fcddb7d840d4d499cf915d4c22f26099cdb1dc188d74fe1` |
 | `docs/native-engine-plan.md` | `493c0d218d93a3a8d7cf83da45a934fc44570fc190e85340c5eaba74edd50bdd` |
 | `crates/glm-engine/src/memory.rs` | `2131c999b6762a9b7e505cfe542c957877d95af4ee04056affa9d677156e9491` |
@@ -35,10 +38,25 @@ withhold the token for any mismatch.
 
 Run `./scripts/local-checks.sh` at the candidate and retain its exit status.
 
+The measured rank floor and the seven older fixed sensitivity terms originate
+in the pinned memory-baseline record, not in the capacity contract itself.
+Hash-verify its existing read-only external evidence at:
+
+```text
+/home/derek/glmaxx/evidence/20260803T162522Z-memory-baseline-36584b0
+```
+
+The SHA-256 of `evidence-sha256.txt` must be
+`5f52baf8af7d0ca8060825962884696eafbe0e29680cd1aab642a138d49d9d41`.
+An unavailable host is an explicit evidence-verification limitation and may
+not be replaced by trusting the copied numbers in either design document.
+
 ## Required independent work
 
 1. Recompute corrected minimum records, exact immutable arenas, raw/device
-   metadata difference, and all sensitivity values.
+   metadata difference, and all sensitivity values. Confirm from the raw
+   measurement records that the minimum rank floor is authentic and that the
+   2,550,136,832-byte fixed sensitivity already includes the 1-GiB escrow.
 2. Independently derive DCP4 committed slots, C64 owner slack, MTP3 tentative
    slots, pages, every KV/indexer term, committed bytes, and extra bytes.
 3. Prove 1,048,576-position addressing remains valid while global admission
@@ -67,5 +85,5 @@ Answer each `YES` or `NO`:
 7. May only CPU ledger/planner implementation begin after acceptance?
 
 Return ordered findings, derivations, and all seven decisions. Only if all are
-`YES`, attest the candidate and all eight hashes, then end with the requested
-token as the only bare acceptance line.
+`YES`, attest the candidate and all nine hashes plus the external evidence-list
+hash, then end with the requested token as the only bare acceptance line.
