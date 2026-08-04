@@ -10,7 +10,7 @@ Do not connect to cn4, launch CUDA, create a context, or modify a runtime
 resource for this review.
 
 Review candidate commit:
-`688f5c7a4bfb79ed884693a968013a12a394d530`
+`d40333e198c5e61f39ebdb8cbef8721b0b7dcc43`
 
 Required result path:
 `docs/reviews/fable-sm120-rank-executor-v1-r4.md`
@@ -38,13 +38,13 @@ start and finish. Any mismatch withholds the token.
 | `docs/sm120-rank-executor-v1.md` | `e97c54b865ed50c40ff8b15f6580d0edc18dbd0783135bc1c17d11cc19986fd4` |
 | `docs/sm120-rank-executor-v1-r2.md` | `4f40ea7652858b4cebbe4093dc81149cb30aa26bedc69edef72fa627c987df89` |
 | `docs/sm120-rank-executor-v1-r3.md` | `1bdceee409ec871edc4e193d967848e401f965e6f45d7a99782a7e444352cee8` |
-| `docs/sm120-rank-executor-v1-r4.md` | `4fa09dfd88329e3cf94190fa2084e9d7f863ff10a6ebbd02a7e0820cf35e3eb0` |
-| `docs/sm120-rank-executor-native-abi-v1.h` | `b543e2a9fcc2cd30f385d174a5690ce73f09db373ea1c4a1bdea60b40f6daf13` |
+| `docs/sm120-rank-executor-v1-r4.md` | `6397a07c5a00422b0e3a3941e880a0548fe21b1e5d7584967d5a2786d7f1e665` |
+| `docs/sm120-rank-executor-native-abi-v1.h` | `ef8d710536ee145eb85bba3ebb82ece651c9340672bcb935db4304df4143c7a3` |
 | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` | `71fc1d7d96fc52188ec97b97aa430b3178bd25310ebf40620b0ebe28863c5935` |
 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `87100bca82c645f28040187fc9cd5466de1e551bf59de69d06ce896216e85aa7` |
 | `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
-| `docs/target-layer-execution-v1-r2.md` | `808da35c2e54eb5692512996650839fb6f127cb91658603eb2fb5ce049c56ed2` |
+| `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
 | `docs/mtp-layer-execution-v1.md` | `5ad5bf01cdbd5e183b5e50aa0940344b5aabc09bf05a90c57d58e3e5b28dd3a7` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
@@ -95,6 +95,10 @@ argument validation-node entry.
 7. Confirm generic graph-node validation remains rejected, target/MTP module
    and collective-route meanings remain unchanged, and no built-in or
    rank-local fallback exists.
+8. Independently serialize target-only and target-plus-MTP graph-program-set
+   preimages. Prove the validation field binds every target/MTP node and
+   rejects an absent, extra, zero, stale, or cross-generation MTP member
+   without changing the 192-byte descriptor.
 
 ## Required answer
 
@@ -104,9 +108,11 @@ answer separately with an unqualified `YES` or `NO`:
 1. Are all retained r2 and r3 closure decisions still accepted under r4?
 2. Are all C11, C++17, and required Rust layouts and signatures exact?
 3. Does the explicit validation-module argument close the otherwise missing
-   native binding without introducing an implicit selection route?
-4. Are module generation, capability, context, ownership, graph borrow, and
-   destruction rules complete and fail-closed?
+   native binding without introducing an implicit selection route, and does
+   the program-set digest bind both target and optional MTP membership?
+4. Are module and program generation, capability, context, ownership, graph
+   borrow, program-set membership, and destruction rules complete and
+   fail-closed?
 5. Are startup, memory, collectives, routes, tiering, deadlines,
    backpressure, synchronization, and MTP failure one implementable contract?
 6. Is the combined r1-r4 design accepted for its independent CPU/mock proof?
