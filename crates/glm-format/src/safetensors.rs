@@ -136,6 +136,7 @@ pub struct SafeTensorDescriptor {
 pub struct SafeTensorFile {
     path: PathBuf,
     file: File,
+    fingerprint: FileFingerprint,
     file_bytes: u64,
     data_offset: u64,
     header_sha256: [u8; 32],
@@ -146,8 +147,8 @@ pub struct SafeTensorFile {
 impl SafeTensorFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
         let path = path.as_ref().to_owned();
-        let file = File::open(&path).map_err(SafeTensorError::Io)?;
-        let file_bytes = file.metadata().map_err(SafeTensorError::Io)?.len();
+        let (file, fingerprint) = open_retained_regular_file(&path)?;
+        let file_bytes = fingerprint.bytes;
         if file_bytes < 10 {
             return Err(SafeTensorError::Truncated);
         }
@@ -212,10 +213,12 @@ impl SafeTensorFile {
             );
         }
         validate_contiguous_data(&tensors, data_bytes)?;
+        validate_retained_regular_file(&path, &file, fingerprint)?;
 
         Ok(Self {
             path,
             file,
+            fingerprint,
             file_bytes,
             data_offset,
             header_sha256: Sha256::digest(&header).into(),
@@ -260,6 +263,7 @@ impl SafeTensorFile {
     }
 
     pub fn read_tensor(&self, name: &str) -> Result<Vec<u8>, SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensors
             .get(name)
@@ -271,16 +275,19 @@ impl SafeTensorFile {
             .checked_add(descriptor.data_offsets[0])
             .ok_or(SafeTensorError::Overflow)?;
         read_exact_at(&self.file, &mut bytes, absolute)?;
+        self.revalidate()?;
         Ok(bytes)
     }
 
     pub fn tensor_reader(&self, name: &str) -> Result<SafeTensorReader<'_>, SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensors
             .get(name)
             .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
         Ok(SafeTensorReader {
             file: &self.file,
+            fingerprint: self.fingerprint,
             absolute_offset: self
                 .data_offset
                 .checked_add(descriptor.data_offsets[0])
@@ -297,11 +304,13 @@ impl SafeTensorFile {
         part: u8,
         parts: u8,
     ) -> Result<TensorShardReader, SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensor(name)
             .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
         TensorShardReader::new(
             self.file.try_clone().map_err(SafeTensorError::Io)?,
+            self.fingerprint,
             self.data_offset
                 .checked_add(descriptor.data_offsets[0])
                 .ok_or(SafeTensorError::Overflow)?,
@@ -318,6 +327,7 @@ impl SafeTensorFile {
         relative_offset: u64,
         output: &mut [u8],
     ) -> Result<(), SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensors
             .get(name)
@@ -333,14 +343,20 @@ impl SafeTensorFile {
             .checked_add(descriptor.data_offsets[0])
             .and_then(|offset| offset.checked_add(relative_offset))
             .ok_or(SafeTensorError::Overflow)?;
-        read_exact_at(&self.file, output, absolute)
+        read_exact_at(&self.file, output, absolute)?;
+        self.revalidate()
     }
 
     pub fn copy_tensor(&self, name: &str, output: &mut impl Write) -> Result<(), SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensors
             .get(name)
             .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let absolute = self
+            .data_offset
+            .checked_add(descriptor.data_offsets[0])
+            .ok_or(SafeTensorError::Overflow)?;
         let mut buffer = vec![
             0_u8;
             usize::try_from(descriptor.bytes.min(HASH_CHUNK_BYTES as u64))
@@ -350,20 +366,31 @@ impl SafeTensorFile {
         while consumed < descriptor.bytes {
             let chunk = usize::try_from((descriptor.bytes - consumed).min(buffer.len() as u64))
                 .map_err(|_| SafeTensorError::Overflow)?;
-            self.read_tensor_range(name, consumed, &mut buffer[..chunk])?;
+            read_exact_at(
+                &self.file,
+                &mut buffer[..chunk],
+                absolute
+                    .checked_add(consumed)
+                    .ok_or(SafeTensorError::Overflow)?,
+            )?;
             output
                 .write_all(&buffer[..chunk])
                 .map_err(SafeTensorError::Io)?;
             consumed += chunk as u64;
         }
-        Ok(())
+        self.revalidate()
     }
 
     pub fn hash_tensor(&self, name: &str) -> Result<[u8; 32], SafeTensorError> {
+        self.revalidate()?;
         let descriptor = self
             .tensors
             .get(name)
             .ok_or_else(|| SafeTensorError::MissingTensor(name.to_owned()))?;
+        let absolute = self
+            .data_offset
+            .checked_add(descriptor.data_offsets[0])
+            .ok_or(SafeTensorError::Overflow)?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![
             0_u8;
@@ -375,10 +402,17 @@ impl SafeTensorFile {
             let remaining = descriptor.bytes - consumed;
             let chunk = usize::try_from(remaining.min(buffer.len() as u64))
                 .map_err(|_| SafeTensorError::Overflow)?;
-            self.read_tensor_range(name, consumed, &mut buffer[..chunk])?;
+            read_exact_at(
+                &self.file,
+                &mut buffer[..chunk],
+                absolute
+                    .checked_add(consumed)
+                    .ok_or(SafeTensorError::Overflow)?,
+            )?;
             hasher.update(&buffer[..chunk]);
             consumed += chunk as u64;
         }
+        self.revalidate()?;
         Ok(hasher.finalize().into())
     }
 
@@ -388,30 +422,23 @@ impl SafeTensorFile {
     /// provenance must use this full-file digest (or per-tensor digests) so a
     /// same-shape data mutation cannot masquerade as the original checkpoint.
     pub fn hash_file(&self) -> Result<[u8; 32], SafeTensorError> {
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![
-            0_u8;
-            usize::try_from(self.file_bytes.min(HASH_CHUNK_BYTES as u64))
-                .map_err(|_| SafeTensorError::Overflow)?
-        ];
-        let mut consumed = 0_u64;
-        while consumed < self.file_bytes {
-            let chunk = usize::try_from((self.file_bytes - consumed).min(buffer.len() as u64))
-                .map_err(|_| SafeTensorError::Overflow)?;
-            read_exact_at(&self.file, &mut buffer[..chunk], consumed)?;
-            hasher.update(&buffer[..chunk]);
-            consumed += chunk as u64;
-        }
-        if self.file.metadata().map_err(SafeTensorError::Io)?.len() != self.file_bytes {
-            return Err(SafeTensorError::SourceChanged(self.path.clone()));
-        }
-        Ok(hasher.finalize().into())
+        self.revalidate()?;
+        let digest = hash_retained_file(&self.file, self.file_bytes)?;
+        self.revalidate()?;
+        Ok(digest)
+    }
+
+    /// Proves that the pathname and retained descriptor still have the exact
+    /// identity opened before header parsing.
+    pub fn revalidate(&self) -> Result<(), SafeTensorError> {
+        validate_retained_regular_file(&self.path, &self.file, self.fingerprint)
     }
 }
 
 #[derive(Debug)]
 pub struct SafeTensorReader<'a> {
     file: &'a File,
+    fingerprint: FileFingerprint,
     absolute_offset: u64,
     bytes: u64,
     position: u64,
@@ -431,8 +458,9 @@ impl SafeTensorReader<'_> {
 
 impl Read for SafeTensorReader<'_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        read_cursor(
+        read_retained_cursor(
             self.file,
+            self.fingerprint,
             self.absolute_offset,
             self.bytes,
             &mut self.position,
@@ -451,6 +479,12 @@ struct ShardedLocation {
 struct OpenShard {
     file: File,
     data_offset: u64,
+    fingerprint: FileFingerprint,
+}
+
+#[derive(Debug)]
+struct OpenIndex {
+    file: File,
     fingerprint: FileFingerprint,
 }
 
@@ -487,6 +521,7 @@ pub struct ShardedSafetensors {
     declared_payload_bytes: Option<u64>,
     locations: BTreeMap<String, ShardedLocation>,
     shards: BTreeSet<PathBuf>,
+    open_index: Option<OpenIndex>,
     open_shards: BTreeMap<PathBuf, OpenShard>,
 }
 
@@ -508,8 +543,8 @@ impl ShardedSafetensors {
 
     pub fn open(index_path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
         let index_path = index_path.as_ref().to_owned();
-        let index_file = File::open(&index_path).map_err(SafeTensorError::Io)?;
-        let index_bytes = index_file.metadata().map_err(SafeTensorError::Io)?.len();
+        let (index_file, index_fingerprint) = open_retained_regular_file(&index_path)?;
+        let index_bytes = index_fingerprint.bytes;
         if index_bytes == 0 || index_bytes > MAX_INDEX_BYTES {
             return Err(SafeTensorError::Index);
         }
@@ -574,9 +609,7 @@ impl ShardedSafetensors {
                     return Err(SafeTensorError::Index);
                 }
             }
-            let fingerprint = FileFingerprint::from_metadata(
-                &shard.file.metadata().map_err(SafeTensorError::Io)?,
-            );
+            let fingerprint = shard.fingerprint;
             open_shards.insert(
                 relative.clone(),
                 OpenShard {
@@ -595,6 +628,7 @@ impl ShardedSafetensors {
         if declared_payload_bytes.is_some_and(|declared| declared != actual_payload_bytes) {
             return Err(SafeTensorError::Index);
         }
+        validate_retained_regular_file(&index_path, &index_file, index_fingerprint)?;
         Ok(Self {
             source_path: index_path,
             root,
@@ -602,6 +636,10 @@ impl ShardedSafetensors {
             declared_payload_bytes,
             locations,
             shards,
+            open_index: Some(OpenIndex {
+                file: index_file,
+                fingerprint: index_fingerprint,
+            }),
             open_shards,
         })
     }
@@ -685,9 +723,7 @@ impl ShardedSafetensors {
                     return Err(SafeTensorError::DuplicateTensor(name.clone()));
                 }
             }
-            let fingerprint = FileFingerprint::from_metadata(
-                &shard.file.metadata().map_err(SafeTensorError::Io)?,
-            );
+            let fingerprint = shard.fingerprint;
             open_shards.insert(
                 relative.clone(),
                 OpenShard {
@@ -711,6 +747,7 @@ impl ShardedSafetensors {
             )?),
             locations,
             shards: shard_paths,
+            open_index: None,
             open_shards,
         })
     }
@@ -767,6 +804,7 @@ impl ShardedSafetensors {
                 .checked_add(location.descriptor.data_offsets[0])
                 .ok_or(SafeTensorError::Overflow)?,
         )?;
+        self.validate_open_shard(&location.shard, shard)?;
         Ok(bytes)
     }
 
@@ -778,6 +816,7 @@ impl ShardedSafetensors {
             .ok_or(SafeTensorError::Overflow)?;
         Ok(ShardedTensorReader {
             file: shard.file.try_clone().map_err(SafeTensorError::Io)?,
+            fingerprint: shard.fingerprint,
             absolute_offset,
             bytes: location.descriptor.bytes,
             position: 0,
@@ -794,6 +833,7 @@ impl ShardedSafetensors {
         let (shard, location) = self.open_verified_shard(name)?;
         TensorShardReader::new(
             shard.file.try_clone().map_err(SafeTensorError::Io)?,
+            shard.fingerprint,
             shard
                 .data_offset
                 .checked_add(location.descriptor.data_offsets[0])
@@ -831,6 +871,7 @@ impl ShardedSafetensors {
             hasher.update(&buffer[..chunk]);
             consumed += chunk as u64;
         }
+        self.validate_open_shard(&location.shard, shard)?;
         Ok(hasher.finalize().into())
     }
 
@@ -847,24 +888,31 @@ impl ShardedSafetensors {
             SafeTensorError::ShardPath(relative_path.to_string_lossy().into_owned())
         })?;
         self.validate_open_shard(relative_path, shard)?;
-        let mut hasher = Sha256::new();
-        let mut buffer =
-            vec![
-                0_u8;
-                usize::try_from(shard.fingerprint.bytes.clamp(1, HASH_CHUNK_BYTES as u64))
-                    .map_err(|_| SafeTensorError::Overflow)?
-            ];
-        let mut consumed = 0_u64;
-        while consumed < shard.fingerprint.bytes {
-            let chunk =
-                usize::try_from((shard.fingerprint.bytes - consumed).min(buffer.len() as u64))
-                    .map_err(|_| SafeTensorError::Overflow)?;
-            read_exact_at(&shard.file, &mut buffer[..chunk], consumed)?;
-            hasher.update(&buffer[..chunk]);
-            consumed += chunk as u64;
-        }
+        let digest = hash_retained_file(&shard.file, shard.fingerprint.bytes)?;
         self.validate_open_shard(relative_path, shard)?;
-        Ok(hasher.finalize().into())
+        Ok(digest)
+    }
+
+    /// Hashes the index through the descriptor retained before parsing it.
+    /// Directory-mode inventories have no index and reject this operation.
+    pub fn hash_source_index(&self) -> Result<([u8; 32], u64), SafeTensorError> {
+        let index = self.open_index.as_ref().ok_or(SafeTensorError::Index)?;
+        self.validate_open_index(index)?;
+        let digest = hash_retained_file(&index.file, index.fingerprint.bytes)?;
+        self.validate_open_index(index)?;
+        Ok((digest, index.fingerprint.bytes))
+    }
+
+    /// Revalidates every retained source pathname and descriptor. Conversion
+    /// must call this immediately before publishing a native rank set.
+    pub fn revalidate_sources(&self) -> Result<(), SafeTensorError> {
+        if let Some(index) = &self.open_index {
+            self.validate_open_index(index)?;
+        }
+        for (relative_path, shard) in &self.open_shards {
+            self.validate_open_shard(relative_path, shard)?;
+        }
+        Ok(())
     }
 
     fn open_verified_shard(
@@ -901,11 +949,16 @@ impl ShardedSafetensors {
         }
         Ok(())
     }
+
+    fn validate_open_index(&self, index: &OpenIndex) -> Result<(), SafeTensorError> {
+        validate_retained_regular_file(&self.source_path, &index.file, index.fingerprint)
+    }
 }
 
 #[derive(Debug)]
 pub struct ShardedTensorReader {
     file: File,
+    fingerprint: FileFingerprint,
     absolute_offset: u64,
     bytes: u64,
     position: u64,
@@ -925,8 +978,9 @@ impl ShardedTensorReader {
 
 impl Read for ShardedTensorReader {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        read_cursor(
+        read_retained_cursor(
             &self.file,
+            self.fingerprint,
             self.absolute_offset,
             self.bytes,
             &mut self.position,
@@ -938,6 +992,7 @@ impl Read for ShardedTensorReader {
 #[derive(Debug)]
 pub struct TensorShardReader {
     file: File,
+    fingerprint: FileFingerprint,
     absolute_offset: u64,
     source_rows: u64,
     source_row_bytes: u64,
@@ -952,6 +1007,7 @@ pub struct TensorShardReader {
 impl TensorShardReader {
     fn new(
         file: File,
+        fingerprint: FileFingerprint,
         absolute_offset: u64,
         descriptor: &SafeTensorDescriptor,
         axis: u8,
@@ -974,6 +1030,7 @@ impl TensorShardReader {
         if axis == 0 {
             return Ok(Self {
                 file,
+                fingerprint,
                 absolute_offset,
                 source_rows: 1,
                 source_row_bytes: descriptor.bytes,
@@ -1011,6 +1068,7 @@ impl TensorShardReader {
         }
         Ok(Self {
             file,
+            fingerprint,
             absolute_offset,
             source_rows,
             source_row_bytes,
@@ -1032,10 +1090,8 @@ impl TensorShardReader {
     pub const fn is_empty(&self) -> bool {
         self.bytes == 0
     }
-}
 
-impl Read for TensorShardReader {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+    fn read_unvalidated(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if self.axis == 0 {
             return read_cursor(
                 &self.file,
@@ -1082,6 +1138,19 @@ impl Read for TensorShardReader {
             .position
             .checked_add(read as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+        Ok(read)
+    }
+}
+
+impl Read for TensorShardReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.position == 0 {
+            validate_reader_descriptor(&self.file, self.fingerprint)?;
+        }
+        let read = self.read_unvalidated(output)?;
+        if self.position == self.bytes {
+            validate_reader_descriptor(&self.file, self.fingerprint)?;
+        }
         Ok(read)
     }
 }
@@ -1231,6 +1300,59 @@ fn validate_shard_path(value: &str) -> Result<PathBuf, SafeTensorError> {
     Ok(path.to_owned())
 }
 
+fn open_retained_regular_file(path: &Path) -> Result<(File, FileFingerprint), SafeTensorError> {
+    let path_metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.nlink() != 1
+    {
+        return Err(SafeTensorError::SourceChanged(path.to_owned()));
+    }
+    let file = File::open(path).map_err(SafeTensorError::Io)?;
+    let descriptor_metadata = file.metadata().map_err(SafeTensorError::Io)?;
+    let fingerprint = FileFingerprint::from_metadata(&path_metadata);
+    if FileFingerprint::from_metadata(&descriptor_metadata) != fingerprint {
+        return Err(SafeTensorError::SourceChanged(path.to_owned()));
+    }
+    Ok((file, fingerprint))
+}
+
+fn validate_retained_regular_file(
+    path: &Path,
+    file: &File,
+    fingerprint: FileFingerprint,
+) -> Result<(), SafeTensorError> {
+    let path_metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
+    let descriptor_metadata = file.metadata().map_err(SafeTensorError::Io)?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.nlink() != 1
+        || FileFingerprint::from_metadata(&path_metadata) != fingerprint
+        || FileFingerprint::from_metadata(&descriptor_metadata) != fingerprint
+    {
+        return Err(SafeTensorError::SourceChanged(path.to_owned()));
+    }
+    Ok(())
+}
+
+fn hash_retained_file(file: &File, bytes: u64) -> Result<[u8; 32], SafeTensorError> {
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![
+        0_u8;
+        usize::try_from(bytes.clamp(1, HASH_CHUNK_BYTES as u64))
+            .map_err(|_| SafeTensorError::Overflow)?
+    ];
+    let mut consumed = 0_u64;
+    while consumed < bytes {
+        let chunk = usize::try_from((bytes - consumed).min(buffer.len() as u64))
+            .map_err(|_| SafeTensorError::Overflow)?;
+        read_exact_at(file, &mut buffer[..chunk], consumed)?;
+        hasher.update(&buffer[..chunk]);
+        consumed += chunk as u64;
+    }
+    Ok(hasher.finalize().into())
+}
+
 fn read_exact_at(
     file: &File,
     mut output: &mut [u8],
@@ -1276,6 +1398,32 @@ fn read_cursor(
         .checked_add(read as u64)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "tensor reader overflow"))?;
     Ok(read)
+}
+
+fn read_retained_cursor(
+    file: &File,
+    fingerprint: FileFingerprint,
+    absolute_offset: u64,
+    bytes: u64,
+    position: &mut u64,
+    output: &mut [u8],
+) -> io::Result<usize> {
+    if *position == 0 {
+        validate_reader_descriptor(file, fingerprint)?;
+    }
+    let read = read_cursor(file, absolute_offset, bytes, position, output)?;
+    if *position == bytes {
+        validate_reader_descriptor(file, fingerprint)?;
+    }
+    Ok(read)
+}
+
+fn validate_reader_descriptor(file: &File, fingerprint: FileFingerprint) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if FileFingerprint::from_metadata(&metadata) != fingerprint {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1548,6 +1696,45 @@ mod tests {
     }
 
     #[test]
+    fn standalone_file_retains_identity_and_rejects_reopen_aliases() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let source = directory.0.join("source.safetensors");
+        write_safe(&source, vec![("x", "U8", vec![2], vec![1, 2])]);
+        let retained = SafeTensorFile::open(&source).unwrap();
+        retained.revalidate().unwrap();
+
+        let original = directory.0.join("original.safetensors");
+        fs::rename(&source, &original).unwrap();
+        fs::copy(&original, &source).unwrap();
+        assert!(matches!(
+            retained.revalidate(),
+            Err(SafeTensorError::SourceChanged(path)) if path == source
+        ));
+        assert!(matches!(
+            retained.hash_file(),
+            Err(SafeTensorError::SourceChanged(path)) if path == source
+        ));
+        assert!(matches!(
+            retained.read_tensor("x"),
+            Err(SafeTensorError::SourceChanged(path)) if path == source
+        ));
+
+        let hard_link = directory.0.join("hard-link.safetensors");
+        fs::hard_link(&original, &hard_link).unwrap();
+        assert!(matches!(
+            SafeTensorFile::open(&original),
+            Err(SafeTensorError::SourceChanged(path)) if path == original
+        ));
+        let symlink = directory.0.join("symlink.safetensors");
+        std::os::unix::fs::symlink(&original, &symlink).unwrap();
+        assert!(matches!(
+            SafeTensorFile::open(&symlink),
+            Err(SafeTensorError::SourceChanged(path)) if path == symlink
+        ));
+    }
+
+    #[test]
     fn row_major_tp_shards_stream_axis_zero_and_one_exactly() {
         let path = TempPath::new("safetensors");
         let source: Vec<u8> = (0_u16..32).flat_map(u16::to_le_bytes).collect();
@@ -1672,6 +1859,12 @@ mod tests {
         )
         .unwrap();
         let set = ShardedSafetensors::open(&index).unwrap();
+        let expected_index_sha256: [u8; 32] = Sha256::digest(fs::read(&index).unwrap()).into();
+        assert_eq!(
+            set.hash_source_index().unwrap(),
+            (expected_index_sha256, fs::metadata(&index).unwrap().len())
+        );
+        set.revalidate_sources().unwrap();
         assert_eq!(set.declared_payload_bytes(), Some(4));
         assert_eq!(set.tensor_names().collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(set.read_tensor("b").unwrap(), [3, 4]);
@@ -1705,6 +1898,111 @@ mod tests {
             set.hash_shard_file("b.safetensors"),
             Err(SafeTensorError::ShardChanged(_))
         ));
+        assert!(matches!(
+            set.revalidate_sources(),
+            Err(SafeTensorError::ShardChanged(_))
+        ));
+    }
+
+    #[test]
+    fn sharded_index_replacement_cannot_cross_parsing_and_hashing() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let shard = directory.0.join("a.safetensors");
+        write_safe(&shard, vec![("a", "U8", vec![2], vec![1, 2])]);
+        let index = directory.0.join("model.safetensors.index.json");
+        let index_bytes = serde_json::to_vec(&json!({
+            "metadata": {"total_size": 2},
+            "weight_map": {"a": "a.safetensors"}
+        }))
+        .unwrap();
+        fs::write(&index, &index_bytes).unwrap();
+        let set = ShardedSafetensors::open(&index).unwrap();
+
+        let original = directory.0.join("original-index.json");
+        fs::rename(&index, &original).unwrap();
+        fs::write(&index, &index_bytes).unwrap();
+        assert!(matches!(
+            set.hash_source_index(),
+            Err(SafeTensorError::SourceChanged(path)) if path == index
+        ));
+        assert!(matches!(
+            set.revalidate_sources(),
+            Err(SafeTensorError::SourceChanged(path)) if path == index
+        ));
+
+        let hard_link = directory.0.join("hard-link-index.json");
+        fs::hard_link(&original, &hard_link).unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&original),
+            Err(SafeTensorError::SourceChanged(path)) if path == original
+        ));
+        let symlink = directory.0.join("symlink-index.json");
+        std::os::unix::fs::symlink(&original, &symlink).unwrap();
+        assert!(matches!(
+            ShardedSafetensors::open(&symlink),
+            Err(SafeTensorError::SourceChanged(path)) if path == symlink
+        ));
+
+        let mutable_index = directory.0.join("mutable-index.json");
+        fs::write(&mutable_index, &index_bytes).unwrap();
+        let mutable_set = ShardedSafetensors::open(&mutable_index).unwrap();
+        let mut changed_bytes = index_bytes;
+        let digit = changed_bytes
+            .iter()
+            .position(|&byte| byte == b'2')
+            .expect("fixture contains total_size");
+        changed_bytes[digit] = b'3';
+        fs::write(&mutable_index, changed_bytes).unwrap();
+        force_distinct_modified_time(&mutable_index, 3);
+        assert!(matches!(
+            mutable_set.revalidate_sources(),
+            Err(SafeTensorError::SourceChanged(path)) if path == mutable_index
+        ));
+    }
+
+    #[test]
+    fn streaming_readers_reject_same_inode_mutation_before_completion() {
+        let directory = TempPath::new("dir");
+        fs::create_dir(&directory.0).unwrap();
+        let shard = directory.0.join("a.safetensors");
+        let original: Vec<u8> = (0_u8..8).collect();
+        write_safe(&shard, vec![("matrix", "U8", vec![2, 4], original.clone())]);
+        let index = directory.0.join("model.safetensors.index.json");
+        fs::write(
+            &index,
+            serde_json::to_vec(&json!({
+                "metadata": {"total_size": 8},
+                "weight_map": {"matrix": "a.safetensors"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let set = ShardedSafetensors::open(&index).unwrap();
+        let mut reader = set.tensor_reader("matrix").unwrap();
+        let mut first = [0_u8; 1];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [0]);
+        write_safe(&shard, vec![("matrix", "U8", vec![2, 4], vec![9; 8])]);
+        force_distinct_modified_time(&shard, 4);
+        assert_eq!(
+            reader.read_to_end(&mut Vec::new()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        write_safe(&shard, vec![("matrix", "U8", vec![2, 4], original)]);
+        force_distinct_modified_time(&shard, 5);
+        let set = ShardedSafetensors::open(&index).unwrap();
+        let mut reader = set.tensor_shard_reader("matrix", 1, 1, 2).unwrap();
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [2]);
+        write_safe(&shard, vec![("matrix", "U8", vec![2, 4], vec![7; 8])]);
+        force_distinct_modified_time(&shard, 6);
+        assert_eq!(
+            reader.read_to_end(&mut Vec::new()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

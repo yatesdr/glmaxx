@@ -1304,6 +1304,7 @@ fn convert_pinned_exl3(
 
     let summaries = if output.exists() {
         eprintln!("published rank set exists; performing full verification");
+        checkpoint.revalidate_sources()?;
         StreamingRankSet::verify_published(output, configs.clone())?
     } else {
         let rank_set = StreamingRankSet::create_or_resume(output, configs.clone())?;
@@ -1342,7 +1343,9 @@ fn convert_pinned_exl3(
                 return Err(format!("rank {rank} conversion stopped incomplete").into());
             }
         }
-        eprintln!("all four rank bodies are durable; auditing and publishing atomically");
+        eprintln!("all four rank bodies are durable; revalidating source identities");
+        checkpoint.revalidate_sources()?;
+        eprintln!("source identities retained; auditing and publishing atomically");
         rank_set.publish()?
     };
     print_conversion_result(

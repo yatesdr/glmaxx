@@ -660,13 +660,16 @@ pub fn verify_pinned_source_files(
     let mut manifest_exceptions = BTreeMap::new();
     for (completed, (name, expected_sha256)) in expected.iter().enumerate() {
         let path = root.join(name);
-        let (observed_sha256, bytes) = if checkpoint.shards().contains(Path::new(name)) {
-            let digest = checkpoint.hash_shard_file(name)?;
-            let metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
-            (digest, metadata.len())
-        } else {
-            hash_regular_file(&path)?
-        };
+        let (observed_sha256, bytes) =
+            if Path::new(name) == Path::new("model.safetensors.index.json") {
+                checkpoint.hash_source_index()?
+            } else if checkpoint.shards().contains(Path::new(name)) {
+                let digest = checkpoint.hash_shard_file(name)?;
+                let metadata = path.symlink_metadata().map_err(PinnedSourceError::Io)?;
+                (digest, metadata.len())
+            } else {
+                hash_regular_file(&path)?
+            };
         if &observed_sha256 != expected_sha256 {
             if !is_pinned_publisher_manifest_exception(name, expected_sha256, &observed_sha256) {
                 return Err(PinnedSourceError::FileDigest(name.clone()));
@@ -694,6 +697,7 @@ pub fn verify_pinned_source_files(
     if Sha256::digest(&canonical_file_map).as_slice() != PINNED_SOURCE_FILE_MAP_SHA256 {
         return Err(PinnedSourceError::ManifestIdentity);
     }
+    checkpoint.revalidate_sources()?;
     Ok(PinnedSourceVerification {
         manifest_sha256: PINNED_SOURCE_MANIFEST_SHA256,
         verified_file_bytes,
@@ -756,6 +760,8 @@ struct SourceFingerprint {
     bytes: u64,
     modified_seconds: i64,
     modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
 }
 
 impl SourceFingerprint {
@@ -766,6 +772,8 @@ impl SourceFingerprint {
             bytes: metadata.len(),
             modified_seconds: metadata.mtime(),
             modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
         }
     }
 }
