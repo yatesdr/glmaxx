@@ -11,7 +11,7 @@ runtime resource. This is a source, arithmetic, serialization, state-machine,
 and CPU-design gate only.
 
 Review candidate commit:
-`98ac16a98943d810cb3b8d86552e625aadc7be98`
+`65907bc6d07fd31580637ef0d463c13e678b6783`
 
 Required result path:
 `fable-distributed-sampling-abi-v1-r2.md` at the repository root.
@@ -31,11 +31,11 @@ at start and finish. Withhold the token for any mismatch or incomplete input.
 
 | Input at candidate commit | SHA-256 |
 |---|---|
-| `docs/distributed-sampling-abi-v1-r2.md` | `f2fb8ec8c81c63e76b7a0639fddc8c74719faff2a972bafcdf0b1d5de8db3db7` |
+| `docs/distributed-sampling-abi-v1-r2.md` | `061903d0a0cf2a284f35b177da5f1c3484cb61dfd9020f627db7b5632a4f2b6b` |
 | `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
-| `docs/target-layer-execution-v1-r2.md` | `808da35c2e54eb5692512996650839fb6f127cb91658603eb2fb5ce049c56ed2` |
+| `docs/target-layer-execution-v1-r2.md` | `b3fd0a813e6e28d9399d9949cdfc2954241f53d60764e4ddacc2b458a07a845b` |
 | `docs/quality-acceptance-v1.md` | `705bb0611464bd5d76a08943b3122ecb8a78506e78f9c20a46d4e1ce24fc7be6` |
 | `crates/glm-reference/src/sampling.rs` | `3205f2b11d5253c51176434337be8a3e4738a1cc84a4f2d16975248d816edfb5` |
 | `crates/glm-engine/src/input.rs` | `c3d090429015030416f6c03ddb6fef2dfd569859ff6e0fcc05bcb2d6a163ffa2` |
@@ -46,7 +46,7 @@ at start and finish. Withhold the token for any mismatch or incomplete input.
 | `crates/glm-serving/src/backend.rs` | `07a4d53de6755ed8180ff90aed82f9efc71b8461070a909a10891c783a8fcf78` |
 | `crates/glm-scheduler/src/lib.rs` | `5fd0c4506002c4da5679f1ca3bf96a880ca7b0b348d5f55ada26a2e06ae7ff4d` |
 | `crates/glm-scheduler/src/compile.rs` | `220cf549c0b5882d109ebce4ebd646e9b28ebbab80a83fa579ef5a2c591a070a` |
-| `scripts/local-checks.sh` | `2d1882be9afd91f4a54c1d3ff9b9f02cd5087357eeb5668d4094c2114c3003ce` |
+| `scripts/local-checks.sh` | `1675ca5bac9bda032ab6db206629bc0052ad6afc5cb6f59a7b6697e4e5c779d0` |
 | `AGENTS.md` | `d78d69429dab43d096c49b795f24b8e00b71a6c1d7c1d535ad431c0f4ec9bf02` |
 
 The original v1 review covered candidate
@@ -87,14 +87,16 @@ Do not accept the amendment by prose inspection alone. Independently:
    q lookup, and replicated-rank disagreement;
 6. construct target/draft TOP_K unions of sizes 1, 256, 257, and 512 with
    equal, disjoint, and partially overlapping supports; compare the rank-zero
-   residual sampler to a gathered full-vocabulary oracle;
+   residual sampler to a gathered full-vocabulary oracle, then encode and
+   mutation-test the 32-byte residual result and prove that all ranks derive
+   the same fallback bit, masses, probability, token, and counter;
 7. independently implement MASS max/mass/selection and residual phases over
    four 38,720-row shards, checking every rank boundary and all 24 padded rows;
 8. serialize every fixed request, message, state-digest, and trace preimage;
    recompute all stated byte counts and maximum logical payloads;
 9. recompute the candidate's composite sampling digest from the two raw
    inner file hashes. The expected value is
-   `8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`;
+   `95fa7aa3b4b0b78a3f8313705d25e4c11682632fce6d8b8c2355b8130745f58c`;
 10. recompute C64/MTP6 TOP_K and MASS proposal-state bounds and determine
     whether any step/memory predecessor text still gives greedy q state a
     contradictory nonzero home;
@@ -122,7 +124,8 @@ Answer each decision with an unqualified `YES` or `NO`:
 5. Is the 2,048-byte TOP_K support representation sufficient and canonical,
    and do its state/common digests prevent mutation or rank substitution?
 6. Is moving TOP_K residual sampling wholly to rank zero correct, bounded by a
-   512-token sparse union, and free of hidden full-vocabulary traffic?
+   512-token sparse union, free of hidden full-vocabulary traffic, and made
+   consensus-visible by the exact residual-result record?
 7. Is the per-rank MASS proposal state sufficient to reconstruct acceptance
    and residual distributions without a full-vocabulary gather or a missing
    normalizer?
@@ -132,7 +135,8 @@ Answer each decision with an unqualified `YES` or `NO`:
 9. Are `p(d)`, `q(d)`, acceptance ratios, uniforms, residual values, fallback,
    and result probabilities evaluated in an exact, stable numerical order?
 10. Is retaining target fallback on a zero numerical residual safe only with
-    the stated trace, counter, and nonzero-rate promotion gate?
+    the stated trace, counter, all-rank output-bit equality, and nonzero-rate
+    promotion gate?
 11. Does the corrected greedy zero-q-state invariant remove the predecessor
     contradiction without weakening proposal identity or consensus?
 12. Do the exact state sizes equal 786,432 TOP_K and 59,473,920 MASS bytes per
