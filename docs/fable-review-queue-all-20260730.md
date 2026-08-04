@@ -265,7 +265,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 159 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f` | `docs/reviews/fable-sm120-rank-executor-v1-r3.md` | superseded; do not issue `sm120-rank-executor-v1-r3-design-accepted` |
 | 160 | `docs/fable-sm120-rank-executor-v1-r4-handoff.md` | `688f5c7a4bfb79ed884693a968013a12a394d530` | `docs/reviews/fable-sm120-rank-executor-v1-r4.md` | `sm120-rank-executor-v1-r4-design-accepted` |
 | 161 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md` | `b4dc806db89076ac015bd25d942b3d2ebfb724b3` | `docs/reviews/fable-exl3-mixed-k-source-and-kernel-v1-r3.md` | `exl3-mixed-k-source-and-kernel-v1-r3-design-accepted` |
-| 162 | `docs/fable-safetensors-index-total-size-v1-r3-handoff.md` | `97c082bf840685dfa79db0356626649ca1e19234` | `docs/reviews/fable-safetensors-index-total-size-v1-r3.md` | `safetensors-index-total-size-v1-r3-design-accepted` |
+| 162 | `docs/fable-safetensors-index-total-size-v1-r3-handoff.md` | `9c772e1227784ab7f62fcf9f90a787e8cb37c424` | `docs/reviews/fable-safetensors-index-total-size-v1-r3.md` | `safetensors-index-total-size-v1-r3-design-accepted` |
 | 163 | `docs/fable-decode-benchmark-api-v1-handoff.md` | `d9515c648739454a58223a6531e230ddd4a5eded` | `docs/reviews/fable-decode-benchmark-api-v1.md` | `decode-benchmark-api-v1-design-accepted` |
 | 164 | `docs/fable-tentative-page-preflight-v1-handoff.md` | `c6ebdc97cf84a0349a689a1f816f82ada5e95203` | `docs/reviews/fable-tentative-page-preflight-v1.md` | `tentative-page-preflight-v1-accepted` |
 
