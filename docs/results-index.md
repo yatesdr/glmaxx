@@ -7,6 +7,17 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-04 integration admission diagnostic
 
+The hybrid MTP3 capacity-ledger r2 candidate `2b87859` now has a separate
+external-evidence preflight. Both retained cn4 memory evidence streams passed
+their complete hash lists; five lazy and five eager samples were each
+byte-stable. Independent arithmetic reproduced 135,424 slots and 2,116 pages
+per rank, the 4,330,317,824-byte cache, all seven older fixed terms including
+the 1-GiB escrow, and provisional lazy/eager residuals of 471,052,352 and
+468,955,200 bytes. The exact derivation and strict nonclaims are in
+`docs/hybrid-mtp3-capacity-r2-preflight-20260804.md`. This remains sensitivity
+evidence only; no physical capacity claim is open without the exact review
+token and final four-rank allocation/checksum gate.
+
 The exact NF3/ModelOpt native rank-manifest r2 candidate `2b87859` has now
 completed a real-source preflight using freshly copied, hash-matched cn4
 config, index, and protection metadata. A standalone verifier matched every
