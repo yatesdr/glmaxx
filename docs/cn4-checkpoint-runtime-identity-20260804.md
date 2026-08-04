@@ -2,8 +2,8 @@
 
 Date: 2026-08-04
 
-Status: immutable TR3 source identity resolved; hybrid identity remains
-metadata-only
+Status: immutable TR3 publisher identity and hybrid local content identity
+resolved
 
 ## Scope
 
@@ -109,14 +109,23 @@ Checkpoint root: `/home/claude/LLM/GLM-5.2-hybrid`
 | `mxfp8_tier_nokvb.json` | `ebcd6087180033d4512fafa5f154f4fecfbc1ee5e5051448f34859cccc4430f0` |
 
 The shared tokenizer/template hashes remove one source of cross-profile KLD
-drift. They do not authenticate the hybrid weights. Because this tree has no
-source manifest, these values are a runtime metadata identity only; native
-admission still needs a reviewed complete shard-content identity or a
-deterministic converted-image identity.
+drift. This tree has no publisher source manifest. A follow-up complete
+read-only audit at `fc4871d` hashed all 194 top-level regular files, including
+all 184 shards, and checked in the filename/digest map as
+`manifests/glm52-hybrid-source-v1.sha256`. Its SHA-256 is
+`a4d9cb546e8fdae5dd7e494228750ee0a2723904170a7c700e461704d5683ab7`.
+The detailed result is
+`docs/cn4-hybrid-source-content-hash-fc4871d-20260804.md`.
+
+This resolves a complete operator-pinned local content identity, not
+publisher provenance. Native admission still requires a reviewed verifier
+that binds every filename and digest, the safetensors inventory, and the
+hybrid tier semantics.
 
 ## Claim boundary
 
-This record corrects the repository inference in the earlier TR3 audit and
-authorizes a narrow manifest-reconciliation design review. It does not accept
-a source verifier, converter, rank image, kernel, checkpoint smoke, KLD,
-capacity, or performance result.
+This record corrects the repository inference in the earlier TR3 audit,
+authorizes a narrow TR3 manifest-reconciliation design review, and now points
+to the complete hybrid local-content identity. It does not accept a source
+verifier, converter, rank image, kernel, checkpoint smoke, KLD, capacity, or
+performance result.
