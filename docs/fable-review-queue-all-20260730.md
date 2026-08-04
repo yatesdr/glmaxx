@@ -247,7 +247,8 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 156 | `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md` | `7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91` | `fable-exl3-grouped-gate-up-sm120-v1.md` | superseded; do not issue `exl3-grouped-gate-up-sm120-v1-design-accepted` |
 | 157 | `docs/fable-sm120-profiler-package-v1-r2-handoff.md` | `b3ee484c8dda2cc0baed986362fbb6c83d78256a` | `fable-sm120-profiler-package-v1-r2.md` | `sm120-profiler-package-v1-r2-accepted` |
 | 158 | `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md` | `7b6a98630ed612d923d7656b8723d44e5aa67b8c` | `fable-exl3-grouped-gate-up-sm120-v1-r2.md` | `exl3-grouped-gate-up-sm120-v1-r2-design-accepted` |
-| 159 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f` | `docs/reviews/fable-sm120-rank-executor-v1-r3.md` | `sm120-rank-executor-v1-r3-design-accepted` |
+| 159 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f` | `docs/reviews/fable-sm120-rank-executor-v1-r3.md` | superseded; do not issue `sm120-rank-executor-v1-r3-design-accepted` |
+| 160 | `docs/fable-sm120-rank-executor-v1-r4-handoff.md` | `688f5c7a4bfb79ed884693a968013a12a394d530` | `docs/reviews/fable-sm120-rank-executor-v1-r4.md` | `sm120-rank-executor-v1-r4-design-accepted` |
 
 ## Verification command
 
@@ -258,5 +259,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 159 current handoffs and two
+The expected queue count for this document is 160 current handoffs and two
 explicitly skipped historical umbrella handoffs.
