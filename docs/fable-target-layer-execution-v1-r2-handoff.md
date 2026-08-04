@@ -11,7 +11,7 @@ runtime resource. This is a source, arithmetic, serialization, and CPU-design
 gate only.
 
 Review candidate commit:
-`8b3b44191abe52c8d0296875942b98b87609cefe`
+`8a554af72e52bb067bf61edf43735615c6a0942a`
 
 Required result path:
 `fable-target-layer-execution-v1-r2.md` at the repository root.
@@ -45,7 +45,7 @@ start and finish. Withhold the token for a mismatch or incomplete input.
 
 | Input at candidate commit | SHA-256 |
 |---|---|
-| `docs/target-layer-execution-v1-r2.md` | `b3fd0a813e6e28d9399d9949cdfc2954241f53d60764e4ddacc2b458a07a845b` |
+| `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
 | `docs/target-layer-r2-preflight-erratum-20260804.md` | `4e27b469d3e0ba2c3727b0c14ec4ef3da7f1eaeec5218c8f9208a9e22fe3412a` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/manifest-source-audit-20260729.md` | `61278e9a0f85f692357ca4c193771d3d4c0487537f80cb77b2eeb956ee916ff8` |
@@ -54,7 +54,7 @@ start and finish. Withhold the token for a mismatch or incomplete input.
 | `manifests/glm52-operation-v1.json` | `8a5f5488bb31640712d5bd2d39fe70de3eab65a87759bc8bb186646a53123da6` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
-| `docs/distributed-sampling-abi-v1-r2.md` | `f2fb8ec8c81c63e76b7a0639fddc8c74719faff2a972bafcdf0b1d5de8db3db7` |
+| `docs/distributed-sampling-abi-v1-r2.md` | `061903d0a0cf2a284f35b177da5f1c3484cb61dfd9020f627db7b5632a4f2b6b` |
 | `docs/serving-page-transaction-v1.md` | `31983cce95ee01a5968213d5daf12c7a855f75f8735314700f2b4a9e55625d1a` |
 | `docs/sm120-rank-runtime.md` | `908b8adf0e1fc230145c009db01c71e69437ab359c76a545031fd9157c1ceea9` |
 | `docs/prefill-graph-profile-abi-v2.md` | `37154c9e31109acdf35a382c6be87b3a865e2b7f6ae8f801969526789dd41f91` |
@@ -114,7 +114,7 @@ Do not accept the amendment by prose inspection alone. Independently:
    input/post/final, and indexer-K normalization epsilons and RoPE mode;
 2. serialize every `TargetProgramEntry.v1` hash preimage from the normative
    tensor bindings, including recomputation of the sampling v1+r2 composite
-   `8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`
+   `95fa7aa3b4b0b78a3f8313705d25e4c11682632fce6d8b8c2355b8130745f58c`
    consumed by the final-head entry. Recompute the expected 39,594 ten-byte
    binding records:
    embedding 1, final 2, three dense layers at 17 each, eighteen full-indexer
