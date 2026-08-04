@@ -68,6 +68,8 @@ result path; follow the output instructions in that handoff.
 `review-proof-all` fails closed unless the numbered table covers every current
 handoff exactly once, uses contiguous ordinals, and agrees with each parsed
 handoff's candidate commit and any inline-code result path and token.
+It also refuses to count the staged-v2 CUDA implementation review as accepted
+until its explicitly required corrected warp-staging CPU review is accepted.
 
 | # | Handoff | Candidate | Required result | Requested token |
 |---:|---|---|---|---|

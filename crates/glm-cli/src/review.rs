@@ -21,6 +21,10 @@ const HISTORICAL_HANDOFFS: [&str; 2] = [
     "docs/fable-review-handoff.md",
 ];
 const REVIEW_QUEUE_PATH: &str = "docs/fable-review-queue-all-20260730.md";
+const REVIEW_ACCEPTANCE_PREREQUISITES: [(&str, &str); 1] = [(
+    "docs/fable-exl3-warp-staged-v2-implementation-handoff.md",
+    "docs/fable-exl3-warp-staging-cpu-v2-handoff.md",
+)];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReviewInputProof {
@@ -435,6 +439,7 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
         ));
     }
     verify_review_queue(&root, &verified_handoffs)?;
+    verify_review_acceptance_prerequisites(&verified_handoffs)?;
     let present_review_results = verified_handoffs
         .iter()
         .filter(|proof| proof.review.is_some())
@@ -611,6 +616,40 @@ fn verify_review_queue_text(
         )));
     }
     Ok(())
+}
+
+fn verify_review_acceptance_prerequisites(
+    verified_handoffs: &[ReviewProof],
+) -> Result<(), ReviewProofError> {
+    let proofs_by_path: BTreeMap<_, _> = verified_handoffs
+        .iter()
+        .map(|proof| (proof.handoff_path.as_str(), proof))
+        .collect();
+    for (dependent_path, prerequisite_path) in REVIEW_ACCEPTANCE_PREREQUISITES {
+        let dependent = proofs_by_path.get(dependent_path).ok_or_else(|| {
+            ReviewProofError::Format(format!(
+                "review acceptance dependency names an unknown handoff: {dependent_path}"
+            ))
+        })?;
+        let prerequisite = proofs_by_path.get(prerequisite_path).ok_or_else(|| {
+            ReviewProofError::Format(format!(
+                "review acceptance dependency names an unknown prerequisite: {prerequisite_path}"
+            ))
+        })?;
+        if review_is_accepted(dependent) && !review_is_accepted(prerequisite) {
+            return Err(ReviewProofError::Format(format!(
+                "accepted review {dependent_path} requires accepted prerequisite {prerequisite_path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn review_is_accepted(proof: &ReviewProof) -> bool {
+    proof
+        .review
+        .as_ref()
+        .is_some_and(|review| review.token_state == ReviewTokenState::Accepted)
 }
 
 fn current_handoff_paths(root: &Path) -> Result<Vec<PathBuf>, ReviewProofError> {
@@ -1636,6 +1675,45 @@ mod tests {
                 .to_string()
                 .contains("omits verified handoffs")
         );
+    }
+
+    #[test]
+    fn accepted_review_requires_its_machine_declared_precondition() {
+        let mut prerequisite = queue_proof(
+            "docs/fable-exl3-warp-staging-cpu-v2-handoff.md",
+            "0123456789abcdef0123456789abcdef01234567",
+            Some("docs/reviews/fable-exl3-warp-staging-cpu-v2.md"),
+            Some("exl3-warp-staging-cpu-v2-accepted"),
+        );
+        let mut dependent = queue_proof(
+            "docs/fable-exl3-warp-staged-v2-implementation-handoff.md",
+            "89abcdef0123456789abcdef0123456789abcdef",
+            Some("fable-exl3-warp-staged-v2-implementation.md"),
+            Some("exl3-warp-staged-v2-implementation-accepted"),
+        );
+        dependent.review = Some(review_artifact(ReviewTokenState::Accepted));
+        let error =
+            verify_review_acceptance_prerequisites(&[prerequisite.clone(), dependent.clone()])
+                .unwrap_err();
+        assert!(error.to_string().contains("requires accepted prerequisite"));
+
+        prerequisite.review = Some(review_artifact(ReviewTokenState::Accepted));
+        verify_review_acceptance_prerequisites(&[prerequisite.clone(), dependent.clone()]).unwrap();
+
+        prerequisite.review = None;
+        dependent.review = Some(review_artifact(ReviewTokenState::Withheld));
+        verify_review_acceptance_prerequisites(&[prerequisite, dependent]).unwrap();
+    }
+
+    fn review_artifact(token_state: ReviewTokenState) -> ReviewArtifactProof {
+        ReviewArtifactProof {
+            path: "review.md".to_owned(),
+            sha256: HASH.to_owned(),
+            token_state,
+            exact_token_lines: usize::from(token_state == ReviewTokenState::Accepted),
+            candidate_commit_attested: true,
+            attested_input_hashes: 1,
+        }
     }
 
     fn queue_proof(
