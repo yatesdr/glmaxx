@@ -392,17 +392,33 @@ struct SuiteReport {
     claim: &'static str,
 }
 
+#[derive(Serialize)]
+struct ProfileOnceReport {
+    schema: &'static str,
+    kernel_abi: &'static str,
+    projection: &'static str,
+    rows: u32,
+    logical_k: u32,
+    logical_n: u32,
+    input_sha256: String,
+    output_sha256: String,
+    validation: u32,
+    staged_launches: u32,
+    claim: &'static str,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arguments = std::env::args_os();
-    let _program = arguments.next();
-    let evidence = PathBuf::from(
-        arguments
-            .next()
-            .ok_or("glmaxx-exl3-staged-v2 requires an empty evidence directory")?,
-    );
-    if arguments.next().is_some() {
-        return Err("glmaxx-exl3-staged-v2 accepts exactly one evidence directory".into());
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--profile-once")
+    {
+        return profile_once(&arguments);
     }
+    let [evidence] = arguments.as_slice() else {
+        return Err("glmaxx-exl3-staged-v2 requires exactly one empty evidence directory, or --profile-once gate|up|down rows empty-evidence-directory".into());
+    };
+    let evidence = PathBuf::from(evidence);
     validate_evidence_directory(&evidence)?;
     validate_native_abi()?;
 
@@ -461,6 +477,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if failed_cases != 0 {
         return Err("EXL3 staged v2 failed bitwise validation".into());
     }
+    Ok(())
+}
+
+fn profile_once(arguments: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    let [_, projection, rows, evidence] = arguments else {
+        return Err("--profile-once requires gate|up|down rows empty-evidence-directory".into());
+    };
+    let projection = match projection.to_str() {
+        Some("gate") => Exl3Projection::Gate,
+        Some("up") => Exl3Projection::Up,
+        Some("down") => Exl3Projection::Down,
+        _ => return Err("profile projection must be gate, up, or down".into()),
+    };
+    let rows = rows
+        .to_str()
+        .ok_or("profile rows must be valid UTF-8")?
+        .parse::<u32>()?;
+    if ![1_u32, 2, 4, 8].contains(&rows) {
+        return Err("profile rows must be one of 1, 2, 4, or 8".into());
+    }
+    let evidence = PathBuf::from(evidence);
+    validate_evidence_directory(&evidence)?;
+    validate_native_abi()?;
+
+    let fixture = ProjectionFixture::new(projection)?;
+    let (case, input_sha256) = fixture.prepare(rows)?;
+    let (output, validation) = run_and_copy(Route::Staged, &case, &fixture.stream)?;
+    if validation != 0 {
+        return Err(format!("staged kernel validation failed with code {validation}").into());
+    }
+    let report = ProfileOnceReport {
+        schema: "glmaxx.sm120-exl3-warp-staged-v2-profile-once.v1",
+        kernel_abi: std::str::from_utf8(STAGED_KERNEL_ABI)?,
+        projection: projection_id(projection),
+        rows,
+        logical_k: fixture.logical_k,
+        logical_n: fixture.logical_n,
+        input_sha256,
+        output_sha256: u16_sha256(&output),
+        validation,
+        staged_launches: 1,
+        claim: "single synthetic staged launch for diagnostic profiler replay only",
+    };
+    let mut json = serde_json::to_vec_pretty(&report)?;
+    json.push(b'\n');
+    fs::write(evidence.join("profile-once.json"), &json)?;
+    println!("{}", String::from_utf8(json)?);
     Ok(())
 }
 
