@@ -46,6 +46,24 @@ MassProposalState.v2      154,880 bytes per rank and proposal
 SamplingTrace.v2             variable, digest retained in StepOutput.v2
 ```
 
+The single sampling hash stored by `TargetProgram.v1` is no longer the hash
+of the retained v1 file alone. It is the composite:
+
+```text
+distributed_sampling_abi_sha256 = SHA256(
+  "glmaxx.distributed-sampling-abi.v1-r2\0" ||
+  SHA256(exact distributed-sampling-abi-v1.md bytes) ||
+  SHA256(exact distributed-sampling-abi-v1-r2.md bytes)
+)
+```
+
+The two accepted file hashes are startup-manifest fields and must be identical
+on all ranks. This formula amends the final-head field in target-layer r2 so a
+worker cannot bind the reviewed v1 mechanics while silently omitting the r2
+proposal, draw, or residual rules. There is no prose-selected alternate
+digest and no self-reference: each inner hash is computed over file bytes,
+then the outer domain binds their order.
+
 `SamplingCounter.v2` and `SamplingTicket.v2` have the exact layouts and
 purpose enums in `mtp-layer-execution-v1-r2.md`. The fixed request record is:
 
