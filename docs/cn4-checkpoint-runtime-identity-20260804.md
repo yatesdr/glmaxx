@@ -2,8 +2,7 @@
 
 Date: 2026-08-04
 
-Status: immutable TR3 publisher identity and hybrid local content identity
-resolved
+Status: immutable publisher identity resolved for both target checkpoints
 
 ## Scope
 
@@ -117,15 +116,18 @@ all 184 shards, and checked in the filename/digest map as
 The detailed result is
 `docs/cn4-hybrid-source-content-hash-fc4871d-20260804.md`.
 
-This resolves a complete operator-pinned local content identity, not
-publisher provenance. Native admission still requires a reviewed verifier
-that binds every filename and digest, the safetensors inventory, and the
-hybrid tier semantics.
+The public proof at `e1dfb9e` subsequently matched all 194 files to immutable
+publisher repository `madeby561/GLM-5.2-MXFP8-NVFP4-NF3-Hybrid` revision
+`68babde27a97a4c980c2494e830dd424975cd5a3`. All 186 LFS SHA-256/size
+identities and all eight Git-backed file bodies matched. The detailed result
+is `docs/cn4-hybrid-publisher-source-proof-e1dfb9e-20260804.md`.
+
+Native admission still requires the reviewed r2 verifier to bind every
+filename and digest, the safetensors inventory, and hybrid tier semantics.
 
 ## Claim boundary
 
-This record corrects the repository inference in the earlier TR3 audit,
-authorizes a narrow TR3 manifest-reconciliation design review, and now points
-to the complete hybrid local-content identity. It does not accept a source
-verifier, converter, rank image, kernel, checkpoint smoke, KLD, capacity, or
-performance result.
+This record now binds both target checkpoints to immutable publisher
+revisions and authorizes their narrow source-admission design reviews. It does
+not accept a source verifier, converter, rank image, kernel, checkpoint smoke,
+KLD, capacity, or performance result.

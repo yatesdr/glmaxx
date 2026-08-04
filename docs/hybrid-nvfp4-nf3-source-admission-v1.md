@@ -2,7 +2,7 @@
 
 Date: 2026-08-04
 
-Status: design candidate; adversarial acceptance required before implementation
+Status: superseded by r2; do not review or implement this local-only profile
 
 ## Problem
 
