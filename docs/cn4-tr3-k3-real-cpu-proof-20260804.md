@@ -87,6 +87,24 @@ Its artifact-manifest SHA-256 is
 the run-script SHA-256 is
 `ecc6dcdf15412c1552c2e3d48c9fa233096226d4b061d255276c8dcb818d6280`.
 
+## Last target-layer cross-check
+
+Layer 77, expert 255, rank 3 closes the opposite target-layer boundary. The
+tier entry identifies that expert as K3, with the same 192:64 layer census.
+Its 4,377,005,840-byte shard freshly matched publisher digest
+`d9b33c74fa7a0b055657fc93e4c04915b2649242f5ad18a715c4bdd3279d96e2`.
+
+| Projection | Source payload SHA-256 | Reconstructed FP16 SHA-256 |
+|---|---|---|
+| gate | `589b3a3ea7c317b8b24667caec4b8b3134a28430f767d370271e7e5cf6131bd3` | `2ffc1bbabc11aefb5b36949f871cd4b824f8743cd818d3ee9fa5d3ca8e64f69b` |
+| up | `f228e0c81aa0f006e9b4bb16501f3c34e61ba1f0f618a015507c89a2d04b0c98` | `0baa53e6429c7a2549d3144cf189290c0863ba234026630432221d00a0424b7f` |
+| down | `b661aefd04e3a9e74035f43f67401450117fbb02004f37372b9a59a3c50976ea` | `97d8e13f0461c4a3b5ff3e148160f02db9ce6fe994e4989c488cfb69272b087d` |
+
+Evidence:
+`/home/derek/glmaxx/evidence/20260804T050416Z-tr3-layer77-k3-cpu-1c8459e-r1`;
+artifact-manifest SHA-256
+`ed654b5238100ac485af2722fa36eff18ea7806b46d88530ebaeac468fa6db38`.
+
 ## Provenance
 
 - Checkpoint:
@@ -115,8 +133,8 @@ The proof containers used `NVIDIA_VISIBLE_DEVICES=void`. Host GPU state was
 ## Claim boundary
 
 This establishes deterministic source import and complete CPU reconstruction
-for two real target K3 experts spanning expert and rank boundaries plus the
-real recurrent draft source on ranks 0 and 3, all at the three production
+at the first and last sparse target layers, both expert/rank boundaries, plus
+the real recurrent draft source on ranks 0 and 3, all at the three production
 projection shapes. It supplies full-hash-gated payloads for the later
 scalar-versus-staged SM120 comparison.
 
