@@ -7,6 +7,18 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-04 integration admission diagnostic
 
+Current integration tip `b00b4cc` was rebuilt in the isolated GLMAXX CUDA
+13.3/Rust 1.92 container and rerun on cn4 physical GPU 0 against the real TR3
+3.25-bpw layer-3 shard. The complete 427-test gate passed, the library
+contained real `sm_120f` cubins, and all 24 gate/up/down M=1/2/4/8 cases on TP
+ranks 0 and 3 matched their CPU output hashes exactly with deterministic
+replay. The 36-entry evidence manifest hashes to
+`49d5b664fa5b5e833b82804e4c01df1efdf568553cde1f618fc38dd1592a08ba`.
+The scalar gate/up p50 remained about 0.46 ms, confirming this accepted route
+is a correctness control rather than a serving kernel. Full provenance,
+failed-first-attempt disposition, timings, and nonclaims are in
+`docs/cn4-integration-real-k3-b00b4cc-20260804.md`.
+
 An independent implementation-readiness audit found four unresolved quality
 r2 ambiguities: policy-dependent run UUIDs had no policy-independent family,
 `PositionQuality.v2` had no binary ABI or deterministic centered-error math,
