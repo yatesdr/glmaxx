@@ -7,8 +7,6 @@ readonly expected_review_artifact="fable-exl3-source-projection-v1-r2.md"
 readonly expected_review_commit="0edfc8d796aeaeb969668005149bcb6286aa1e85"
 readonly expected_cutlass="e05f953a5b3d38adc240df2ff928e0421c2abba3"
 readonly expected_container="sha256:2e401388dcc9c180401cb9997e3e8394c2db695c7bf4e3139ff8a9a517940719"
-readonly expected_shard_name="model-layer-003.safetensors"
-readonly expected_shard_sha256="31bc19eabf05d0782e33103672094f1d8aca2a8bb9fb5b88a502cd6caab61bd0"
 
 if [[ "${GLMAXX_CN4_AUTHORIZATION:-}" != "${expected_authorization}" ]]; then
   echo "Refusing GPU work: the active-goal authorization marker is required" >&2
@@ -16,14 +14,36 @@ if [[ "${GLMAXX_CN4_AUTHORIZATION:-}" != "${expected_authorization}" ]]; then
 fi
 if [[ -z "${CUTLASS_DIR:-}" || -z "${GLMAXX_BUILD_DIR:-}" ||
       -z "${GLMAXX_EVIDENCE_DIR:-}" ||
-      -z "${GLMAXX_TR3_SHARD:-}" || -z "${GLMAXX_CONTAINER_DIGEST:-}" ]]; then
-  echo "CUTLASS_DIR, GLMAXX_BUILD_DIR, GLMAXX_EVIDENCE_DIR, GLMAXX_TR3_SHARD, and GLMAXX_CONTAINER_DIGEST are required" >&2
+      -z "${GLMAXX_TR3_CASE:-}" || -z "${GLMAXX_TR3_SHARD:-}" ||
+      -z "${GLMAXX_CONTAINER_DIGEST:-}" ]]; then
+  echo "CUTLASS_DIR, GLMAXX_BUILD_DIR, GLMAXX_EVIDENCE_DIR, GLMAXX_TR3_CASE, GLMAXX_TR3_SHARD, and GLMAXX_CONTAINER_DIGEST are required" >&2
   exit 64
 fi
 if [[ "${GLMAXX_CONTAINER_DIGEST}" != "${expected_container}" ]]; then
   echo "Container identity mismatch" >&2
   exit 65
 fi
+
+case "${GLMAXX_TR3_CASE}" in
+  target-layer3)
+    readonly case_layer=3
+    readonly case_role="target_sparse_projection"
+    readonly expected_shard_name="model-layer-003.safetensors"
+    readonly expected_shard_sha256="31bc19eabf05d0782e33103672094f1d8aca2a8bb9fb5b88a502cd6caab61bd0"
+    readonly k4_negative_control="required"
+    ;;
+  draft-layer78)
+    readonly case_layer=78
+    readonly case_role="recurrent_draft_projection_only"
+    readonly expected_shard_name="model-layer-078.safetensors"
+    readonly expected_shard_sha256="5448b63a32e394e8cbff5a4737fb50b40fc53c6c3c41305f1a7ee540c4d9a6e3"
+    readonly k4_negative_control="not_applicable_all_k3"
+    ;;
+  *)
+    echo "GLMAXX_TR3_CASE must be target-layer3 or draft-layer78" >&2
+    exit 64
+    ;;
+esac
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_dir}"
@@ -105,7 +125,7 @@ fi
 
 shard="$(realpath "${GLMAXX_TR3_SHARD}")"
 if [[ ! -f "${shard}" || "$(basename "${shard}")" != "${expected_shard_name}" ]]; then
-  echo "GLMAXX_TR3_SHARD must name the pinned layer-003 safetensors file" >&2
+  echo "GLMAXX_TR3_SHARD does not match the pinned ${GLMAXX_TR3_CASE} safetensors file" >&2
   exit 65
 fi
 shard_sha256="$(sha256sum "${shard}" | awk '{print $1}')"
@@ -185,23 +205,25 @@ sha256sum "${runner}" "${kernel_build}/libglmaxx_sm120.so" \
   > "${GLMAXX_EVIDENCE_DIR}/build-artifact-sha256.txt"
 
 check_idle
-if CUDA_VISIBLE_DEVICES=0 "${runner}" "${shard}" "${shard_sha256}" 3 6 0 gate \
-    > "${GLMAXX_EVIDENCE_DIR}/k4-negative-stdout.txt" \
-    2> "${GLMAXX_EVIDENCE_DIR}/k4-negative-stderr.txt"; then
-  echo "K=4 negative control unexpectedly passed the K=3-only qualifier" >&2
-  exit 70
-fi
-if ! grep -Fq 'trellis' "${GLMAXX_EVIDENCE_DIR}/k4-negative-stderr.txt"; then
-  echo "K=4 negative control did not fail at its trellis contract" >&2
-  exit 70
+if [[ "${k4_negative_control}" == "required" ]]; then
+  if CUDA_VISIBLE_DEVICES=0 "${runner}" "${shard}" "${shard_sha256}" 3 6 0 gate \
+      > "${GLMAXX_EVIDENCE_DIR}/k4-negative-stdout.txt" \
+      2> "${GLMAXX_EVIDENCE_DIR}/k4-negative-stderr.txt"; then
+    echo "K=4 negative control unexpectedly passed the K=3-only qualifier" >&2
+    exit 70
+  fi
+  if ! grep -Fq 'trellis' "${GLMAXX_EVIDENCE_DIR}/k4-negative-stderr.txt"; then
+    echo "K=4 negative control did not fail at its trellis contract" >&2
+    exit 70
+  fi
 fi
 
 for rank in 0 3; do
   for projection in gate up down; do
     check_idle
-    result="${GLMAXX_EVIDENCE_DIR}/layer3-expert0-rank${rank}-${projection}.json"
+    result="${GLMAXX_EVIDENCE_DIR}/layer${case_layer}-expert0-rank${rank}-${projection}.json"
     CUDA_VISIBLE_DEVICES=0 "${runner}" "${shard}" "${shard_sha256}" \
-      3 0 "${rank}" "${projection}" | tee "${result}"
+      "${case_layer}" 0 "${rank}" "${projection}" | tee "${result}"
     grep -Fq '"verdict": "passed"' "${result}"
     grep -Fq '"failed_elements": 0' "${result}"
     grep -Fq '"repeat_bitwise_deterministic": true' "${result}"
@@ -222,12 +244,13 @@ if [[ "$(git rev-parse HEAD)" != "${source_commit}" || -n "$(git status --porcel
   exit 70
 fi
 
-printf '{"schema":"glmaxx.sm120-exl3-real-k3-run.v1","verdict":"passed","source_commit":"%s","checkpoint_shard_sha256":"%s","gpu_device":"physical_gpu_0","projection_reports":6,"shape_cases":24,"k4_negative_control":"passed_fail_closed","performance_status":"scalar_control_only"}\n' \
-  "${source_commit}" "${shard_sha256}" > "${GLMAXX_EVIDENCE_DIR}/summary.json"
+printf '{"schema":"glmaxx.sm120-exl3-real-k3-run.v1","verdict":"passed","source_commit":"%s","checkpoint_shard_sha256":"%s","source_role":"%s","gpu_device":"physical_gpu_0","projection_reports":6,"shape_cases":24,"k4_negative_control":"%s","performance_status":"scalar_control_only"}\n' \
+  "${source_commit}" "${shard_sha256}" "${case_role}" "${k4_negative_control}" \
+  > "${GLMAXX_EVIDENCE_DIR}/summary.json"
 printf '%s\n' \
   "EXL3_REAL_TR3_K3_SCALAR_V1_PASSED" \
-  "Six real K=3 projections across ranks 0 and 3 passed M=1/2/4/8 correctness and deterministic replay." \
-  "K=4 remains fail-closed; scalar timings are controls, not optimized-route acceptance." \
+  "Six real ${case_role} K=3 projections across ranks 0 and 3 passed M=1/2/4/8 correctness and deterministic replay." \
+  "K4 control posture: ${k4_negative_control}; scalar timings are controls, not optimized-route or model-layer acceptance." \
   > "${GLMAXX_EVIDENCE_DIR}/verdict.txt"
 (
   cd "${GLMAXX_EVIDENCE_DIR}"
