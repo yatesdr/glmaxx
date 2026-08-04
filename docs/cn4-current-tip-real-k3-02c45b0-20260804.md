@@ -115,3 +115,7 @@ smoke, logits, KLD, KV capacity, MTP, concurrency, or serving throughput.
 The shortest path forward remains acceptance of the staged EXL3 CPU and
 implementation reviews, followed by grouped gate/up, mixed-K, rank-executor,
 target-layer, small-checkpoint, and TP4 layer-replay gates.
+
+A later fully sealed rerun at the common target/draft source generation is
+recorded in `docs/cn4-current-tip-target-k3-be825f4-20260804.md` and supersedes
+this run as the current target-projection evidence record.
