@@ -138,7 +138,7 @@ impl PageReuseQuarantineStats {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct PhysicalPage {
     draft_local_page_id: Option<u32>,
     state: PageState,
@@ -147,13 +147,13 @@ struct PhysicalPage {
     prefix: Option<(PrefixPageAttachment, u64)>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SequencePage {
     ordinal: u64,
     physical: PhysicalPageId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TentativeTail {
     original_committed_tokens: u64,
     original_page_count: usize,
@@ -161,7 +161,35 @@ struct TentativeTail {
     reserved_tokens: u8,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TentativePageUpdate {
+    physical: PhysicalPageId,
+    state: PageState,
+    valid_tokens: u8,
+}
+
 #[derive(Clone, Debug)]
+struct NewTentativePage {
+    sequence_page: SequencePage,
+    physical_page: PhysicalPage,
+}
+
+#[derive(Clone, Debug)]
+struct TentativeReservationPlan {
+    transaction: TentativeTail,
+    tail_update: Option<TentativePageUpdate>,
+    new_page: Option<NewTentativePage>,
+}
+
+#[derive(Clone, Debug)]
+struct TentativeCommitPlan {
+    new_committed_tokens: u64,
+    desired_page_count: usize,
+    updates: Vec<TentativePageUpdate>,
+    retired_pages: Vec<(SequencePage, PhysicalPage)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Sequence {
     mtp: bool,
     committed_tokens: u64,
@@ -173,7 +201,7 @@ struct Sequence {
 ///
 /// Payload bytes remain owned by the eventual rank allocator. This type
 /// proves slot capacity, ownership, sharing, COW, and transactional reachability.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SequencePageTable {
     config: PageTableConfig,
     free_target: [BTreeSet<u32>; 4],
@@ -470,43 +498,8 @@ impl SequencePageTable {
         if requested_tokens == 0 || requested_tokens > 7 {
             return Err(SequencePageError::Transaction);
         }
-        let snapshot = self.clone();
-        let result = (|| {
-            let sequence = self
-                .sequences
-                .get(&sequence_id)
-                .ok_or(SequencePageError::Sequence)?;
-            if sequence.tentative.is_some()
-                || sequence
-                    .committed_tokens
-                    .checked_add(u64::from(requested_tokens))
-                    .is_none_or(|tokens| tokens > MAXIMUM_CONTEXT_TOKENS)
-            {
-                return Err(SequencePageError::Transaction);
-            }
-            let original_committed_tokens = sequence.committed_tokens;
-            let original_page_count = sequence.pages.len();
-            let original_tail_tokens = sequence
-                .pages
-                .last()
-                .and_then(|page| self.physical.get(&page.physical))
-                .map_or(0, |page| page.valid_tokens);
-            self.reserve_tentative(sequence_id, requested_tokens)?;
-            self.sequences
-                .get_mut(&sequence_id)
-                .ok_or(SequencePageError::Sequence)?
-                .tentative = Some(TentativeTail {
-                original_committed_tokens,
-                original_page_count,
-                original_tail_tokens,
-                reserved_tokens: requested_tokens,
-            });
-            Ok(())
-        })();
-        if let Err(error) = result {
-            *self = snapshot;
-            return Err(error);
-        }
+        let plan = self.plan_tentative_reservation(sequence_id, requested_tokens)?;
+        self.apply_tentative_reservation(sequence_id, plan);
         Ok(())
     }
 
@@ -524,12 +517,8 @@ impl SequencePageTable {
         if committed_tokens == 0 || committed_tokens > transaction.reserved_tokens {
             return Err(SequencePageError::Transaction);
         }
-        let snapshot = self.clone();
-        let result = self.commit_tentative_inner(sequence_id, committed_tokens, transaction);
-        if let Err(error) = result {
-            *self = snapshot;
-            return Err(error);
-        }
+        let plan = self.plan_tentative_commit(sequence_id, committed_tokens, &transaction)?;
+        self.apply_tentative_commit(sequence_id, plan);
         Ok(())
     }
 
@@ -724,52 +713,159 @@ impl SequencePageTable {
         Ok(())
     }
 
-    fn reserve_tentative(
-        &mut self,
+    fn plan_tentative_reservation(
+        &self,
         sequence_id: u64,
         requested_tokens: u8,
-    ) -> Result<(), SequencePageError> {
-        for _ in 0..requested_tokens {
-            let need_page = self.sequences[&sequence_id]
-                .pages
-                .last()
-                .is_none_or(|entry| {
-                    self.physical[&entry.physical].valid_tokens == PAGE_TOKENS as u8
-                });
-            if need_page {
-                let sequence = &self.sequences[&sequence_id];
-                let ordinal =
-                    u64::try_from(sequence.pages.len()).map_err(|_| SequencePageError::Overflow)?;
-                let physical = self.allocate_page(ordinal, sequence.mtp)?;
-                self.sequences
-                    .get_mut(&sequence_id)
-                    .ok_or(SequencePageError::Sequence)?
-                    .pages
-                    .push(SequencePage { ordinal, physical });
-            }
-            let physical = self.sequences[&sequence_id]
-                .pages
-                .last()
-                .ok_or(SequencePageError::Invariant)?
-                .physical;
+    ) -> Result<TentativeReservationPlan, SequencePageError> {
+        let sequence = self
+            .sequences
+            .get(&sequence_id)
+            .ok_or(SequencePageError::Sequence)?;
+        if sequence.tentative.is_some()
+            || sequence
+                .committed_tokens
+                .checked_add(u64::from(requested_tokens))
+                .is_none_or(|tokens| tokens > MAXIMUM_CONTEXT_TOKENS)
+        {
+            return Err(SequencePageError::Transaction);
+        }
+
+        let original_tail_tokens = if let Some(entry) = sequence.pages.last() {
             let page = self
                 .physical
-                .get_mut(&physical)
+                .get(&entry.physical)
                 .ok_or(SequencePageError::Invariant)?;
-            if page.references != 1
-                || !matches!(page.state, PageState::HbmMutable | PageState::HbmTentative)
-            {
+            if page.valid_tokens == 0 || u64::from(page.valid_tokens) > PAGE_TOKENS {
                 return Err(SequencePageError::State);
             }
-            if page.state == PageState::HbmMutable {
-                page.state = page.state.transition(PageState::HbmTentative)?;
+            if page.valid_tokens == PAGE_TOKENS as u8 {
+                if page.state != PageState::HbmSealed {
+                    return Err(SequencePageError::State);
+                }
+            } else if page.state != PageState::HbmMutable || page.references != 1 {
+                return Err(SequencePageError::State);
             }
-            page.valid_tokens = page
-                .valid_tokens
-                .checked_add(1)
-                .ok_or(SequencePageError::Overflow)?;
+            page.valid_tokens
+        } else {
+            0
+        };
+        let tail_capacity =
+            if original_tail_tokens == 0 || original_tail_tokens == PAGE_TOKENS as u8 {
+                0
+            } else {
+                u8::try_from(PAGE_TOKENS)
+                    .map_err(|_| SequencePageError::Overflow)?
+                    .checked_sub(original_tail_tokens)
+                    .ok_or(SequencePageError::Invariant)?
+            };
+        let tail_appended = requested_tokens.min(tail_capacity);
+        let tail_update = if tail_appended == 0 {
+            None
+        } else {
+            let entry = *sequence.pages.last().ok_or(SequencePageError::Invariant)?;
+            let page = self
+                .physical
+                .get(&entry.physical)
+                .ok_or(SequencePageError::Invariant)?;
+            Some(TentativePageUpdate {
+                physical: entry.physical,
+                state: page.state.transition(PageState::HbmTentative)?,
+                valid_tokens: page
+                    .valid_tokens
+                    .checked_add(tail_appended)
+                    .ok_or(SequencePageError::Overflow)?,
+            })
+        };
+        let remaining = requested_tokens
+            .checked_sub(tail_appended)
+            .ok_or(SequencePageError::Invariant)?;
+        let new_page = if remaining == 0 {
+            None
+        } else {
+            let ordinal =
+                u64::try_from(sequence.pages.len()).map_err(|_| SequencePageError::Overflow)?;
+            let rank = owner_rank(ordinal);
+            let target_local_page_id = self.free_target[usize::from(rank)]
+                .first()
+                .copied()
+                .ok_or(SequencePageError::Capacity)?;
+            let draft_local_page_id = sequence
+                .mtp
+                .then(|| {
+                    self.free_draft[usize::from(rank)]
+                        .first()
+                        .copied()
+                        .ok_or(SequencePageError::Capacity)
+                })
+                .transpose()?;
+            let physical = PhysicalPageId {
+                owner_rank: rank,
+                target_local_page_id,
+            };
+            if self.physical.contains_key(&physical) {
+                return Err(SequencePageError::Invariant);
+            }
+            let state = PageState::Free
+                .transition(PageState::HbmMutable)?
+                .transition(PageState::HbmTentative)?;
+            Some(NewTentativePage {
+                sequence_page: SequencePage { ordinal, physical },
+                physical_page: PhysicalPage {
+                    draft_local_page_id,
+                    state,
+                    valid_tokens: remaining,
+                    references: 1,
+                    prefix: None,
+                },
+            })
+        };
+        Ok(TentativeReservationPlan {
+            transaction: TentativeTail {
+                original_committed_tokens: sequence.committed_tokens,
+                original_page_count: sequence.pages.len(),
+                original_tail_tokens,
+                reserved_tokens: requested_tokens,
+            },
+            tail_update,
+            new_page,
+        })
+    }
+
+    fn apply_tentative_reservation(&mut self, sequence_id: u64, plan: TentativeReservationPlan) {
+        // The immutable plan and this application share one exclusive `&mut
+        // self` call; no state can drift between them. Every fallible check is
+        // complete before the first mutation.
+        if let Some(new_page) = &plan.new_page {
+            let physical = new_page.sequence_page.physical;
+            let rank = usize::from(physical.owner_rank);
+            let removed_target = self.free_target[rank].remove(&physical.target_local_page_id);
+            assert!(removed_target);
+            if let Some(draft) = new_page.physical_page.draft_local_page_id {
+                let removed_draft = self.free_draft[rank].remove(&draft);
+                assert!(removed_draft);
+            }
+            let prior = self
+                .physical
+                .insert(physical, new_page.physical_page.clone());
+            assert!(prior.is_none());
         }
-        Ok(())
+        if let Some(update) = plan.tail_update {
+            let page = self
+                .physical
+                .get_mut(&update.physical)
+                .expect("tentative reservation plan binds an existing tail");
+            page.state = update.state;
+            page.valid_tokens = update.valid_tokens;
+        }
+        let sequence = self
+            .sequences
+            .get_mut(&sequence_id)
+            .expect("tentative reservation plan binds an existing sequence");
+        if let Some(new_page) = plan.new_page {
+            sequence.pages.push(new_page.sequence_page);
+        }
+        sequence.tentative = Some(plan.transaction);
     }
 
     fn rollback_tentative_inner(&mut self, sequence_id: u64) -> Result<(), SequencePageError> {
@@ -817,12 +913,12 @@ impl SequencePageTable {
         Ok(())
     }
 
-    fn commit_tentative_inner(
-        &mut self,
+    fn plan_tentative_commit(
+        &self,
         sequence_id: u64,
         committed_tokens: u8,
-        transaction: TentativeTail,
-    ) -> Result<(), SequencePageError> {
+        transaction: &TentativeTail,
+    ) -> Result<TentativeCommitPlan, SequencePageError> {
         let new_committed_tokens = transaction
             .original_committed_tokens
             .checked_add(u64::from(committed_tokens))
@@ -832,11 +928,11 @@ impl SequencePageTable {
             .map_err(|_| SequencePageError::Overflow)?;
         let sequence = self
             .sequences
-            .get_mut(&sequence_id)
+            .get(&sequence_id)
             .ok_or(SequencePageError::Sequence)?;
         let retained_transaction = sequence
             .tentative
-            .take()
+            .as_ref()
             .ok_or(SequencePageError::Transaction)?;
         if retained_transaction.original_committed_tokens != transaction.original_committed_tokens
             || retained_transaction.original_page_count != transaction.original_page_count
@@ -846,25 +942,9 @@ impl SequencePageTable {
         {
             return Err(SequencePageError::Invariant);
         }
-        while self
-            .sequences
-            .get(&sequence_id)
-            .ok_or(SequencePageError::Sequence)?
-            .pages
-            .len()
-            > desired_page_count
-        {
-            let page = self
-                .sequences
-                .get_mut(&sequence_id)
-                .ok_or(SequencePageError::Sequence)?
-                .pages
-                .pop()
-                .ok_or(SequencePageError::Invariant)?;
-            self.release_page(page.physical)?;
-        }
+        let mut updates = Vec::new();
         for ordinal in 0..desired_page_count {
-            let entry = self.sequences[&sequence_id].pages[ordinal];
+            let entry = sequence.pages[ordinal];
             let is_tail = ordinal + 1 == desired_page_count;
             let expected_valid = if is_tail {
                 let tail = new_committed_tokens % PAGE_TOKENS;
@@ -883,20 +963,90 @@ impl SequencePageTable {
             };
             let page = self
                 .physical
-                .get_mut(&entry.physical)
+                .get(&entry.physical)
                 .ok_or(SequencePageError::Invariant)?;
             if page.state == PageState::HbmTentative {
-                page.state = page.state.transition(expected_state)?;
-                page.valid_tokens = expected_valid;
+                updates.push(TentativePageUpdate {
+                    physical: entry.physical,
+                    state: page.state.transition(expected_state)?,
+                    valid_tokens: expected_valid,
+                });
             } else if page.state != expected_state || page.valid_tokens != expected_valid {
                 return Err(SequencePageError::State);
             }
         }
-        self.sequences
+        let mut retired_pages = Vec::new();
+        for &entry in &sequence.pages[desired_page_count..] {
+            let page = self
+                .physical
+                .get(&entry.physical)
+                .cloned()
+                .ok_or(SequencePageError::Invariant)?;
+            let rank = usize::from(entry.physical.owner_rank);
+            if page.references != 1
+                || page.prefix.is_some()
+                || self.free_target[rank].contains(&entry.physical.target_local_page_id)
+                || self.quarantined_target[rank].contains(&entry.physical.target_local_page_id)
+                || page.draft_local_page_id.is_some_and(|draft| {
+                    self.free_draft[rank].contains(&draft)
+                        || self.quarantined_draft[rank].contains(&draft)
+                })
+            {
+                return Err(SequencePageError::Invariant);
+            }
+            retired_pages.push((entry, page));
+        }
+        Ok(TentativeCommitPlan {
+            new_committed_tokens,
+            desired_page_count,
+            updates,
+            retired_pages,
+        })
+    }
+
+    fn apply_tentative_commit(&mut self, sequence_id: u64, plan: TentativeCommitPlan) {
+        // As with reservation, exclusive access makes the preflight plan
+        // immutable through publication. Apply only operations already proven
+        // valid, so ordinary successful decode performs no rollback snapshot.
+        let sequence = self
+            .sequences
             .get_mut(&sequence_id)
-            .ok_or(SequencePageError::Sequence)?
-            .committed_tokens = new_committed_tokens;
-        Ok(())
+            .expect("tentative commit plan binds an existing sequence");
+        let retained = sequence
+            .tentative
+            .take()
+            .expect("tentative commit plan binds an active transaction");
+        assert!(retained.reserved_tokens != 0);
+        let retired_entries = sequence.pages.split_off(plan.desired_page_count);
+        assert_eq!(retired_entries.len(), plan.retired_pages.len());
+        sequence.committed_tokens = plan.new_committed_tokens;
+
+        for update in plan.updates {
+            let page = self
+                .physical
+                .get_mut(&update.physical)
+                .expect("tentative commit update binds an existing page");
+            page.state = update.state;
+            page.valid_tokens = update.valid_tokens;
+        }
+        for (entry, (planned_entry, planned_page)) in
+            retired_entries.into_iter().zip(plan.retired_pages)
+        {
+            assert_eq!(entry.physical, planned_entry.physical);
+            let page = self
+                .physical
+                .remove(&entry.physical)
+                .expect("retired tentative page was preflighted");
+            assert_eq!(page, planned_page);
+            let rank = usize::from(entry.physical.owner_rank);
+            let inserted_target =
+                self.quarantined_target[rank].insert(entry.physical.target_local_page_id);
+            assert!(inserted_target);
+            if let Some(draft) = page.draft_local_page_id {
+                let inserted_draft = self.quarantined_draft[rank].insert(draft);
+                assert!(inserted_draft);
+            }
+        }
     }
 
     fn allocate_page(
@@ -1270,6 +1420,55 @@ mod tests {
         let stats = table.stats().unwrap();
         assert_eq!(stats.maximum_target_only_sequence_tokens, 256);
         assert_eq!(stats.maximum_mtp_sequence_tokens, 0);
+    }
+
+    #[test]
+    fn failed_tentative_commit_preflight_is_exactly_atomic() {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 2,
+            draft_pages_per_rank: 2,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, true, &[]).unwrap();
+        table.append_committed(1, 63).unwrap();
+        table.begin_tentative(1, 7).unwrap();
+        let tail = table.sequences[&1].pages[1].physical;
+        table.physical.get_mut(&tail).unwrap().state = PageState::Invalid;
+        let before = table.clone();
+
+        assert_eq!(table.commit_tentative(1, 3), Err(SequencePageError::State));
+        assert_eq!(table, before);
+    }
+
+    #[test]
+    fn tentative_retirement_collision_preflight_is_atomic_and_retryable() {
+        let mut table = SequencePageTable::new(PageTableConfig {
+            target_pages_per_rank: 2,
+            draft_pages_per_rank: 2,
+        })
+        .unwrap();
+        table.admit_with_prefix(1, true, &[]).unwrap();
+        table.append_committed(1, 63).unwrap();
+        table.begin_tentative(1, 7).unwrap();
+        let rejected = table.sequences[&1].pages[1].physical;
+        assert!(
+            table.quarantined_target[usize::from(rejected.owner_rank)]
+                .insert(rejected.target_local_page_id)
+        );
+        let before = table.clone();
+
+        assert_eq!(
+            table.commit_tentative(1, 1),
+            Err(SequencePageError::Invariant)
+        );
+        assert_eq!(table, before);
+
+        assert!(
+            table.quarantined_target[usize::from(rejected.owner_rank)]
+                .remove(&rejected.target_local_page_id)
+        );
+        table.commit_tentative(1, 1).unwrap();
+        assert_eq!(table.committed_tokens(1), Some(64));
     }
 
     #[test]
