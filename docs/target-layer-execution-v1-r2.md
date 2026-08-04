@@ -350,6 +350,26 @@ one writer, writer-before-reader, group-dependent last readers, disjoint alias
 intervals, and external nonaliasing, then hashes it. A prose-derived or
 implementation-private lifetime digest is invalid.
 
+`alias class` is a logical reuse-eligibility class, not a physical arena ID,
+offset, capacity, pointer, or assertion that two slots overlap. Two records
+with the same nonzero alias class may be proposed for physical reuse only when
+their resolved live intervals are disjoint in every phase variant in which
+both records apply. A zero alias class forbids physical reuse with every other
+record. Equal or overlapping live intervals in the table therefore require
+distinct storage even when both records carry alias class 1.
+
+This r2 amendment intentionally does not serialize physical target-buffer
+spans. The retained `GraphEntry.maximum_scratch_bytes` is one aggregate charge
+and cannot prove a class offset, a class capacity, or a one-byte-short
+rejection. Consequently this document accepts no physical alias map and makes
+no undersized-graph-slot claim. The first CPU implementation must materialize
+each nonzero-capacity logical class in distinct owned storage. A later graph
+memory amendment must byte-specify and hash every class arena, offset, and
+capacity, validate all consumer subranges, and reject every live overlap and
+one-byte-short span before captured or eager CUDA execution can open. It may
+reuse this lifetime digest, but it cannot infer a physical layout from the
+alias-class field.
+
 ## Hash-covered row and slot tables
 
 Every table uses an exact domain followed by `u32_le(record_count)` and fixed
@@ -513,6 +533,12 @@ Startup consensus binds the graph-profile-v2 and target-program hashes.
 Graph lookup requires both. No v1 profile, schedule-v1, plan-v3, input-v2, or
 rank-local substitute is admitted.
 
+This GraphProfile extension binds the logical lifetime-table identity only.
+It does not add or accept the still-missing physical per-class span table.
+`maximum_scratch_bytes` remains an aggregate accounting ceiling, not evidence
+that any of the 32 logical classes has a sufficient or nonoverlapping device
+range.
+
 ## Decoded-record controls and gates
 
 Before any CUDA work, the CPU gate adds:
@@ -541,9 +567,13 @@ collective route, and residual membership are used by B and C.
 The first SM120 replay may begin only after adversarial acceptance, the exact
 CPU preimages/tables/digests are pinned, and A/B/C passes on CPU. Layer 6 still
 exercises full index plus sparse MoE; layer 7 still proves shared winner reuse.
+In addition, the later physical graph-memory amendment described above must be
+accepted and its class-span validator must pass before this replay can launch.
 
 ## Nonclaims
 
 This amendment is not an implementation, accepted ABI, CPU proof, CUDA
 program, graph, collective result, layer replay, checkpoint smoke, quality
-result, capacity result, or performance claim. It authorizes no cn4 access.
+result, capacity result, or performance claim. In particular, it does not
+accept physical graph-buffer offsets, capacities, aliasing, or capture safety.
+It authorizes no cn4 access.
