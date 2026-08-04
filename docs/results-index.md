@@ -7,6 +7,19 @@ Current tracked tooling baseline before this result record:
 
 ## 2026-08-04 integration admission diagnostic
 
+The exact TR3 3.25-bpw publisher-identity candidate `f758c1a` has completed a
+separate review-readiness preflight. All nine pinned candidate inputs matched
+before and after the complete local gate, which passed 417 tests. Fresh reads
+from the immutable publisher revision reproduced the 8,948-byte/97-row
+manifest, both replacement hashes, the one HTTP-404 absence, and the
+9,263-byte canonical source identity with SHA-256
+`4ae8fb4b6e8076ba9db6ce3b1f300ec163a60511c2235b2b8c99e1de77395d73`
+in independent Ruby and Python derivations. Full commands, hashes, and
+nonclaims are in
+`docs/tr3-325-publisher-manifest-preflight-20260804.md`. This is not Fable
+acceptance; the source-profile implementation remains closed until its exact
+design token is present.
+
 Clean integration commit `6e073f3` was compiled in the pinned GLMAXX-only
 container and run without GPU access against both real read-only checkpoint
 indexes. The hybrid NVFP4/NF3 source admitted structurally with 184 shards,
