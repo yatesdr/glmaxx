@@ -17,6 +17,20 @@ GPU authorization conveyed by this handoff: none
 
 cn4 posture: do not connect to cn4 or launch CUDA for this review
 
+The original withheld review is an operator-inbox input at
+`docs/reviews/fable-sm120-rank-executor-v1.md`, SHA-256
+`efe697b86235ac757fcfd9123d0f28b92a37f337a75f64267d8e96862620dd36`.
+Hash it before using the closure summary below. Withhold this r2 token if that
+artifact is absent or differs.
+
+One status word in the pinned r2 amendment requires explicit correction for
+this review: “the accepted nonblocking transport policy” means the required
+executor-local nonblocking `try_push` completion policy. It does not claim or
+grant acceptance of `nonblocking-http-transport-v1.md`, whose later transport
+review required a corrective successor. Judge the bounded slab-release and
+cancel semantics here, while keeping any executor implementation gated on an
+independently accepted transport successor.
+
 ## Provenance
 
 Review the exact candidate commit in a detached worktree. Copy this handoff
@@ -133,8 +147,9 @@ scope are welcome if the correction introduces a new contradiction.
     generation races, and is its latency cost stated honestly?
 20. Does the absolute deadline cover queueing and prepare as well as launch
     and completion?
-21. Does the accepted nonblocking `try_push` slow-client policy guarantee slab
-    release without waiting for the socket?
+21. Does the executor-local nonblocking `try_push` slow-client policy
+    guarantee slab release without waiting for the socket, without treating
+    this review as acceptance of the separate transport-v1 contract?
 22. Does the serving coordinator terminate, never retry, a request whose
     emitted MTP token was not materialized before generation failure?
 23. Does the expanded CPU/mock matrix cover every prior omission plus ABI
