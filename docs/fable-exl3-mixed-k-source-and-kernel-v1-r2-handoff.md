@@ -50,7 +50,11 @@ Run the complete CPU-only local gate and record its exit status:
 
 The external cn4 record is discovery evidence only. Its documented 16-entry
 manifest hash is not a substitute for publisher authentication, and this
-review must not promote it to checkpoint admission evidence.
+review must not promote it to checkpoint admission evidence. The historical
+shell probe canonicalizes `GLMAXX_TR3_DIR` before testing `-L` and parses JSON
+with `jq`; it therefore does not prove rejection of an originally symlinked
+source-directory argument or duplicate JSON keys. Those are disclosed probe
+limitations, not properties that the reviewed Rust implementation may inherit.
 
 ## Required decisions
 
@@ -70,9 +74,13 @@ boundary. Then answer:
 5. Are 5,662,310,400 bytes of K4 delta and 75,293,233,152 complete routed
    source-plane bytes per rank independently correct, without treating 3.25
    bpw or an average width as allocation authority?
-6. Does the proof script fail closed on unexpected raw index/tier identities,
-   layer sets, schema, descriptor widths, projection/rank counts, malformed
-   headers, symlinks, and evidence-path reuse while reading headers only?
+6. With the disclosed discovery-only limitations above, does the proof script
+   fail closed on unexpected raw index/tier identities, layer sets, tier
+   schema, width/count census failures, invalid header lengths or JSON,
+   direct index/tier/shard symlinks, and evidence-path reuse while reading
+   headers only; and does the contract correctly require the future Rust
+   implementation to provide complete safe-path, unique-key, and descriptor
+   validation instead of inheriting the shell probe as admission authority?
 7. Are the script, result record, and r2 contract explicit that raw hash
    pinning is not publisher-manifest authentication and cannot admit a
    checkpoint or authorize conversion?
