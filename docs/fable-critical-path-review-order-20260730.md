@@ -24,7 +24,7 @@ implementation-unblock sequence is:
 4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
 5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
 6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
-7. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+7. `docs/fable-sm120-rank-executor-v1-r3-handoff.md`;
 8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
 9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
 10. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
@@ -113,7 +113,7 @@ work must not bypass the fixed checksum authority now present on `main`.
 After the P0 attestation repairs, review the following in this dependency
 order:
 
-1. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`
+1. `docs/fable-sm120-rank-executor-v1-r3-handoff.md`
 2. `docs/fable-step-execution-abi-v3-handoff.md`
 3. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`
 4. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`
@@ -176,8 +176,8 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
 Current verified baseline before the new grouped-r2 result lands:
 
 ```text
-158 handoffs
-140 configured result paths
+159 handoffs
+141 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```
