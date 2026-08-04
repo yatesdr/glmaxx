@@ -20,6 +20,7 @@ const HISTORICAL_HANDOFFS: [&str; 2] = [
     "docs/fable-phase-a-engine-handoff.md",
     "docs/fable-review-handoff.md",
 ];
+const REVIEW_QUEUE_PATH: &str = "docs/fable-review-queue-all-20260730.md";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReviewInputProof {
@@ -433,6 +434,7 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
             "no review handoff with a candidate commit was found".to_owned(),
         ));
     }
+    verify_review_queue(&root, &verified_handoffs)?;
     let present_review_results = verified_handoffs
         .iter()
         .filter(|proof| proof.review.is_some())
@@ -466,6 +468,134 @@ pub fn verify_all_review_handoffs(repository: &Path) -> Result<ReviewSuiteProof,
         withheld_review_results,
         verdict: "PASS",
     })
+}
+
+fn verify_review_queue(
+    root: &Path,
+    verified_handoffs: &[ReviewProof],
+) -> Result<(), ReviewProofError> {
+    let path = root.join(REVIEW_QUEUE_PATH);
+    let bytes = fs::read(&path)?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| ReviewProofError::Utf8(REVIEW_QUEUE_PATH.to_owned()))?;
+    verify_review_queue_text(text, verified_handoffs)
+}
+
+fn verify_review_queue_text(
+    text: &str,
+    verified_handoffs: &[ReviewProof],
+) -> Result<(), ReviewProofError> {
+    let mut proofs_by_path = BTreeMap::new();
+    for proof in verified_handoffs {
+        if proofs_by_path
+            .insert(proof.handoff_path.as_str(), proof)
+            .is_some()
+        {
+            return Err(ReviewProofError::Format(format!(
+                "duplicate verified handoff path: {}",
+                proof.handoff_path
+            )));
+        }
+    }
+
+    let mut seen_paths = BTreeSet::new();
+    let mut expected_ordinal = 1usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+            continue;
+        }
+        let cells: Vec<_> = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        let Some(ordinal) = cells.first().and_then(|cell| cell.parse::<usize>().ok()) else {
+            continue;
+        };
+        if cells.len() != 5 {
+            return Err(ReviewProofError::Format(format!(
+                "review queue row {ordinal} must contain exactly five columns"
+            )));
+        }
+        if ordinal != expected_ordinal {
+            return Err(ReviewProofError::Format(format!(
+                "review queue ordinal mismatch: expected {expected_ordinal}, observed {ordinal}"
+            )));
+        }
+        expected_ordinal = expected_ordinal
+            .checked_add(1)
+            .ok_or_else(|| ReviewProofError::Format("review queue ordinal overflow".to_owned()))?;
+
+        let handoff_path = exact_code_cell(cells[1]).ok_or_else(|| {
+            ReviewProofError::Format(format!(
+                "review queue row {ordinal} handoff path must be an exact inline-code cell"
+            ))
+        })?;
+        validate_relative_path(&handoff_path)?;
+        if !seen_paths.insert(handoff_path.clone()) {
+            return Err(ReviewProofError::Format(format!(
+                "duplicate review queue handoff path: {handoff_path}"
+            )));
+        }
+        let proof = proofs_by_path.get(handoff_path.as_str()).ok_or_else(|| {
+            ReviewProofError::Format(format!(
+                "review queue row {ordinal} references an unknown handoff: {handoff_path}"
+            ))
+        })?;
+
+        let candidate = exact_code_cell(cells[2]).ok_or_else(|| {
+            ReviewProofError::Format(format!(
+                "review queue row {ordinal} candidate must be an exact inline-code cell"
+            ))
+        })?;
+        if !is_lower_hex(&candidate, 40) {
+            return Err(ReviewProofError::Format(format!(
+                "review queue row {ordinal} candidate must be 40 lowercase hexadecimal characters"
+            )));
+        }
+        if candidate != proof.candidate_commit {
+            return Err(ReviewProofError::Format(format!(
+                "review queue candidate mismatch for {handoff_path}: expected {}, observed {candidate}",
+                proof.candidate_commit
+            )));
+        }
+
+        if let Some(required_result_path) = exact_code_cell(cells[3])
+            && proof.required_result_path.as_deref() != Some(required_result_path.as_str())
+        {
+            return Err(ReviewProofError::Format(format!(
+                "review queue result-path mismatch for {handoff_path}: expected {:?}, observed {required_result_path}",
+                proof.required_result_path
+            )));
+        }
+        if let Some(requested_token) = exact_code_cell(cells[4])
+            && proof.requested_acceptance_token.as_deref() != Some(requested_token.as_str())
+        {
+            return Err(ReviewProofError::Format(format!(
+                "review queue token mismatch for {handoff_path}: expected {:?}, observed {requested_token}",
+                proof.requested_acceptance_token
+            )));
+        }
+    }
+
+    if seen_paths.is_empty() {
+        return Err(ReviewProofError::Format(
+            "review queue contains no numbered rows".to_owned(),
+        ));
+    }
+    let missing: Vec<_> = proofs_by_path
+        .keys()
+        .filter(|path| !seen_paths.contains(**path))
+        .copied()
+        .collect();
+    if !missing.is_empty() {
+        return Err(ReviewProofError::Format(format!(
+            "review queue omits verified handoffs: {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 fn current_handoff_paths(root: &Path) -> Result<Vec<PathBuf>, ReviewProofError> {
@@ -791,6 +921,11 @@ fn first_code_value(text: &str) -> Option<String> {
     let end = remainder.find('`')?;
     let value = &remainder[..end];
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn exact_code_cell(text: &str) -> Option<String> {
+    let value = text.trim().strip_prefix('`')?.strip_suffix('`')?;
+    (!value.is_empty() && !value.contains('`')).then(|| value.to_owned())
 }
 
 fn bare_acceptance_lines(text: &str) -> Vec<String> {
@@ -1396,6 +1531,87 @@ mod tests {
                 .unwrap_err();
         assert!(matches!(error, ReviewProofError::Format(_)));
         assert!(error.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn review_queue_binds_every_handoff_field_and_row() {
+        let first = queue_proof(
+            "docs/fable-first-handoff.md",
+            "0123456789abcdef0123456789abcdef01234567",
+            Some("fable-first.md"),
+            Some("first-v1-accepted"),
+        );
+        let second = queue_proof(
+            "docs/fable-second-handoff.md",
+            "89abcdef0123456789abcdef0123456789abcdef",
+            None,
+            None,
+        );
+        let queue = "| # | Handoff | Candidate | Required result | Requested token |\n\
+                     |---:|---|---|---|---|\n\
+                     | 1 | `docs/fable-first-handoff.md` | `0123456789abcdef0123456789abcdef01234567` | `fable-first.md` | `first-v1-accepted` |\n\
+                     | 2 | `docs/fable-second-handoff.md` | `89abcdef0123456789abcdef0123456789abcdef` | — | design verdict only |\n";
+        verify_review_queue_text(queue, &[first.clone(), second.clone()]).unwrap();
+
+        let bad_candidate = queue.replace(
+            "0123456789abcdef0123456789abcdef01234567",
+            "1123456789abcdef0123456789abcdef01234567",
+        );
+        assert!(
+            verify_review_queue_text(&bad_candidate, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("candidate mismatch")
+        );
+        let bad_result = queue.replace("`fable-first.md`", "`fable-wrong.md`");
+        assert!(
+            verify_review_queue_text(&bad_result, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("result-path mismatch")
+        );
+        let bad_token = queue.replace("`first-v1-accepted`", "`wrong-v1-accepted`");
+        assert!(
+            verify_review_queue_text(&bad_token, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("token mismatch")
+        );
+        let bad_ordinal = queue.replace("| 2 |", "| 3 |");
+        assert!(
+            verify_review_queue_text(&bad_ordinal, &[first.clone(), second.clone()])
+                .unwrap_err()
+                .to_string()
+                .contains("ordinal mismatch")
+        );
+        let missing_row = queue.lines().take(3).collect::<Vec<_>>().join("\n");
+        assert!(
+            verify_review_queue_text(&missing_row, &[first, second])
+                .unwrap_err()
+                .to_string()
+                .contains("omits verified handoffs")
+        );
+    }
+
+    fn queue_proof(
+        handoff_path: &str,
+        candidate_commit: &str,
+        required_result_path: Option<&str>,
+        requested_acceptance_token: Option<&str>,
+    ) -> ReviewProof {
+        ReviewProof {
+            schema: "test",
+            repository_head: candidate_commit.to_owned(),
+            handoff_path: handoff_path.to_owned(),
+            handoff_sha256: HASH.to_owned(),
+            candidate_commit: candidate_commit.to_owned(),
+            required_result_path: required_result_path.map(str::to_owned),
+            requested_acceptance_token: requested_acceptance_token.map(str::to_owned),
+            handoff_bare_acceptance_lines: Vec::new(),
+            inputs: Vec::new(),
+            review: None,
+            verdict: "PASS",
+        }
     }
 
     fn verify_review_artifact_text_for_test(

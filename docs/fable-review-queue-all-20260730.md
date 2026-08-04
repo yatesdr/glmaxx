@@ -65,6 +65,10 @@ superseded, Fable should report that status without issuing its token. `—`
 means the legacy handoff does not declare a machine-ingestable required
 result path; follow the output instructions in that handoff.
 
+`review-proof-all` fails closed unless the numbered table covers every current
+handoff exactly once, uses contiguous ordinals, and agrees with each parsed
+handoff's candidate commit and any inline-code result path and token.
+
 | # | Handoff | Candidate | Required result | Requested token |
 |---:|---|---|---|---|
 | 1 | `docs/fable-active-prefix-record-binding-v1-handoff.md` | `92568f6045bf70a1d607435de318cebd6b4ef249` | `fable-active-prefix-record-binding-v1.md` | `active-prefix-record-binding-v1-accepted` |
