@@ -18,6 +18,16 @@ full scope, hashes, timings, failed-attempt disposition, and nonclaims are in
 `docs/cn4-integration-checkpoint-admission-6e073f3-20260804.md`. The corrective
 r2 design token remains mandatory before parser implementation.
 
+The exact target-layer r2 candidate `d4817ff` has also completed a separate
+review-readiness preflight. All 21 pinned candidate hashes and both
+operator-inbox prerequisite hashes matched; its complete local gate passed
+413 tests; all three immutable official source files matched; and the 39,594
+binding records, table ceilings, and step ABI byte counts were independently
+rederived. The concise record is
+`docs/target-layer-r2-preflight-20260804.md`. It found no new contradiction
+but is not Fable acceptance; the target-layer and distributed-sampling tokens
+remain absent, so CPU target-program implementation is still closed.
+
 ## 2026-08-03 active-goal ledger
 
 Clean detached source `8a2a617a778a7cd528f5516660de681f94be22db`
