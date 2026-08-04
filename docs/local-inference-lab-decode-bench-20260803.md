@@ -4,6 +4,32 @@ Date: 2026-08-03
 
 Status: benchmark input pinned; no engine benchmark run
 
+## Rust API compatibility candidate
+
+Commit `1cb3b614f0d8d16ef1de0b1f603d2adaa6bcc1f3` closes the known request and
+streaming incompatibilities between the pinned script and GLMAXX without
+claiming a model run. The fail-closed Rust request schema now accepts exactly
+the script's `stream_options.include_usage`,
+`stream_options.continuous_usage_stats`, and `ignore_eos` controls. Continuous
+usage emits cumulative prompt/completion/total counts for every generated
+token, including tokens that decode to no text, and repeats the final total
+without double-counting. Invalid non-streamed options, unknown option keys, or
+continuous usage without `include_usage` are rejected.
+
+`ignore_eos=true` is implemented through both the incremental tokenizer and
+the serving coordinator. EOS remains a counted token but cannot terminate the
+request before its configured output length; custom stop strings remain
+active. The coordinator retains this policy through asynchronous prefix
+admission and removes it with the request's terminal page/prefix transaction.
+
+The exact sustained-decode payload shape from script version 0.4.29 is a Rust
+test vector. Focused tests prove cumulative completion counts `[1,2]`, two SSE
+usage observations for a one-token stream (progress plus final), ordinary EOS
+handling through the requested length, and preservation of the default
+stop-on-EOS path. The repository-wide local gate passes 426 tests plus Clippy
+and deterministic CPU proofs. No HTTP process using model outputs was started,
+and no throughput number is claimed by this compatibility result.
+
 The benchmark authority is the public
 `https://github.com/local-inference-lab/llm-inference-bench.git` repository at commit
 `86cf05c2f42f4d21b909b6e684424ca1aab89fd5` (commit time
