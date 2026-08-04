@@ -15,7 +15,7 @@ Review candidate commit:
 Required result path:
 `docs/reviews/fable-sm120-rank-executor-v1-r3.md`
 
-Requested acceptance token, only for an unqualified pass:
+Requested acceptance token, only if every blocker and major is resolved:
 `sm120-rank-executor-v1-r3-design-accepted`
 
 This handoff supersedes the unexecuted r2 handoff. Do not issue the r2 token
@@ -171,4 +171,3 @@ Withhold the token for stale bytes, C-only alignment drift, an unasserted
 layout, unspecified flag/role/family, a hidden program handle, missing drain
 operation, hot-path synchronization, unsafe cleanup after device loss,
 rank-local route choice, an unclosed r2 finding, or a downstream/GPU claim.
-
