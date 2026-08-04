@@ -54,8 +54,32 @@ only module fails before capture or enqueue.
 The native library resolves the one fixed validation entry family from this
 exact module handle. It may not search the context, select the newest loaded
 module, reuse a target/MTP capability, or fall back to a built-in validation
-kernel. `descriptor->program_sha256` continues to bind the rank-common target
-program being validated; it is not a substitute for module identity.
+kernel.
+
+The validation descriptor's final field is
+`program_set_sha256[32]`, not a single-program digest. Its exact preimage is:
+
+```text
+SHA256(
+  "glmaxx.executor-graph-program-set.v1\0" ||
+  u32_le(graph_kind) ||
+  target_program_sha256 ||
+  u8(mtp_program_present) || seven_zero_bytes ||
+  (mtp_program_present ? mtp_program_sha256 : 32 zero bytes)
+)
+```
+
+PREFILL and MTP0 DECODE require `mtp_program_present=0`. A VERIFY graph with
+nonzero `mtp_depth`, including bootstrap/replacement draft work, requires
+`mtp_program_present=1` and the exact resident MTP-program digest. A graph
+with no MTP node rejects a present MTP digest; a graph with any MTP node
+rejects an absent or zero one. Each TARGET/MTP graph-node record still carries
+its individual program digest, and graph finalization proves that every node
+matches the corresponding member of this set. Thus one validation node binds
+the complete model-program membership without adding a second validation
+node, changing the 192-byte descriptor, or allowing a target/MTP generation
+mix. The program-set digest is not a substitute for validation-module
+identity.
 
 The generic `glmaxx_executor_graph_node_add_v1` still rejects
 `GLMAXX_NODE_DEVICE_VALIDATE`. Target and MTP graph nodes still carry their
@@ -73,7 +97,10 @@ In addition to the full r1-r3 matrix, the proof must:
    and wrong-family module handles before capture or enqueue;
 4. keep old and candidate hot-reload module generations resident together and
    prove each graph binds only the explicitly supplied generation; and
-5. prove module unload remains ordered after destruction of every graph that
+5. enumerate target-only and target-plus-MTP program-set preimages, reject
+   absent, extra, zero, stale, and cross-generation MTP membership, and prove
+   every target/MTP node matches its set member; and
+6. prove module unload remains ordered after destruction of every graph that
    borrowed the module.
 
 Only unqualified adversarial acceptance of r1+r2+r3+r4 and the corrected

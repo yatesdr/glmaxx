@@ -376,7 +376,7 @@ struct GLMAXX_EXECUTOR_ALIGN16 glmaxx_executor_validation_desc_v1 {
   uint32_t last_collective_ordinal;
   uint32_t expected_rank;
   uint32_t reserved1;
-  uint8_t program_sha256[32];
+  uint8_t program_set_sha256[32];
 };
 
 struct GLMAXX_EXECUTOR_ALIGN16 glmaxx_executor_launch_desc_v1 {
