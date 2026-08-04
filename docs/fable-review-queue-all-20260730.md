@@ -1,43 +1,49 @@
 # Fable review queue: all current handoffs
 
-Date: 2026-08-03
+Date: 2026-08-04
 
 Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`98ac16a98943d810cb3b8d86552e625aadc7be98`
+`ab8dc028a708b2db78e276a8b01d9ad8c5d95703`
 
-On a clean tracked tree, `review-proof-all` must verify 154 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 155 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 136 configured result artifacts are tracked and all 39 are
-machine-accepted. The current operator-owned untracked review inbox adds four
-explicitly withheld artifacts; it does not change the tracked acceptance
-count.
+Thirty-nine of 137 configured result artifacts are tracked and all 39 are
+machine-accepted. The operator-owned untracked review inbox is not part of
+this count and must be linted separately before promotion.
 
 The immediate source-to-first-batch review order is:
 
-1. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
-2. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
-3. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
-4. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
-5. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
-6. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
-7. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
-8. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
-9. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
-10. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
-11. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
-12. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
-13. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
-14. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
+1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
+2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
+3. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
+4. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
+5. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
+6. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+7. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
+8. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+9. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
+10. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
+11. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
+12. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
+13. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
+14. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
+15. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
+16. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
+17. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
+18. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
+19. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
-The first eight unblock real checkpoint CPU ingest and its honest MTP3
-capacity ledger. Sampling, target-layer, and recurrent-MTP r2 then open the
-coordinated CPU operator-program, table, and proposal proof. The profiler and
-current-tree reviews bind the bytes allowed into the next SM120 qualification.
-None conveys cn4 or CUDA authorization.
+Items 1 and 2 are sequential and open the measured optimized K=3 route.
+Items 3 through 5 can review in parallel and unblock exact checkpoint ingest
+plus K=4. Items 6 through 11 then open the coordinated TP4 target/MTP program,
+checkpoint smoke, and one-layer replay. Items 12 through 17 independently
+open the hybrid NVFP4/NF3 route and capacity ledger. The final two bind the
+bytes admitted to performance qualification. None conveys cn4 or CUDA
+authorization.
 
 The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
@@ -47,7 +53,7 @@ claiming zero weight traffic across tuning generations:
 The corrected quality/KLD contract is independently queued and may run in
 parallel with source reviews. It must pass before evaluator implementation or
 any GLMAXX quality claim:
-`docs/fable-quality-acceptance-v1-r2-handoff.md`.
+`docs/fable-quality-acceptance-v1-r3-handoff.md`.
 Its bounded source-recipe dependency is also queued at
 `docs/fable-quality-corpus-sources-v1-r2-handoff.md`.
 
@@ -152,7 +158,7 @@ result path; follow the output instructions in that handoff.
 | 89 | `docs/fable-target-program-projection-discriminator-v1-handoff.md` | `39fbee5bf220467104535d86c00b49effe96c3a8` | `docs/reviews/fable-target-program-projection-discriminator-v1.md` | superseded; do not issue token |
 | 90 | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` | `a0f2bee3edd1754aebefe1643eecd0a63cd4d4b7` | `docs/reviews/fable-sm120-rank-executor-v1-r2.md` | `sm120-rank-executor-v1-accepted` |
 | 91 | `docs/fable-step-execution-abi-v3-handoff.md` | `bab7866b6bd494d3e70ba28463043555f5b583c8` | `docs/reviews/fable-step-execution-abi-v3.md` | `step-execution-abi-v3-design-accepted` |
-| 92 | `docs/fable-exl3-warp-staging-cpu-v2-handoff.md` | `c1ab9d2214f592e02de2cf3e7f2dfb257930b347` | `docs/reviews/fable-exl3-warp-staging-cpu-v2.md` | `exl3-warp-staging-cpu-v2-accepted` |
+| 92 | `docs/fable-exl3-warp-staging-cpu-v2-handoff.md` | `21f9881859a9c8b95c211e792c1dfe5c97d7cc9f` | `docs/reviews/fable-exl3-warp-staging-cpu-v2.md` | `exl3-warp-staging-cpu-v2-accepted` |
 | 93 | `docs/fable-direct-tier-extent-cpu-v1-handoff.md` | `8c27c1e6082f35cc225a8ed76255bd2724c47c6c` | `docs/reviews/fable-direct-tier-extent-cpu-v1.md` | `direct-tier-extent-cpu-v1-accepted` |
 | 94 | `docs/fable-direct-tier-state-cpu-v1-handoff.md` | `ccd636967bec031c8a8b0349a18b39113c0a6ae6` | `docs/reviews/fable-direct-tier-state-cpu-v1.md` | `direct-tier-state-cpu-v1-accepted` |
 | 95 | `docs/fable-direct-tier-durable-format-v1-handoff.md` | `96be26e8a1d43cac047cd57a38bf3d13f6dbb756` | `docs/reviews/fable-direct-tier-durable-format-v1.md` | `direct-tier-durable-format-v1-design-accepted` |
@@ -206,7 +212,7 @@ result path; follow the output instructions in that handoff.
 | 143 | `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md` | `2b8785907c11d2b58d8c5fa7f782845fae03e3ad` | `fable-hybrid-mtp3-capacity-ledger-v1-r2.md` | `hybrid-mtp3-capacity-ledger-v1-r2-design-accepted` |
 | 144 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-handoff.md` | `fc5786dde5f88bc1f99efa8dd4c883f35b750c7e` | `fable-sm120-w4a16-nf3-fused-moe-v1.md` | superseded; do not issue token |
 | 145 | `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md` | `10f83f6862c6c345573ebef5bece69d95f4c58fc` | `fable-sm120-w4a16-nf3-fused-moe-v1-r2.md` | `sm120-w4a16-nf3-fused-moe-v1-r2-design-accepted` |
-| 146 | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` | `83bd1ba4dd14aa60224a4483a80ed85dbcf74d14` | `fable-mtp-layer-execution-v1-r2.md` | `mtp-layer-execution-v1-accepted` |
+| 146 | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` | `83bd1ba4dd14aa60224a4483a80ed85dbcf74d14` | `docs/reviews/fable-mtp-layer-execution-v1-r2.md` | `mtp-layer-execution-v1-accepted` |
 | 147 | `docs/fable-fc1-cutlass-fp32-control-r1-handoff.md` | `18f4132535133a4830cc54e1e86ecb04e44fe42b` | `fable-fc1-cutlass-fp32-control-r1.md` | `fc1-cutlass-fp32-control-r1-design-accepted` |
 | 148 | `docs/fable-exl3-real-k3-scalar-v1-handoff.md` | `7c90d66560217e4d2b18763059a1e1ac71c4bff3` | `fable-exl3-real-k3-scalar-v1.md` | diagnostic verdict; no token requested |
 | 149 | `docs/fable-exl3-recurrent-draft-k3-scalar-v1-handoff.md` | `6e0c6bfa6a85eda2eae4cd588ebb413e33a9a0b6` | `fable-exl3-recurrent-draft-k3-scalar-v1.md` | diagnostic verdict; no token requested |
