@@ -308,10 +308,18 @@ canonical zero reserved fields:
 | `ProbabilityAtToken.v2` | 16 | `token_id:u32, target:f32, draft:f32, present:u8, source_rank:u8, reserved:u16` |
 | `SamplingResult.v2` | 16 | `token_id:u32, purpose:u8, draft_step:u8, reserved:u16, counter_after:u64` |
 | `MassSamplingResult.v2` | 24 | `SamplingResult.v2, selected_probability:f32, reserved:u32` |
+| `TopKResidualResult.v2` | 32 | `SamplingResult.v2, selected_probability:f32, target_mass:f32, residual_mass:f32, flags:u8, three reserved zero bytes` |
 | `AcceptanceResult.v2` | 40 | `token_id:u32, accepted:u8, draft_step:u8, reserved:u16, target:f32, draft:f32, ratio:f64, uniform:f64, counter_after:u64` |
 | `TopKProposalInstall.v2` | 2,064 | `SamplingResult.v2, TopKSupportRecord.v2` |
 
 `MassSelection.flags & 1` is `residual_fallback`; every other bit is zero.
+`TopKResidualResult.flags & 1` has the same meaning; every other bit and all
+three trailing bytes are zero. `selected_probability` is the normalized
+binary32 probability under the actually selected residual or fallback target
+distribution. `target_mass` and `residual_mass` are the exact final
+ascending-token binary32 folds before route selection. The common
+`StepOutput.v2.residual_fallback` bit must equal the corresponding MASS
+selection or TOP_K residual-result flag on all four ranks.
 For a GREEDY rank with no finite valid token, the only legal candidate is
 `{logit=-infinity, token_id=0xffffffff}`. Any other sentinel use is fatal.
 
@@ -331,10 +339,11 @@ Each rank sends one count followed by exactly that many candidates. At
 ```
 
 Rank zero validates, merges, filters, samples, and broadcasts 16 bytes for an
-ordinary TARGET/BONUS/RESIDUAL result. For a DRAFT proposal it broadcasts one
-2,064-byte install record. Route manifests separately retain exclusive
-measured PCIe bytes for the qualified broadcast algorithm; logical payload is
-never mislabeled as bus traffic.
+ordinary TARGET or BONUS result. A rejection broadcasts the 32-byte residual
+result defined below. For a DRAFT proposal it broadcasts one 2,064-byte
+install record. Route manifests separately retain exclusive measured PCIe
+bytes for the qualified broadcast algorithm; logical payload is never
+mislabeled as bus traffic.
 
 During verification, rank zero constructs the target `p` support through the
 same candidate path and already holds the installed draft `q` support. It
@@ -346,13 +355,17 @@ At the first TOP_K rejection, rank zero merges the target/draft sparse-support
 union, at most 512 token IDs, in ascending token order. Missing probability
 is exact `+0.0`. It computes `RN_f32(max(RN_f32(p-q),+0.0))`, accumulates the
 residual in ascending token order, samples with the RESIDUAL ticket, and
-broadcasts `SamplingResult.v2`.
+broadcasts `TopKResidualResult.v2`. The result carries the selected
+probability, both final mass folds, and `residual_fallback=0`; a bare
+`SamplingResult.v2` is invalid for this phase.
 
 If the residual sum is zero, rank zero instead samples the target support
-with the same ticket and marks `residual_fallback=1`. The event is not
-engine-fatal: the original review confirmed it is the correct degenerate
-limit. Every event is counted; any nonzero qualification or production rate
-withholds profile promotion pending a new review.
+with the same ticket and broadcasts `TopKResidualResult.v2` with
+`residual_fallback=1`. The event is not engine-fatal: the original review
+confirmed it is the correct degenerate limit. Every rank validates the flag,
+masses, selected probability, token, purpose, and counter before output
+consensus. Every event is counted; any nonzero qualification or production
+rate withholds profile promotion pending a new review.
 
 ### MASS route
 
@@ -413,6 +426,19 @@ Kinds are `TICKET=1`, `CANDIDATE_DIGEST=2`, `SUPPORT_DIGEST=3`,
 above or 32-byte SHA-256 values. Ordinals are strictly increasing from zero.
 Unknown kinds, wrong fixed lengths, duplicate/skipped ordinals, or nonzero
 reserved bytes are fatal.
+
+Payload membership is exact: `TICKET` carries one 48-byte
+`SamplingTicket.v2`; the three digest kinds carry exactly 32 digest bytes;
+`SAMPLING_RESULT` carries a 16-byte `SamplingResult.v2` or 24-byte
+`MassSamplingResult.v2`; `ACCEPTANCE_RESULT` carries 40 bytes; and
+`MASS_SELECTION` carries 16 bytes. For a TOP_K rejection,
+`RESIDUAL_SUMMARY` carries the exact 32-byte `TopKResidualResult.v2`. For a
+MASS rejection it carries
+`SHA256("glmaxx.mass-residual-summary.v2\0" || four rank-ordered exact
+ResidualMassValue.v2 records)`, while the selected `MassSelection.v2` and
+`MassSamplingResult.v2` remain their own trace items. A residual phase that
+omits the appropriate summary, uses a TOP_K bare result, or disagrees with the
+common output fallback bit is fatal.
 
 `no_target_reason` is:
 
