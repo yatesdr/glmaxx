@@ -20,6 +20,19 @@ nonclaims are in
 acceptance; the source-profile implementation remains closed until its exact
 design token is present.
 
+The exact FC2 grouped-control scratch r2 design candidate `419c2b0` also
+passed a separate preflight: all twelve pinned inputs matched before and after
+the complete 413-test local gate. The retained historical cn4 probe evidence
+verified all 14 records with manifest SHA-256
+`44efef29ecfabd552345368d22785c054d79df702f616ae86630276b9396bda7`.
+Independent arithmetic reproduced the 3,072-byte metadata, 144,384-byte
+CUTLASS workspace, 147,456-byte requirement, 4,194,304-byte M1 scratch floor,
+4,554,820-byte aggregate, and row-170/171 crossover. Full scope and nonclaims
+are in `docs/fc2-grouped-control-scratch-r2-preflight-20260804.md`. This is
+not Fable acceptance, and the previously audited incomplete implementation
+must not be promoted before the r2 token and its missing shared probe/domain
+corrections.
+
 Clean integration commit `6e073f3` was compiled in the pinned GLMAXX-only
 container and run without GPU access against both real read-only checkpoint
 indexes. The hybrid NVFP4/NF3 source admitted structurally with 184 shards,
