@@ -28,6 +28,17 @@ rederived. The concise record is
 but is not Fable acceptance; the target-layer and distributed-sampling tokens
 remain absent, so CPU target-program implementation is still closed.
 
+The corrective distributed-sampling r2 candidate at `98ac16a` now resolves
+the prior same-step early-EOS contradiction with committed prior-step proposal
+bundles, pins every FP64/FP32 bounded-draw edge, and gives TOP_K and MASS exact
+proposal-state records and residual routes. Its composite target-program
+sampling identity is
+`8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`.
+The handoff at `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` passed
+the provenance checker and the complete local gate (413 tests; 154 handoffs,
+39/136 configured results accepted, none withheld). This is review readiness,
+not design acceptance or implementation; probabilistic serving remains closed.
+
 ## 2026-08-03 active-goal ledger
 
 Clean detached source `8a2a617a778a7cd528f5516660de681f94be22db`
@@ -1193,6 +1204,7 @@ verdicts:
 | serving observability | `9607aa0`, with backend lifecycle delta at `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |
 | online target/draft prefix publication | `d0a09d7` | `docs/fable-online-prefix-publication-v1-handoff.md` |
 | distributed sampling and MTP RNG | `7c71818` | `docs/fable-distributed-sampling-abi-v1-handoff.md` |
+| corrected distributed sampling, proposal state, and MTP RNG r2 | `98ac16a` | `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` |
 | tenant/global serving resource quotas | `7e810c4` | `docs/fable-tenant-resource-quotas-v1-handoff.md` |
 | nonblocking Linux HTTP transport, first review withheld | `3608a03` | `docs/fable-nonblocking-http-transport-v1-handoff.md` |
 | nonblocking Linux HTTP transport r2 corrective design | `b7a2ac4` | `docs/fable-nonblocking-http-transport-v1-r2-handoff.md` |
