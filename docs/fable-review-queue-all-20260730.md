@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`f94a272cfefdc76e974ebecb449ec6abf66d50ad`
+`9943bb0b58f2bf81cb8822762c04d03d55c9bfcb`
 
-On a clean tracked tree, `review-proof-all` must verify 168 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 170 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 150 configured result artifacts are tracked and all 39 are
+Thirty-nine of 152 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -28,8 +28,8 @@ The immediate source-to-first-batch review order is:
 9. `docs/fable-target-layer-execution-v1-r3-handoff.md`;
 10. `docs/fable-target-graph-physical-memory-v1-handoff.md`;
 11. `docs/fable-mtp-layer-execution-v1-r3-handoff.md`;
-12. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
-13. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
+12. `docs/fable-tp4-layer6-replay-v1-r2-handoff.md`;
+13. `docs/fable-small-checkpoint-runner-v1-r3-handoff.md`;
 14. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
 15. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
 16. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
@@ -71,6 +71,13 @@ The target-layer r3 handoff supersedes row 129. It corrects the universal
 39,594-record premise by separating the 58,794-binding TR3 split-EXL3 program
 from the 39,594-binding NVFP4/NF3 program. Do not issue the r2 token or compile
 TR3 from its ten-byte records.
+
+The M3 r2 handoff supersedes row 119. It replaces the logical-only 320-byte
+replay with a 480-byte physical program and separates capacity TR3, full
+hybrid, and the all-NVFP4 M4 predecessor. The M4 r3 handoff supersedes rows
+78 and 118; it adds the exact 533-binding laboratory target program,
+544-byte execution record, GraphProfile v3, all ten arenas, and nonzero MTP0
+pending-logit storage. Do not issue any older M3/M4 token.
 
 The safetensors r3 handoff supersedes rows 125 and 140. It replaces r2's
 unattainable global-stability implication with a canonical publication sweep,
@@ -233,8 +240,8 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 115 | `docs/fable-nvfp4-fused-routed-moe-v1-r2-handoff.md` | `2afb205f7cfe5c90cdeac1262996b9fb9df0f726` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r2.md` | superseded; do not issue `nvfp4-fused-routed-moe-v1-r2-design-accepted` |
 | 116 | `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md` | `bcc8ebf0b951516acb63ebf2baea1825018bbed8` | `docs/reviews/fable-nvfp4-fused-routed-moe-v1-r3.md` | `nvfp4-fused-routed-moe-v1-r3-design-accepted` |
 | 117 | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` | `0e084967f6750253c584ca3b0221dbc6de382a30` | `docs/reviews/fable-nvfp4-laboratory-manifest-v1.md` | `nvfp4-laboratory-manifest-v1-design-accepted` |
-| 118 | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` | `16922e4c699b8145eb8d43455e5626b13679ea60` | `docs/reviews/fable-small-checkpoint-runner-v1-r2.md` | `small-checkpoint-runner-v1-r2-design-accepted` |
-| 119 | `docs/fable-tp4-layer6-replay-v1-handoff.md` | `4a1e3766d15440f63873b3c50203080121be0d7e` | `docs/reviews/fable-tp4-layer6-replay-v1.md` | `tp4-layer6-replay-v1-design-accepted` |
+| 118 | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` | `16922e4c699b8145eb8d43455e5626b13679ea60` | `docs/reviews/fable-small-checkpoint-runner-v1-r2.md` | superseded; do not issue `small-checkpoint-runner-v1-r2-design-accepted` |
+| 119 | `docs/fable-tp4-layer6-replay-v1-handoff.md` | `4a1e3766d15440f63873b3c50203080121be0d7e` | `docs/reviews/fable-tp4-layer6-replay-v1.md` | superseded; do not issue `tp4-layer6-replay-v1-design-accepted` |
 | 120 | `docs/fable-hybrid-serving-manifest-v1-handoff.md` | `67db1a33de774762f724ca8157fccb1a0d689e4d` | `docs/reviews/fable-hybrid-serving-manifest-v1.md` | `hybrid-serving-manifest-v1-design-accepted` |
 | 121 | `docs/fable-direct-tier-checksum-authority-cpu-v1-handoff.md` | `7267b505fd4b83c9b421e5050277bf806a1e4867` | `docs/reviews/fable-direct-tier-checksum-authority-cpu-v1.md` | `direct-tier-checksum-authority-cpu-v1-accepted` |
 | 122 | `docs/fable-direct-tier-checksum-workers-cpu-v1-handoff.md` | `59f70da4dbeca8a5d542f3e5947002d3ee975bdb` | `docs/reviews/fable-direct-tier-checksum-workers-cpu-v1.md` | `direct-tier-checksum-workers-cpu-v1-accepted` |
@@ -284,6 +291,8 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 166 | `docs/fable-target-graph-physical-memory-v1-handoff.md` | `f07b3e25716cd91112b48d3cc659fde51f667c50` | `fable-target-graph-physical-memory-v1.md` | `target-graph-physical-memory-v1-design-accepted` |
 | 167 | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` | `f94a272cfefdc76e974ebecb449ec6abf66d50ad` | `fable-mtp-layer-execution-v1-r3.md` | `mtp-layer-execution-v1-r3-design-accepted` |
 | 168 | `docs/fable-target-layer-execution-v1-r3-handoff.md` | `f94a272cfefdc76e974ebecb449ec6abf66d50ad` | `fable-target-layer-execution-v1-r3.md` | `target-layer-execution-v1-r3-design-accepted` |
+| 169 | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` | `9943bb0b58f2bf81cb8822762c04d03d55c9bfcb` | `docs/reviews/fable-tp4-layer6-replay-v1-r2.md` | `tp4-layer6-replay-v1-r2-design-accepted` |
+| 170 | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` | `9943bb0b58f2bf81cb8822762c04d03d55c9bfcb` | `docs/reviews/fable-small-checkpoint-runner-v1-r3.md` | `small-checkpoint-runner-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -294,5 +303,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 168 current handoffs and two
+The expected queue count for this document is 170 current handoffs and two
 explicitly skipped historical umbrella handoffs.

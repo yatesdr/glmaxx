@@ -819,16 +819,23 @@ or GPU evidence exists. Independent review is requested by
 handoff are superseded by `docs/small-checkpoint-runner-v1-r2.md`, which
 corrects source/native-output identity, laboratory plan and arena binding,
 persistent-owner ordering before adoption, per-repetition generation
-isolation, and the process-fatal no-forged-cleanup boundary. R2 remains an
-unreviewed design and contains no implementation or hardware evidence.
+isolation, and the process-fatal no-forged-cleanup boundary. R2 is itself
+superseded by `docs/small-checkpoint-runner-v1-r3.md`. R3 defines the exact
+533-binding laboratory target program, 544-byte execution identity,
+GraphProfile v3, ten physical arenas, owner-derived spans, and nonzero MTP0
+pending-logit storage. It remains an unreviewed design and contains no
+implementation or hardware evidence.
 The upstream M3 gate is now specified independently in
 `docs/tp4-layer6-replay-v1.md`. It requires real decode/prefill boundary
 fixtures, complete layer-6 TP4/DCP4 execution and cache-write comparison,
 layer-7 generation-safe winner reuse without indexer work, separate
 native-plane and source-control references, offline downstream
 full-vocabulary sensitivity evidence, and matched eager/captured controls.
-It is an unreviewed design only; no fixture, CPU replay, CUDA run, layer
-result, quality result, or speed claim exists.
+Corrective `docs/tp4-layer6-replay-v1-r2.md` replaces its logical 320-byte
+record with a 480-byte physical identity and separates capacity TR3, full
+hybrid, and the all-NVFP4 M4 predecessor. It is an unreviewed design only; no
+fixture, CPU replay, CUDA run, layer result, quality result, or speed claim
+exists.
 The fit-capable hybrid serving boundary is now specified in
 `docs/hybrid-serving-manifest-v1.md`. It replaces the physically inaccurate
 WeightPolicy.v1 design with an expert-atomic v2 policy, distinguishes EXL3
@@ -1313,6 +1320,8 @@ verdicts:
 | NVFP4 M4 laboratory manifest and four-rank load-plan design | `0e08496` | `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md` |
 | corrected deterministic M4 small-checkpoint runner design r2 | `16922e4` | `docs/fable-small-checkpoint-runner-v1-r2-handoff.md` |
 | M3 TP4 layer-6 replay and layer-7 indexer-reuse design | `4a1e376` | `docs/fable-tp4-layer6-replay-v1-handoff.md` |
+| profile-specific physical M3 replay program and ten-arena binding r2 | `9943bb0` | `docs/fable-tp4-layer6-replay-v1-r2-handoff.md` |
+| physical 533-binding deterministic M4 runner design r3 | `9943bb0` | `docs/fable-small-checkpoint-runner-v1-r3-handoff.md` |
 | hybrid-serving WeightPolicy.v2, manifest, catalog, budget, and load-plan design | `67db1a3` | `docs/fable-hybrid-serving-manifest-v1-handoff.md` |
 | serving page transaction | `e7bc477` | `docs/fable-serving-page-transaction-v1-handoff.md` |
 | coordinator/API backend and fatal drain | `8aaef8e` | `docs/fable-coordinator-api-backend-v2-handoff.md` |

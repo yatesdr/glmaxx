@@ -26,11 +26,11 @@ implementation-unblock sequence is:
 6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md`;
 7. `docs/fable-sm120-rank-executor-v1-r5-handoff.md`;
 8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
-9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+9. `docs/fable-target-layer-execution-v1-r3-handoff.md`;
 10. `docs/fable-target-graph-physical-memory-v1-handoff.md`;
-11. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
-12. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
-13. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
+11. `docs/fable-mtp-layer-execution-v1-r3-handoff.md`;
+12. `docs/fable-tp4-layer6-replay-v1-r2-handoff.md`;
+13. `docs/fable-small-checkpoint-runner-v1-r3-handoff.md`;
 14. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
 15. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
 16. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
@@ -123,10 +123,10 @@ order:
 7. `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md`
 8. `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md`
 9. `docs/fable-hybrid-serving-manifest-v1-handoff.md`
-10. `docs/fable-target-layer-execution-v1-r2-handoff.md`
+10. `docs/fable-target-layer-execution-v1-r3-handoff.md`
 11. `docs/fable-target-graph-physical-memory-v1-handoff.md`
-12. `docs/fable-tp4-layer6-replay-v1-handoff.md`
-13. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`
+12. `docs/fable-tp4-layer6-replay-v1-r2-handoff.md`
+13. `docs/fable-small-checkpoint-runner-v1-r3-handoff.md`
 
 Items 1–7 establish the executor and direct TR3/NVFP4 weight paths. Items
 8–13 freeze fit-capable checkpoint posture, byte-exact graph storage, and the
@@ -176,11 +176,11 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline after the profile-specific target-program correction:
+Current verified baseline after the physical M3/M4 program corrections:
 
 ```text
-168 handoffs
-150 configured result paths
+170 handoffs
+152 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```
