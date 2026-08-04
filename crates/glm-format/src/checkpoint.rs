@@ -172,6 +172,77 @@ pub struct PinnedSourceVerification {
     manifest_exceptions: BTreeMap<String, PinnedManifestException>,
 }
 
+/// Canonical filename-to-SHA-256 source manifest parsed from exact bytes.
+///
+/// This type deliberately proves only syntax, uniqueness, and the digest of
+/// the manifest bytes. A checkpoint profile must separately bind that digest,
+/// the required file set, repository/revision identity, tensor inventory, and
+/// any narrowly reviewed publisher exceptions before these rows become an
+/// admission authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalSourceManifest {
+    sha256: [u8; 32],
+    files: BTreeMap<String, [u8; 32]>,
+}
+
+impl CanonicalSourceManifest {
+    pub fn parse(bytes: &[u8]) -> Result<Self, PinnedSourceError> {
+        if bytes.last() != Some(&b'\n') {
+            return Err(PinnedSourceError::ManifestSyntax);
+        }
+        let mut files = BTreeMap::new();
+        for line in bytes[..bytes.len() - 1].split(|&byte| byte == b'\n') {
+            if line.len() < 67 || &line[64..66] != b"  " {
+                return Err(PinnedSourceError::ManifestSyntax);
+            }
+            let name =
+                std::str::from_utf8(&line[66..]).map_err(|_| PinnedSourceError::ManifestSyntax)?;
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            {
+                return Err(PinnedSourceError::ManifestSyntax);
+            }
+            let digest = decode_sha256(&line[..64])?;
+            if files.insert(name.to_owned(), digest).is_some() {
+                return Err(PinnedSourceError::ManifestSyntax);
+            }
+        }
+        Ok(Self {
+            sha256: Sha256::digest(bytes).into(),
+            files,
+        })
+    }
+
+    #[must_use]
+    pub const fn sha256(&self) -> [u8; 32] {
+        self.sha256
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    #[must_use]
+    pub fn file_sha256(&self, name: &str) -> Option<[u8; 32]> {
+        self.files.get(name).copied()
+    }
+
+    #[must_use]
+    pub fn files(&self) -> &BTreeMap<String, [u8; 32]> {
+        &self.files
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedManifestException {
     pub manifest_sha256: [u8; 32],
@@ -568,13 +639,14 @@ pub fn verify_pinned_source_files(
     let manifest_path = root.join("MANIFEST.sha256");
     let (manifest_bytes, manifest_fingerprint) =
         read_small_regular_file(&manifest_path, SOURCE_MANIFEST_MAX_BYTES)?;
-    if Sha256::digest(&manifest_bytes).as_slice() != PINNED_SOURCE_MANIFEST_SHA256 {
+    let manifest = CanonicalSourceManifest::parse(&manifest_bytes)?;
+    if manifest.sha256() != PINNED_SOURCE_MANIFEST_SHA256 {
         return Err(PinnedSourceError::ManifestIdentity);
     }
     verify_regular_fingerprint(&manifest_path, &manifest_fingerprint)?;
-    let expected = parse_source_manifest(&manifest_bytes)?;
-    if expected.len() != PINNED_SOURCE_FILE_COUNT
-        || expected.get("model.safetensors.index.json") != Some(&PINNED_EXL3_INDEX_SHA256)
+    let expected = manifest.files();
+    if manifest.len() != PINNED_SOURCE_FILE_COUNT
+        || manifest.file_sha256("model.safetensors.index.json") != Some(PINNED_EXL3_INDEX_SHA256)
         || checkpoint
             .shards()
             .iter()
@@ -654,34 +726,6 @@ fn is_pinned_publisher_manifest_exception(
             && manifest_sha256 == exception_manifest
             && revision_sha256 == exception_revision
     })
-}
-
-fn parse_source_manifest(bytes: &[u8]) -> Result<BTreeMap<String, [u8; 32]>, PinnedSourceError> {
-    if bytes.last() != Some(&b'\n') {
-        return Err(PinnedSourceError::ManifestSyntax);
-    }
-    let mut files = BTreeMap::new();
-    for line in bytes[..bytes.len() - 1].split(|&byte| byte == b'\n') {
-        if line.len() < 67 || &line[64..66] != b"  " {
-            return Err(PinnedSourceError::ManifestSyntax);
-        }
-        let name =
-            std::str::from_utf8(&line[66..]).map_err(|_| PinnedSourceError::ManifestSyntax)?;
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        {
-            return Err(PinnedSourceError::ManifestSyntax);
-        }
-        let digest = decode_sha256(&line[..64])?;
-        if files.insert(name.to_owned(), digest).is_some() {
-            return Err(PinnedSourceError::ManifestSyntax);
-        }
-    }
-    Ok(files)
 }
 
 fn decode_sha256(bytes: &[u8]) -> Result<[u8; 32], PinnedSourceError> {
@@ -1712,10 +1756,14 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000  a.json\n",
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  model-0.safetensors\n"
         );
-        let parsed = parse_source_manifest(valid.as_bytes()).unwrap();
+        let parsed = CanonicalSourceManifest::parse(valid.as_bytes()).unwrap();
+        let expected_manifest_sha256: [u8; 32] = Sha256::digest(valid.as_bytes()).into();
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed["a.json"], [0; 32]);
-        assert_eq!(parsed["model-0.safetensors"], [0xff; 32]);
+        assert!(!parsed.is_empty());
+        assert_eq!(parsed.sha256(), expected_manifest_sha256);
+        assert_eq!(parsed.file_sha256("a.json"), Some([0; 32]));
+        assert_eq!(parsed.file_sha256("model-0.safetensors"), Some([0xff; 32]));
+        assert_eq!(parsed.file_sha256("missing"), None);
 
         for malformed in [
             valid.trim_end(),
@@ -1724,10 +1772,56 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000 a\n",
         ] {
             assert!(matches!(
-                parse_source_manifest(malformed.as_bytes()),
+                CanonicalSourceManifest::parse(malformed.as_bytes()),
                 Err(PinnedSourceError::ManifestSyntax)
             ));
         }
+
+        let duplicate = concat!(
+            "0000000000000000000000000000000000000000000000000000000000000000  a.json\n",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  a.json\n"
+        );
+        assert!(matches!(
+            CanonicalSourceManifest::parse(duplicate.as_bytes()),
+            Err(PinnedSourceError::ManifestSyntax)
+        ));
+    }
+
+    #[test]
+    fn hybrid_compiled_source_manifest_uses_the_same_canonical_cpu_boundary() {
+        let bytes = include_bytes!("../../../manifests/glm52-hybrid-source-v1.sha256");
+        let manifest = CanonicalSourceManifest::parse(bytes).unwrap();
+        assert_eq!(manifest.len(), 194);
+        assert_eq!(
+            manifest.sha256(),
+            decode_sha256(b"a4d9cb546e8fdae5dd7e494228750ee0a2723904170a7c700e461704d5683ab7")
+                .unwrap()
+        );
+        assert_eq!(
+            manifest.file_sha256("model.safetensors.index.json"),
+            Some(
+                decode_sha256(b"6eb773222d932418dd0530c63aca498f86ef424da2a4526ccba76b59726da234")
+                    .unwrap()
+            )
+        );
+        assert!(
+            manifest
+                .file_sha256("model-00001-of-00184.safetensors")
+                .is_some()
+        );
+        assert!(
+            manifest
+                .file_sha256("model-00184-of-00184.safetensors")
+                .is_some()
+        );
+        assert_eq!(
+            manifest
+                .files()
+                .keys()
+                .filter(|name| name.ends_with(".safetensors"))
+                .count(),
+            184
+        );
     }
 
     #[test]

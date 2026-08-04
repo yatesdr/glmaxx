@@ -12,7 +12,7 @@ mod safetensors;
 mod stream;
 
 pub use checkpoint::{
-    CheckpointConversionError, CheckpointError, CheckpointInventoryReport,
+    CanonicalSourceManifest, CheckpointConversionError, CheckpointError, CheckpointInventoryReport,
     CheckpointTensorContract, Exl3Component, Exl3ComponentContract, PINNED_EXL3_COMPONENT_COUNT,
     PINNED_EXL3_INDEX_SHA256, PINNED_EXL3_PAYLOAD_BYTES, PINNED_EXL3_REPOSITORY,
     PINNED_EXL3_SHARD_COUNT, PINNED_EXL3_TENSOR_COUNT, PINNED_PROTECTED_TENSOR_COUNT,
