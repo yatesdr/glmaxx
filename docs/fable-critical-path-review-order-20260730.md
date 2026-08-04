@@ -31,14 +31,15 @@ implementation-unblock sequence is:
 11. `docs/fable-mtp-layer-execution-v1-r3-handoff.md`;
 12. `docs/fable-tp4-layer6-replay-v1-r2-handoff.md`;
 13. `docs/fable-small-checkpoint-runner-v1-r3-handoff.md`;
-14. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
-15. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
-16. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
-17. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
-18. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
-19. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
-20. `docs/fable-sm120-profiler-package-v1-r2-handoff.md`; and
-21. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
+14. `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md`;
+15. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
+16. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
+17. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
+18. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
+19. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
+20. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
+21. `docs/fable-sm120-profiler-package-v1-r2-handoff.md`; and
+22. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
 Items 1 and 2 are sequential and promote the already measured warp-staged
 candidate only after its corrected CPU proof is accepted. Item 3 is the
@@ -130,8 +131,13 @@ order:
 
 Items 1–7 establish the executor and direct TR3/NVFP4 weight paths. Items
 8–13 freeze fit-capable checkpoint posture, byte-exact graph storage, and the
-correct M3-before-M4 execution order. A design token is not device evidence
-and does not authorize cn4.
+correct M3-before-M4 execution order. Then review:
+
+14. `docs/fable-full-checkpoint-batch-smoke-v1-handoff.md`
+
+This last contract is the first complete-checkpoint, all-target-layer,
+four-row MTP0 composition. A design token is not device evidence and does not
+authorize cn4.
 
 ## P3 — cache transactions and production transport
 
@@ -176,11 +182,11 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline after the physical M3/M4 program corrections:
+Current verified baseline after the full-checkpoint batch-smoke contract:
 
 ```text
-170 handoffs
-152 configured result paths
+171 handoffs
+153 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```
