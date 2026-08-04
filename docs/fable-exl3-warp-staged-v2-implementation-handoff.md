@@ -97,9 +97,10 @@ key pinned artifact hashes are:
 1. Does the CUDA implementation exactly realize the accepted 256-thread,
    eight-tile stage, thread-to-word mapping, row ownership, source address,
    cyclic decode, and ascending-K arithmetic without out-of-bounds access?
-2. Do all 256 threads reach both barriers for every rows-1-through-8 route,
-   with inactive rows performing no loads, decode, arithmetic, validation, or
-   stores?
+2. Do all 256 threads reach both barriers for every rows-1-through-8 route?
+   Inactive row subwarps must perform no activation loads, decode, arithmetic,
+   validation, or stores; this must not be misread to forbid the accepted
+   row-independent cooperative trellis loads issued by threads 0 through 191.
 3. Are v1 and v2 built in one CUDA translation unit with the same flags, and
    are explicit RN multiply/add and FP16 boundaries preserved without fast
    math, contraction, FTZ, or a changed output rotation?
