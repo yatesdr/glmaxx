@@ -5,6 +5,7 @@ use std::{
     io::{self, Read, Write},
     os::unix::fs::{FileExt, MetadataExt},
     path::{Component, Path, PathBuf},
+    thread,
 };
 
 use serde::{
@@ -18,6 +19,7 @@ use crate::{Exl3Error, Exl3Metadata, Exl3Trellis};
 const MAX_HEADER_BYTES: u64 = 100_000_000;
 const MAX_INDEX_BYTES: u64 = 100_000_000;
 const HASH_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const MAXIMUM_SHARD_OPEN_WORKERS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SafeDtype {
@@ -542,6 +544,13 @@ impl ShardedSafetensors {
     }
 
     pub fn open(index_path: impl AsRef<Path>) -> Result<Self, SafeTensorError> {
+        Self::open_with_workers(index_path, recommended_shard_open_workers())
+    }
+
+    fn open_with_workers(
+        index_path: impl AsRef<Path>,
+        requested_workers: usize,
+    ) -> Result<Self, SafeTensorError> {
         let index_path = index_path.as_ref().to_owned();
         let (index_file, index_fingerprint) = open_retained_regular_file(&index_path)?;
         let index_bytes = index_fingerprint.bytes;
@@ -572,21 +581,17 @@ impl ShardedSafetensors {
             }
         }
 
+        let indexed_shards: Vec<_> = by_shard.into_iter().collect();
+        let relative_paths: Vec<_> = indexed_shards
+            .iter()
+            .map(|(relative, _)| relative.clone())
+            .collect();
+        let opened_shards =
+            open_retained_safetensor_files(&root, &relative_paths, requested_workers)?;
         let mut locations = BTreeMap::new();
         let mut shards = BTreeSet::new();
         let mut open_shards = BTreeMap::new();
-        for (relative, expected_tensors) in by_shard {
-            let path = root.join(&relative);
-            let path_metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
-            if !path_metadata.file_type().is_file()
-                || path_metadata.file_type().is_symlink()
-                || path_metadata.nlink() != 1
-            {
-                return Err(SafeTensorError::ShardPath(
-                    relative.to_string_lossy().into_owned(),
-                ));
-            }
-            let shard = SafeTensorFile::open(&path)?;
+        for ((relative, expected_tensors), shard) in indexed_shards.into_iter().zip(opened_shards) {
             let actual_tensors: BTreeSet<_> = shard.tensors().keys().cloned().collect();
             if actual_tensors != expected_tensors {
                 return Err(SafeTensorError::ShardInventory(relative));
@@ -1300,6 +1305,81 @@ fn validate_shard_path(value: &str) -> Result<PathBuf, SafeTensorError> {
     Ok(path.to_owned())
 }
 
+fn recommended_shard_open_workers() -> usize {
+    thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(1, MAXIMUM_SHARD_OPEN_WORKERS)
+}
+
+fn open_retained_safetensor_files(
+    root: &Path,
+    relative_paths: &[PathBuf],
+    requested_workers: usize,
+) -> Result<Vec<SafeTensorFile>, SafeTensorError> {
+    if requested_workers == 0 || relative_paths.is_empty() {
+        return Err(SafeTensorError::Index);
+    }
+    let worker_count = requested_workers.min(relative_paths.len());
+    let batches = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            handles.push(scope.spawn(move || {
+                (worker..relative_paths.len())
+                    .step_by(worker_count)
+                    .map(|index| {
+                        (
+                            index,
+                            open_retained_safetensor_shard(root, &relative_paths[index]),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().map_err(|_| SafeTensorError::Index))
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+
+    let mut ordered: Vec<Option<Result<SafeTensorFile, SafeTensorError>>> =
+        std::iter::repeat_with(|| None)
+            .take(relative_paths.len())
+            .collect();
+    for batch in batches {
+        for (index, result) in batch {
+            let slot = ordered.get_mut(index).ok_or(SafeTensorError::Index)?;
+            if slot.replace(result).is_some() {
+                return Err(SafeTensorError::Index);
+            }
+        }
+    }
+    ordered
+        .into_iter()
+        .map(|result| {
+            result
+                .ok_or(SafeTensorError::Index)
+                .and_then(std::convert::identity)
+        })
+        .collect()
+}
+
+fn open_retained_safetensor_shard(
+    root: &Path,
+    relative_path: &Path,
+) -> Result<SafeTensorFile, SafeTensorError> {
+    let path = root.join(relative_path);
+    let path_metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.nlink() != 1
+    {
+        return Err(SafeTensorError::ShardPath(
+            relative_path.to_string_lossy().into_owned(),
+        ));
+    }
+    SafeTensorFile::open(path)
+}
+
 fn open_retained_regular_file(path: &Path) -> Result<(File, FileFingerprint), SafeTensorError> {
     let path_metadata = path.symlink_metadata().map_err(SafeTensorError::Io)?;
     if !path_metadata.file_type().is_file()
@@ -1859,6 +1939,23 @@ mod tests {
         )
         .unwrap();
         let set = ShardedSafetensors::open(&index).unwrap();
+        let sequential = ShardedSafetensors::open_with_workers(&index, 1).unwrap();
+        let parallel = ShardedSafetensors::open_with_workers(&index, 16).unwrap();
+        assert_eq!(sequential.structure_sha256(), parallel.structure_sha256());
+        assert_eq!(sequential.shards(), parallel.shards());
+        assert_eq!(
+            sequential.tensor_names().collect::<Vec<_>>(),
+            parallel.tensor_names().collect::<Vec<_>>()
+        );
+        for name in sequential.tensor_names() {
+            assert_eq!(sequential.tensor(name), parallel.tensor(name));
+        }
+        assert_eq!(sequential.read_tensor("a").unwrap(), [1, 2]);
+        assert_eq!(parallel.read_tensor("a").unwrap(), [1, 2]);
+        assert!(matches!(
+            ShardedSafetensors::open_with_workers(&index, 0),
+            Err(SafeTensorError::Index)
+        ));
         let expected_index_sha256: [u8; 32] = Sha256::digest(fs::read(&index).unwrap()).into();
         assert_eq!(
             set.hash_source_index().unwrap(),
