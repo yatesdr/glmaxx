@@ -7,8 +7,21 @@ Status: corrective adversarial design review requested
 GPU authorization conveyed by this handoff: none
 
 Read-only cn4 access is allowed only to stat the named shard files and read
-their eight-byte prefixes plus the index metadata. Do not read tensor payload,
-create a CUDA context, start a container, or write on cn4.
+the index bytes, each eight-byte safetensors prefix, and exactly the padded
+JSON header selected by that prefix. Do not read tensor payload bytes, create
+a CUDA context, start a container, or write on cn4.
+
+The only authorized real sources are:
+
+| Source | Canonical index path | Index SHA-256 |
+|---|---|---|
+| TR3 3.25 bpw | `/home/derek/models/GLM-5.2-EXL3-TR3-3.25bpw/model.safetensors.index.json` | `f5dcd976a64ca70808dd4d8bd3ad07e9610c8ca6c30e3a6ed77ddefdac4c1d21` |
+| NVFP4/NF3 hybrid | `/home/claude/LLM/GLM-5.2-hybrid/model.safetensors.index.json` | `6eb773222d932418dd0530c63aca498f86ef424da2a4526ccba76b59726da234` |
+
+Withhold the token if either identity differs. Resolve only the exact safe
+relative shard names in each pinned index. The permission to read padded JSON
+headers exists solely to rederive structural accounting; it does not permit a
+payload read or authenticate either checkpoint.
 
 Review candidate commit:
 `1e2d0e2f10a363c2c3cdb79b73c419d49f5b10e2`
