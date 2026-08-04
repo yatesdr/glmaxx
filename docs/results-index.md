@@ -1333,9 +1333,11 @@ verdicts:
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | corrective target-layer program, table, and control design r2 | `d4817ff` | `docs/fable-target-layer-execution-v1-r2-handoff.md` |
+| target graph physical-memory plan, class spans, node uses, and rank bindings | `5079704` | `docs/fable-target-graph-physical-memory-v1-handoff.md` |
 | recurrent MTP0–6 execution corrective design r2 | `83bd1ba` | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` |
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
+| executor r5 recurrent-state role and graph-memory capability binding | `5079704` | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` |
 | quality corpus public sources and deterministic task selections | `83fb374` | `docs/fable-quality-corpus-sources-v1-handoff.md` |
 | corrected quality corpus source recipe r2 | `a2fc47a` | `docs/fable-quality-corpus-sources-v1-r2-handoff.md` |
 | deterministic generated JSON, repetition, retrieval, and termination corpus | `27fa48e` | `docs/fable-generated-quality-corpus-v1-handoff.md` |
