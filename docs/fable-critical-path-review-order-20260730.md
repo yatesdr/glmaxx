@@ -1,6 +1,6 @@
 # Fable critical-path review order
 
-Date: 2026-07-30
+Date: 2026-08-04
 
 Purpose: prioritize the existing review queue by implementation-unblock value.
 
@@ -20,23 +20,34 @@ implementation-unblock sequence is:
 
 1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
 2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
-3. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
-4. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
-5. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
-6. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
-7. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
-8. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
-9. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
-10. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
-11. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`; and
-12. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`.
+3. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`;
+4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
+5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
+6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
+7. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`;
+8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
+9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
+10. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
+11. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`;
+12. `docs/fable-tp4-layer6-replay-v1-handoff.md`;
+13. `docs/fable-fc2-grouped-control-scratch-r2-handoff.md`;
+14. `docs/fable-hybrid-nvfp4-nf3-source-admission-v1-r2-handoff.md`;
+15. `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-r2-handoff.md`;
+16. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
+17. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
+18. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
+19. `docs/fable-sm120-profiler-package-v1-r2-handoff.md`; and
+20. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
 Items 1 and 2 are sequential and promote the already measured warp-staged
-candidate only after its corrected CPU proof is accepted. Items 3 and 4 can
-review in parallel and unblock real TR3 inventory plus K=4. Items 5 through 8
-then open owner-thread execution, the complete target program, checkpoint
-smoke, and TP4 replay. Items 9 through 12 independently open the hybrid
-NVFP4/NF3 path and capacity ledger. None conveys GPU authorization.
+candidate only after its corrected CPU proof is accepted. Item 3 is the
+profiler-driven grouped gate/up successor and can be reviewed while items 1
+and 2 complete. Items 4 through 6 can review in parallel and unblock exact TR3
+inventory plus K=4. Items 7 through 12 then open owner-thread execution, the
+complete target/MTP program, distributed sampling, checkpoint smoke, and TP4
+replay. Items 13 through 18 independently open the hybrid NVFP4/NF3 path and
+capacity ledger. Items 19 and 20 bind profiling and current-tree admission.
+None conveys GPU authorization.
 
 ## Completed P0 — repaired kernel verdicts
 
@@ -105,13 +116,17 @@ order:
 1. `docs/fable-sm120-rank-executor-v1-r2-handoff.md`
 2. `docs/fable-step-execution-abi-v3-handoff.md`
 3. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`
-4. `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md`
-5. `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md`
-6. `docs/fable-hybrid-serving-manifest-v1-handoff.md`
-7. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`
-8. `docs/fable-tp4-layer6-replay-v1-handoff.md`
+4. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`
+5. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`
+6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`
+7. `docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md`
+8. `docs/fable-nvfp4-laboratory-manifest-v1-handoff.md`
+9. `docs/fable-hybrid-serving-manifest-v1-handoff.md`
+10. `docs/fable-target-layer-execution-v1-r2-handoff.md`
+11. `docs/fable-small-checkpoint-runner-v1-r2-handoff.md`
+12. `docs/fable-tp4-layer6-replay-v1-handoff.md`
 
-Items 1–4 establish the executor and both direct weight paths. Items 5–8
+Items 1–7 establish the executor and direct TR3/NVFP4 weight paths. Items 8–12
 freeze fit-capable checkpoint posture and progressive execution gates. A
 design token is not device evidence and does not authorize cn4.
 
@@ -158,12 +173,12 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline at `22a152c`:
+Current verified baseline before the new grouped-r2 result lands:
 
 ```text
-122 handoffs
-104 configured result paths
-8 machine-accepted results
+158 handoffs
+140 configured result paths
+39 machine-accepted results
 0 machine-withheld installed results
 ```
 

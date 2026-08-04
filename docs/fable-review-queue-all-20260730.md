@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`b3ee484c8dda2cc0baed986362fbb6c83d78256a`
+`7b6a98630ed612d923d7656b8723d44e5aa67b8c`
 
-On a clean tracked tree, `review-proof-all` must verify 157 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 158 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 139 configured result artifacts are tracked and all 39 are
+Thirty-nine of 140 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -19,7 +19,7 @@ The immediate source-to-first-batch review order is:
 
 1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
 2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
-3. `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md`;
+3. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`;
 4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
 5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
 6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r2-handoff.md`;
@@ -49,6 +49,11 @@ authorization.
 
 The r2 profiler handoff supersedes row 124's unexecuted v1 handoff. Do not
 issue the v1 token; preflight requires the r2 artifact.
+
+The grouped EXL3 r2 handoff supersedes row 156's unexecuted v1 handoff. The
+r2 amendment fixes rank-local pointer identity, exact route serialization,
+span/alias validation, predecessor-failure suppression, and the complete
+48-stage recurrence. Do not issue the v1 token or implement from the v1 bytes.
 
 The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
@@ -233,8 +238,9 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 153 | `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md` | `f758c1ab82557b1a44fd746d9b36d76faeaa28d8` | `fable-tr3-325-publisher-manifest-reconciliation-v1.md` | `tr3-325-publisher-manifest-reconciliation-v1-design-accepted` |
 | 154 | `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` | `98ac16a98943d810cb3b8d86552e625aadc7be98` | `fable-distributed-sampling-abi-v1-r2.md` | `distributed-sampling-abi-v1-r2-design-accepted` |
 | 155 | `docs/fable-quality-acceptance-v1-r3-handoff.md` | `ab8dc028a708b2db78e276a8b01d9ad8c5d95703` | `fable-quality-acceptance-v1-r3.md` | `quality-acceptance-v1-r3-design-accepted` |
-| 156 | `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md` | `7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91` | `fable-exl3-grouped-gate-up-sm120-v1.md` | `exl3-grouped-gate-up-sm120-v1-design-accepted` |
+| 156 | `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md` | `7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91` | `fable-exl3-grouped-gate-up-sm120-v1.md` | superseded; do not issue `exl3-grouped-gate-up-sm120-v1-design-accepted` |
 | 157 | `docs/fable-sm120-profiler-package-v1-r2-handoff.md` | `b3ee484c8dda2cc0baed986362fbb6c83d78256a` | `fable-sm120-profiler-package-v1-r2.md` | `sm120-profiler-package-v1-r2-accepted` |
+| 158 | `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md` | `7b6a98630ed612d923d7656b8723d44e5aa67b8c` | `fable-exl3-grouped-gate-up-sm120-v1-r2.md` | `exl3-grouped-gate-up-sm120-v1-r2-design-accepted` |
 
 ## Verification command
 
@@ -245,5 +251,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 157 current handoffs and two
+The expected queue count for this document is 158 current handoffs and two
 explicitly skipped historical umbrella handoffs.
