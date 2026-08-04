@@ -19,6 +19,19 @@ Required result path:
 Requested acceptance token, only if every blocker and major is resolved:
 `target-layer-execution-v1-accepted`
 
+The original withheld target-layer review is an operator-inbox input at
+`docs/reviews/fable-target-layer-execution-v1.md`, SHA-256
+`8738a8c2c4801a9d657a292e4702f500b947fbb1015ad9a62044e54731ae9469`.
+Hash it before evaluating the closure claim in decision 12.
+
+The pinned distributed-sampling v1 dependency is not accepted. Its withheld
+review is `docs/reviews/fable-distributed-sampling-abi-v1.md`, SHA-256
+`901481e5b1d6b26283a7c7e8eb1a1f7af1968df2b2e5d2ddda1c54d0075aa61c`.
+This target-layer review may judge the hash field and fail-closed dependency,
+but it must not promote sampling v1. Target-program construction remains
+closed until an independently accepted sampling successor supplies the exact
+hash bound by that field.
+
 ## Provenance
 
 Review the exact candidate in a detached worktree. Hash every input at review
@@ -72,8 +85,8 @@ From the official Transformers repository, fetch these two files at commit
 `5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3`:
 
 ```text
-src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py
-src/transformers/models/glm_moe_dsa/configuration_glm_moe_dsa.py
+https://raw.githubusercontent.com/huggingface/transformers/5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py
+https://raw.githubusercontent.com/huggingface/transformers/5204b4fe36956e9214b9279f1e1be2fd5dd1d9f3/src/transformers/models/glm_moe_dsa/configuration_glm_moe_dsa.py
 ```
 
 They must hash respectively to:
@@ -151,7 +164,8 @@ Answer every decision with an unqualified `YES` or `NO`:
 11. Do controls A, B, and C isolate source codec error from packed-kernel
     error without changing precision membership, model math, or batch shape?
 12. Does the r2 amendment resolve every blocker, major, minor, and question in
-    `fable-target-layer-execution-v1.md` without weakening a correctness gate?
+    the hash-pinned operator-inbox target-layer v1 review without weakening a
+    correctness gate?
 13. Does the design remain compatible with high-capacity paged KV, prefix
     caching, DRAM/NVMe tiering, concurrency, TP4 PCIe operation, and MTP0-6
     without claiming any of those paths are already implemented?
