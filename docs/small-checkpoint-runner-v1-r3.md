@@ -103,7 +103,7 @@ Each concrete shape and eager/captured posture uses one exact 544-byte
 | 15 | 1 | MTP depth, exactly `0` |
 | 16 | 4 | real query rows |
 | 20 | 4 | graph row bucket |
-| 24 | 4 | sequence bucket |
+| 24 | 4 | sequence bucket, exactly `1` |
 | 28 | 1 | attention transport |
 | 29 | 1 | execution path: `1=EAGER`, `2=CAPTURED` |
 | 30 | 2 | flags, zero |
@@ -156,19 +156,20 @@ the exact collective schedule and topology route
 the exact laboratory resource budget and final memory plan
 ```
 
-The target module contains the layer-6, final norm/head, and distributed
-greedy nodes required by the program. `mtp_program_present` is zero and the
-MTP digest is all zero. Calling the runner MTP0 does not authorize an MTP
-module or proposal node.
+The target module contains the layer-6, final norm/head, and diagnostic
+distributed-greedy nodes required by the program. `mtp_program_present` is
+zero and the MTP digest is all zero. Calling the runner MTP0 does not authorize
+an MTP module or proposal node. Both fixture shapes have exactly one sequence;
+the prefill graph evaluates the head only for its selected last row.
 
 All ten graph-visible arenas exist and are charged once:
 
 ```text
 1  immutable arguments
-2  maximum graph scratch
+2  maximum graph scratch, including 154,880-byte rank-logit scratch
 3  fixture target KV
 4  fixture target indexer
-5  recurrent state, including CURRENT/NEXT pending rank logits
+5  recurrent state, including 309,760-byte CURRENT/NEXT pending logits
 6  fixed collective spans
 7  completion and device-validation status
 8  1,982,245,376-byte laboratory weight payload
@@ -176,13 +177,23 @@ All ten graph-visible arenas exist and are charged once:
 10 fixture device page table
 ```
 
-Class 30 and arena-5 pending-logit uses are present for both shapes. Their
-exact CURRENT/NEXT buffers and rank-logit workspace are derived from the
-accepted target/MTP r3 arithmetic and the concrete row bucket. Proposal,
-q-state, draft-KV/indexer, boundary-hidden, and MTP bundle subranges are zero
-because this is target-only MTP0. Those zero subranges are not separate
-arenas, fake reservations, or permission to omit the nonzero pending-logit
-allocation.
+Class 30 and arena-5 pending-logit uses are present for both shapes. With the
+sequence bucket fixed at `C=1`, CURRENT and NEXT are two disjoint 154,880-byte
+rank-local vectors, exactly 309,760 bytes per rank. The selected head has one
+simultaneously live row for both shapes, so target class 26 owns exactly
+`L=1 * 154,880 = 154,880` bytes of rank-logit scratch in arena 2. The scratch
+is not persistent state and cannot be placed in or charged to arena 5.
+Proposal, q-state, draft-KV/indexer, boundary-hidden, and MTP bundle subranges
+are zero because this is target-only MTP0. Those zero subranges are not
+separate arenas, fake reservations, or permission to omit the nonzero
+pending-logit allocation.
+
+The truncated M4 distributed-greedy result is a diagnostic over the committed
+laboratory head result. It does not implement production prefill/decode token
+feedback: production prefill stores pending logits without emitting a token,
+and production decode samples prior pending logits before embedding and
+executing the sampled token. An M4 diagnostic token therefore cannot satisfy
+or substitute for the full-checkpoint autoregressive smoke gate.
 
 Arenas 8 and 9 are the four adopted laboratory generations and are read-only
 inside the graph. Arena 10 is the exact reset fixture generation. Every
@@ -242,8 +253,9 @@ coordinated Rust proof must extend r2 to:
    replay, and cross-profile objects before allocation;
 4. reconstruct decode and prefill physical plans, all 32 class records, every
    buffer use, and all ten exact arenas from accepted operator plans;
-5. prove class 30 and CURRENT/NEXT pending logits are present while every
-   proposal/draft subrange and MTP program is absent;
+5. prove class 30 and the exact 309,760-byte arena-5 CURRENT/NEXT pending-logit
+   span are present, class 26 owns the exact 154,880-byte arena-2 rank-logit
+   scratch span, and every proposal/draft subrange and MTP program is absent;
 6. materialize four rank-local address/generation tables and prove all
    descriptor spans are owner-derived and within the accepted laboratory
    arenas;

@@ -105,8 +105,8 @@ zero:
 | 16 | 2 | prompt rows, exactly `4` |
 | 18 | 2 | generated tokens per row, exactly `16` |
 | 20 | 4 | prefill row bucket |
-| 24 | 4 | decode row bucket, covering exactly four real rows |
-| 28 | 2 | sequence bucket, at least `4` |
+| 24 | 4 | decode row bucket, exactly `4` |
+| 28 | 2 | sequence bucket, exactly `4` |
 | 30 | 2 | reserved zero |
 | 32 | 32 | operation-manifest SHA-256 |
 | 64 | 32 | complete source-checkpoint identity SHA-256 |
@@ -138,8 +138,9 @@ SHA256("glmaxx.full-batch-smoke-program.v1\0" || exact 672-byte record)
 The record is a 32-byte header plus twenty 32-byte identities. Hash equality
 without reconstruction and validation of every typed object is insufficient.
 Unknown flags, a text digest, another profile, nonzero MTP depth, a row count
-other than four, fewer/more than sixteen requested tokens, or a graph bucket
-that does not cover the exact real work fails before weight adoption.
+other than four, fewer/more than sixteen requested tokens, a decode row bucket
+other than four, or a sequence bucket other than four fails before weight
+adoption.
 
 ## Exact graph and schedule sets
 
@@ -184,7 +185,7 @@ rank:
 
 ```text
 1  graph arguments
-2  maximum prefill/decode graph scratch
+2  maximum prefill/decode graph scratch, including rank-logit scratch
 3  target KV
 4  target indexer
 5  CURRENT/NEXT target pending logits and target-only recurrent state
@@ -196,12 +197,17 @@ rank:
 ```
 
 Arenas 8 and 9 include resident draft weights, but target graph uses cover
-only target bindings. Arena 5 has the exact C4 MTP0 pending-logit double
-buffers and rank-logit workspace; proposal, q-state, boundary-hidden,
-draft-KV/indexer, and MTP bundle subranges are zero. All primary, auxiliary,
-metadata, page-table, cache, argument, scratch, collective, and status spans
-appear in the accepted physical use tables and resolve only through owner-
-created ten-arena bindings.
+only target bindings. With exactly four sequence slots, class 30 in arena 5
+owns the C4 MTP0 CURRENT/NEXT pending-logit double buffers, exactly
+`4 * 2 * 154,880 = 1,239,040` bytes per rank. Production prefill evaluates
+the head only for the last processed row of each sequence and decode has four
+real rows, so `L=4`; target class 26 in arena 2 owns exactly
+`4 * 154,880 = 619,520` bytes per rank of rank-logit scratch. Rank-logit
+scratch is never persistent arena-5 state. Proposal, q-state,
+boundary-hidden, draft-KV/indexer, and MTP bundle subranges are zero. All
+primary, auxiliary, metadata, page-table, cache, argument, scratch,
+collective, and status spans appear in the accepted physical use tables and
+resolve only through owner-created ten-arena bindings.
 
 This first smoke uses a bounded `SMOKE_MINIMAL` KV allocation derived from
 the four fixed prompts, their page-aligned prefill lengths, sixteen generated
@@ -254,16 +260,23 @@ After one four-rank weight adoption and graph-ready barrier, the runner:
 2. creates four sequence transactions and allocates their exact fixed pages;
 3. executes deterministic chunked prefill through embedding and all target
    layers, with real row masks and no supplied router/indexer results;
-4. runs final norm/head and distributed greedy on each row's final prompt
-   position, committing token 1 only after four-rank output consensus;
-5. appends that token and executes fifteen C4 decode steps through all target
-   layers, final norm/head, and distributed greedy to produce tokens 2--16;
-6. commits target-KV/indexer/page-table successors atomically after each
-   physical step; and
+4. runs final norm/head on each sequence's final processed prompt position,
+   stores the resulting rank-local logits as committed CURRENT pending state,
+   and emits no token;
+5. executes sixteen C4 decode steps; step `j` first distributed-greedy samples
+   and emits token `j` from the prior committed CURRENT pending logits, then
+   embeds and executes token `j` through all target layers and final norm/head
+   to produce NEXT pending logits;
+6. after each decode step, commits the generated token's target-KV/indexer/
+   page-table successor and atomically swaps the accepted NEXT pending
+   generation into CURRENT; and
 7. detokenizes through the Rust incremental decoder and returns four bounded
    result rows only after the final common completion receipt.
 
-The four rows remain one physical C4 batch for all fifteen decode steps. A
+The four rows remain one physical C4 batch for all sixteen decode steps. After
+step 16, every generated token has been executed into target KV/indexer state;
+the final CURRENT pending logits are an unused terminal successor and remain
+charged until cleanup. A
 row cannot finish early: the fixture's reference establishes no EOS in the
 first sixteen positions, and an early GLMAXX EOS is a correctness failure.
 Sampling is exact greedy under the accepted vocabulary ownership and
@@ -334,7 +347,7 @@ The immutable evidence record separates:
 source/checkpoint validation, storage read, staging, and H2D
 context/module, collective, graph, KV/page-table, and execution-ready phases
 prefill kernels, collectives, framework, and end-to-end time
-each of the fifteen decode physical steps and sixteen useful tokens
+each of the sixteen decode physical steps and sixteen useful tokens
 per-rank HBM ledger and exact arena generations
 cold/warm/eager/captured/hot-deferred posture
 all per-position numerical, token, cache, fault, and cleanup data
@@ -359,8 +372,9 @@ Before a device run, one coordinated Rust candidate must:
 5. prove the smoke-minimal cache fits its fixtures and preserves the exact 1M
    addressing/page ABI without claiming the later capacity floor;
 6. execute all target-layer CPU references for four bounded synthetic rows,
-   including distributed greedy, sixteen commits, cache successors, and
-   incremental decoding;
+   including prefill pending-state publication, sixteen distributed-greedy
+   samples/emissions, sixteen generated-token cache commits, the unused
+   terminal pending state, cache successors, and incremental decoding;
 7. prove no expected route/logit/token can enter execution input and no full-
    vocabulary gather can enter the runtime sampler;
 8. exhaust the generation poison/reset, one-byte-short, mismatch, rank-fault,
