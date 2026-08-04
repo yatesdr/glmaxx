@@ -44,6 +44,17 @@ the review candidate and public anchors only; it is not Fable acceptance or
 runtime admission, and the real checkpoint must still pass retained-descriptor
 hashing after implementation.
 
+The exact NF3/ModelOpt source-and-kernel r2 candidate `2b87859` passed all
+twelve input hashes and its 413-test local gate. A separate temporary Rust
+verifier exhaustively checked all 16,777,216 NF3 source words and every value
+and scale coordinate at both actual TP4 rank shapes. It proved the NF3 and
+ModelOpt scale permutations bijective, the NF3 forward layout hole-free, and
+reproduced 82,054,348,800 routed bytes per rank including two 192-byte records
+per expert. The concise proof and independent artifact hashes are in
+`docs/nf3-modelopt-source-kernel-r2-preflight-20260804.md`. This remains
+design-review readiness only; no codec implementation or W4A16 GPU claim is
+opened without Fable's exact r2 token.
+
 Clean integration commit `6e073f3` was compiled in the pinned GLMAXX-only
 container and run without GPU access against both real read-only checkpoint
 indexes. The hybrid NVFP4/NF3 source admitted structurally with 184 shards,
