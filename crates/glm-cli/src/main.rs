@@ -64,6 +64,13 @@ mod cache_proof;
 mod profile;
 mod review;
 
+// `flock` locks follow an open file description across `fork`. The review
+// unit tests launch Git subprocesses while the cache proof deliberately drops
+// and reopens its single-writer store. Serialize only those two test-only
+// windows so a pre-exec child cannot transiently retain the old writer lock.
+#[cfg(test)]
+static TEST_PROCESS_SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const ACTUAL_PACKED_SHA256: &str =
     "a84be06b6bf6192eb51324ee57a1b6a4c57924c78709bcbe275b9f56b547cab5";
 const ACTUAL_RANK0_SHA256: &str =

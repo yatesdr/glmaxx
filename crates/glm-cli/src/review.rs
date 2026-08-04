@@ -1120,6 +1120,10 @@ fn git_text(root: &Path, arguments: &[&str]) -> Result<String, ReviewProofError>
 }
 
 fn git_bytes(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, ReviewProofError> {
+    #[cfg(test)]
+    let _spawn_guard = crate::TEST_PROCESS_SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1242,6 +1246,9 @@ mod tests {
 
     impl TempRepository {
         fn new(label: &str) -> Self {
+            let _spawn_guard = crate::TEST_PROCESS_SPAWN_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let id = TEMP_REPOSITORY_ID.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir()
                 .join(format!("glmaxx-review-{label}-{}-{id}", std::process::id()));

@@ -198,8 +198,6 @@ pub fn write_cache_lifecycle_proof(
     if !hbm_to_dram_to_nvme_observed {
         return Err(proof_error("final tier posture is not bounded HBM/DRAM/NVMe").into());
     }
-    drop(service);
-
     let (
         copy_on_write_tail_observed,
         speculative_rollback_observed,
@@ -214,7 +212,10 @@ pub fn write_cache_lifecycle_proof(
         .storage_offset;
     let data_path = store_root.join("pages.dat");
     corrupt_one_byte(&data_path, corrupt_offset)?;
-    let service = RestoreService::spawn(&store_root, 1)?;
+    // Keep the already bounded reader service alive for the corruption
+    // check. The restart boundary was proven above by `reopened`; creating a
+    // second reader here adds no coverage and can race advisory-lock release
+    // on platforms whose `flock` implementation defers the close wakeup.
     let corrupt_request = residency.begin_restore(8, keys[0].0, 0, owner_rank(0))?;
     let corruption_failed_closed = matches!(
         service.try_submit(corrupt_request)?.receive(),
@@ -436,6 +437,9 @@ mod tests {
 
     #[test]
     fn cache_lifecycle_is_bounded_recoverable_and_fail_closed() {
+        let _spawn_guard = crate::TEST_PROCESS_SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
