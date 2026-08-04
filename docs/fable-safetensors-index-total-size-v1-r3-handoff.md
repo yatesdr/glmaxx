@@ -12,7 +12,7 @@ index, eight-byte safetensors prefix, and padded JSON header. Require the r2
 index hashes before any optional real-source check.
 
 Review candidate commit:
-`97c082bf840685dfa79db0356626649ca1e19234`
+`9c772e1227784ab7f62fcf9f90a787e8cb37c424`
 
 Required result path:
 `docs/reviews/fable-safetensors-index-total-size-v1-r3.md`
@@ -34,7 +34,7 @@ start and finish. Any mismatch withholds the token.
 | `AGENTS.md` | `d78d69429dab43d096c49b795f24b8e00b71a6c1d7c1d535ad431c0f4ec9bf02` |
 | `docs/safetensors-index-total-size-v1.md` | `350bbf1c52b7065276933cb97011930d9b3404c67eb3cb088303670bc38e66f6` |
 | `docs/safetensors-index-total-size-v1-r2.md` | `6ec170c93c612d65866dcaec8555637cfb6763246bb45e78e2cf931109e2581c` |
-| `docs/safetensors-index-total-size-v1-r3.md` | `b4a903c794f751731dd7fea9262140d202c8a4a7f47b5af9c65a84903598ef23` |
+| `docs/safetensors-index-total-size-v1-r3.md` | `ebf07483075a5dbe169570caa723feced60e5ac61870dcd60292587c80bc4386` |
 | `docs/fable-safetensors-index-total-size-v1-handoff.md` | `a7937fdaf98a3e5a6a6fe43c588a54594b87e6a016b8cc709c6aa4b94fb13e10` |
 | `docs/fable-safetensors-index-total-size-v1-r2-handoff.md` | `0c1d95e2013400d1dbb63d06ed173a875c127d2b1025ec45c89f53c2694b53e8` |
 | `docs/safetensors-total-size-r2-implementation-readiness-20260803.md` | `3b1faefe0930e41f08d0a45cdb579fa8467cb6390ed837b2ee202abe30e23e4b` |
@@ -42,7 +42,7 @@ start and finish. Any mismatch withholds the token.
 | `crates/glm-format/src/safetensors.rs` | `f15097989389dc8eebfad95bf7aa71977f1a43d5688c2c87273b047a2876149e` |
 | `crates/glm-format/src/lib.rs` | `3d527c9c185d58c176350daf0880676fdcad28b39a320d08c2cd4c1e5dbc7576` |
 | `crates/glm-format/src/checkpoint.rs` | `12777f070e56674599ce662326552cda7c28c2b36e5155d3e8daf7718577aa18` |
-| `crates/glm-cli/src/main.rs` | `8e6d40f5060cea8c9d9ac55f7b72d7115ec45f845edb084086abcabecc027137` |
+| `crates/glm-cli/src/main.rs` | `8f10c02b7ab859fc835a7526aab7cdfba8d5a1f4f834691bc92ff15cd68edb50` |
 | `docs/checkpoint-ingest.md` | `186ce5985ca1adbf280a011a7692ae07780736f842c786dccb599ed8a458d07d` |
 | `scripts/local-checks.sh` | `1675ca5bac9bda032ab6db206629bc0052ad6afc5cb6f59a7b6697e4e5c779d0` |
 
