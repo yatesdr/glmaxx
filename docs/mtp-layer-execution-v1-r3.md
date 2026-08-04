@@ -245,7 +245,8 @@ An MTP0 target-only graph has only the target program in executor r4/r5's
 program-set digest. A verify graph with any layer-78 node has exact target and
 MTP program digests. The first validation node binds that program set, the
 explicit adopted validation module, the module-set capability digest, the
-graph-memory ABI digest, GraphProfile v3, and all seven arena generations.
+graph-memory ABI digest, GraphProfile v3, and all ten arena generations,
+including resident weights, codec metadata, and the device page table.
 
 The applicable physical MTP program selects the immutable layer-78 codec and
 layout policy. It cannot change by request, recurrence, sampling branch, or

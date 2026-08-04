@@ -115,7 +115,9 @@ prefix, or falls back to host-only validation.
 
 The binding means exactly that the module generation consumes the reviewed
 `GraphMemoryPlan.v1`, `GraphClassSpan.v1`, `GraphBufferUse.v1`, and
-`DeviceArenaBinding.v1` semantics. It does not let a module invent sizes:
+`DeviceArenaBinding.v1` semantics, including all ten graph-visible arenas and
+the immutable weight, codec-metadata, and page-table uses omitted by the
+earlier draft. It does not let a module invent sizes:
 the process-common tables are reconstructed from accepted programs/operator
 plans and checked by Rust before allocation, then independently checked by
 the first device-validation node before any data-dependent pointer use.
@@ -137,7 +139,7 @@ target/MTP executor program-set digest
 module-set capability digest
 graph-memory ABI digest
 rank-set memory-plan digest
-rank-local arena-binding generations and roles
+rank-local ten-arena binding generations and roles
 ```
 
 The validation node still executes first. A validation latch can change only
@@ -163,7 +165,8 @@ In addition to the complete r1-r4 matrix, the coordinated proof must:
 6. reject mixed old/new module generations even when their target program
    digests match;
 7. prove the explicitly supplied validation module and every target/MTP node
-   use the same accepted table interpretation; and
+   use the same accepted ten-arena table interpretation, with every
+   weight/metadata/page-table pointer owner-derived and generation-bound; and
 8. repeat hot-reload prepare, commit, rollback, and module retirement while
    keeping old and candidate graph-memory generations resident.
 

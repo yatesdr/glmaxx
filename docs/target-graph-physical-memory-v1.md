@@ -12,7 +12,10 @@ GPU evidence: none
 `target-layer-execution-v1-r2.md` deliberately defines only logical buffer
 lifetimes. It does not serialize a device arena, offset, capacity, or
 consumer subrange, so neither eager target execution nor CUDA graph capture
-can yet prove that every pointer is in bounds and nonaliasing.
+can yet prove that every pointer is in bounds and nonaliasing. That proof
+includes immutable weight planes, codec metadata, and the device page table;
+they are dereferenced by captured nodes even though they are not target
+scratch classes.
 
 This contract supplies that missing physical boundary. It is the required
 successor between the logical target-layer contract and M3/M4 execution. It
@@ -71,7 +74,7 @@ One `GraphArena.v1` record is exactly 32 bytes:
 | 20 | 4 | reserved zero |
 | 24 | 8 | reserved zero |
 
-Records are ordered by logical arena ID and contain exactly these seven
+Records are ordered by logical arena ID and contain exactly these ten
 entries:
 
 | ID | Executor role | Meaning | Flags |
@@ -83,6 +86,9 @@ entries:
 | 5 | 5 | recurrent state, including pending logits and MTP state | `PERSISTENT_MODEL_STATE=2` |
 | 6 | 9 | fixed collective spans | `EXECUTOR_FIXED=1` |
 | 7 | 11 | completion and validation status | `EXECUTOR_FIXED=1` |
+| 8 | 1 | immutable resident weight payload | `IMMUTABLE_MODEL_STATE=4` |
+| 9 | 2 | immutable resident codec metadata | `IMMUTABLE_MODEL_STATE=4` |
+| 10 | 6 | device sequence page table | `PERSISTENT_MODEL_STATE=2` |
 
 Exactly one flag bit is set. Alignment is a nonzero power of two and at least
 256 bytes. `bytes` is the exact ceiling authorized by the accepted rank-set
@@ -92,12 +98,18 @@ construction. Persistent model-state arenas may be shared by graph instances
 only under their existing generation and transaction rules; no arena is owned
 or freed by a graph.
 
+Weight and codec-metadata arenas are the exact globally adopted generation;
+they cannot be absent for a model graph or resized by a graph profile. The
+page-table arena is the exact device generation named by `StepInput.v3`.
+Graph nodes may read these three arenas but never write them. Upload/adoption
+and page-table transactions remain outside graph execution.
+
 The arena-table digest is:
 
 ```text
 SHA256(
   "glmaxx.target-graph-arena-table.v1\0" ||
-  u16_le(7) || seven ordered 32-byte records
+  u16_le(10) || ten ordered 32-byte records
 )
 ```
 
@@ -178,7 +190,7 @@ represented by one `GraphBufferUse.v1` record of exactly 80 bytes:
 | 0 | 4 | graph node ordinal |
 | 4 | 2 | use ordinal within that node |
 | 6 | 2 | logical arena ID |
-| 8 | 2 | target slot class, or zero for collective/status-only storage |
+| 8 | 2 | target slot class, or zero for arena-level storage |
 | 10 | 2 | access bits: `READ=1`, `WRITE=2`; at least one |
 | 12 | 2 | applicable phase-variant mask |
 | 14 | 2 | flags: `DYNAMIC_INDEXED=1`, otherwise zero |
@@ -195,7 +207,8 @@ contiguous within a node. A node with no storage use has no record.
 
 The selected target/MTP program, collective schedule, target phase template,
 and accepted operator common plans must reconstruct the complete table.
-Every descriptor pointer, target/MTP input/output/workspace, collective
+Every immutable tensor primary/auxiliary/metadata plane, device page-table
+span, descriptor pointer, target/MTP input/output/workspace, collective
 send/receive/scratch span, validation arena table, and completion/status span
 appears exactly once per node use. A caller-provided descriptor cannot add,
 remove, resize, or redirect a use.
@@ -209,14 +222,25 @@ independently reconstructed from the immutable page-write, indexer-write, or
 pending-logit slot table before every launch. The dynamic table cannot expand
 the envelope.
 
-Class-zero records are legal only for recurrent-state, collective, and status
-storage in arenas 5, 6, and 7 and are checked directly against the arena.
-They cover MTP proposal/recurrent state and other program uses that have no
-target-layer slot-class identity. Those arena-level intervals are included in
-overlap validation against class 30 and every other arena-5 use. Every
-nonzero operator digest must be one of the accepted common plans bound by the
-adopted module-set capability digest. A missing plan, unknown digest, or
-module/common-plan disagreement fails before capture.
+Class-zero records are legal only for recurrent-state, collective, status,
+immutable weight, immutable codec-metadata, and page-table storage in arenas
+5 through 10 and are checked directly against the arena. They cover MTP
+proposal/recurrent state and other program uses that have no target-layer
+slot-class identity. Arena-8/9 uses are reconstructed from the immutable
+target/MTP program and the authenticated rank-set load plan; each
+primary, auxiliary, and metadata plane is a separate use. Their common
+relative offset, byte count, and alignment must match all four adopted rank
+layouts before the process-common plan exists. Arena-10 uses are
+reconstructed from the exact page-table layout and graph key. Weight,
+metadata, and page-table uses are read-only and cannot carry
+`DYNAMIC_INDEXED`.
+
+Arena-5 intervals are included in overlap validation against class 30 and
+every other recurrent-state use. Every nonzero operator digest must be one
+of the accepted common plans bound by the adopted module-set capability
+digest. A missing tensor plane, divergent rank-relative layout, stale
+adoption/page-table generation, unknown plan, or module/common-plan
+disagreement fails before capture.
 
 The buffer-use digest is:
 
@@ -242,7 +266,7 @@ SHA256(
 | 18 | 1 | MTP depth, `0..6` |
 | 19 | 1 | flags; bit 0 is `MTP_PROGRAM_PRESENT` |
 | 20 | 2 | sequence bucket |
-| 22 | 2 | arena count, exactly 7 |
+| 22 | 2 | arena count, exactly 10 |
 | 24 | 2 | class-span count, exactly 32 |
 | 26 | 2 | reserved zero |
 | 28 | 4 | row bucket |
@@ -278,13 +302,14 @@ SHA256(
 ```
 
 The five byte totals equal logical arenas 2, 1, 5, 6, and 7 respectively.
-The target-KV and target-indexer allocation sizes remain bound through the
-arena table and rank-set resource budget rather than being double-charged as
-graph scratch. `GraphEntry.maximum_scratch_bytes` must equal the exact
-arena-2 bytes, and `GraphEntry.argument_bytes` must equal arena-1 bytes.
+The weight, codec-metadata, target-KV, target-indexer, and page-table
+allocation sizes remain bound through arenas 8, 9, 3, 4, and 10 plus the
+rank-set resource budget rather than being double-charged as graph scratch.
+`GraphEntry.maximum_scratch_bytes` must equal the exact arena-2 bytes, and
+`GraphEntry.argument_bytes` must equal arena-1 bytes.
 
 The resource budget is an accepted pre-allocation ceiling record containing
-the exact seven arena byte/alignment pairs and the nonarena context, module,
+the exact ten arena byte/alignment pairs and the nonarena context, module,
 collective-library, graph-runtime, allocator-padding, and emergency-escrow
 ceilings. It does not contain a physical-plan or GraphProfile-v3 digest. The
 final rank-set memory plan is constructed afterward and binds the accepted
@@ -335,8 +360,10 @@ Two class spans whose physical byte intervals overlap are accepted only when:
 
 Equality at a half-open endpoint is nonoverlap. Every other overlap is fatal.
 Classes 27..30, arena-level collective/status uses, immutable descriptors,
-tentative destinations, and any zero-alias logical class never overlap
-another live span.
+resident weight/metadata planes, device page-table spans, tentative
+destinations, and any zero-alias logical class never overlap another live
+span. Weight/metadata/page-table uses additionally require the exact adopted
+arena generation and read-only access.
 
 The validator independently checks each use against its class and each class
 against its arena. Reducing any present class capacity, arena bytes, or
@@ -361,20 +388,22 @@ One `DeviceArenaBinding.v1` is exactly 48 bytes:
 | 38 | 2 | reserved zero |
 | 40 | 8 | reserved zero |
 
-The table has seven records in logical-arena order. It is constructed only by
+The table has ten records in logical-arena order. It is constructed only by
 the persistent rank owner from adopted
 `glmaxx_executor_arena_binding_v1` records. The rank-local binding digest is:
 
 ```text
 SHA256(
   "glmaxx.target-device-arena-binding-table.v1\0" ||
-  u8(rank) || u8(0) || u16_le(7) || four_zero_bytes ||
-  seven ordered 48-byte records
+  u8(rank) || u8(0) || u16_le(10) || four_zero_bytes ||
+  ten ordered 48-byte records
 )
 ```
 
 Each record must match the common arena role, byte count, and alignment, the
-accepted resource budget, and the final rank-set memory plan. Checked
+accepted resource budget, and the final rank-set memory plan. Arenas 8 and 9
+must also match the globally adopted weight-plan digest and owner generation;
+arena 10 must match the device page-table layout and generation. Checked
 base-plus-offset resolution creates
 every native `glmaxx_executor_span_v1`; no coordinator or request supplies a
 device address. The binding table is copied to the validation span and the
@@ -424,12 +453,13 @@ pass consensus.
 
 The creation order is:
 
-1. accept all source contracts and CPU common plans;
+1. accept all source contracts, the exact rank-set load plan, and CPU common
+   plans;
 2. accept the acyclic rank-set resource budget;
 3. construct and validate the common physical plan and GraphProfile v3;
-4. charge its seven exact arenas in the final rank-set memory plan;
+4. charge its ten exact arenas in the final rank-set memory plan;
 5. create owner threads, contexts, modules, native arenas, and fixed routes;
-6. construct and validate the seven rank-local binding tables;
+6. construct and validate the ten rank-local binding tables;
 7. build descriptors only from checked class/use resolution;
 8. capture or instantiate the graph with the validation node first;
 9. collect four rank receipts; and
@@ -463,16 +493,17 @@ Before any M3/M4 or production CUDA launch, one coordinated Rust proof must:
    prove fail-closed rejection;
 6. exhaust legal disjoint-lifetime reuse and every prohibited live,
    external, argument, collective, and status overlap;
-7. prove every native descriptor span is derived from an owner-created
-   binding and no raw address can enter through the coordinator or request;
+7. prove every native descriptor span, including every weight/metadata plane
+   and device page-table range, is derived from an owner-created binding and
+   no raw address can enter through the coordinator or request;
 8. materialize four different rank-local address tables while preserving one
    common plan/profile/program/schedule identity;
 9. reject stale arena, module, program, graph, page-table, argument, and
    runtime generations before launch;
 10. simulate candidate hot reload success and rollback with unchanged weight
     read/H2D counters; and
-11. reconcile every arena byte once against laboratory and production memory
-    ledgers with no aggregate-scratch substitution.
+11. reconcile all ten arena byte charges once against laboratory and
+    production memory ledgers with no aggregate-scratch substitution.
 
 The proof must use bounded synthetic allocations and mock addresses. It does
 not authorize cn4 or imply that a CUDA graph, model layer, checkpoint, KV
