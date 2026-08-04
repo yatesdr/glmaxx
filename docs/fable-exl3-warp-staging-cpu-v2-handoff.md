@@ -5,7 +5,7 @@ Date: 2026-07-30
 Status: adversarial CPU-proof review requested
 
 Review candidate commit:
-`c1ab9d2214f592e02de2cf3e7f2dfb257930b347`
+`21f9881859a9c8b95c211e792c1dfe5c97d7cc9f`
 
 Required result path:
 `docs/reviews/fable-exl3-warp-staging-cpu-v2.md`
@@ -28,28 +28,37 @@ start and finish. A mismatch is a stale candidate and must withhold the token.
 | `Cargo.lock` | `72880aa9ec4a2bf9f42e4df9cb463272194b344590f1e7a839f08aaf2d3970e7` |
 | `docs/exl3-sm120-warp-decode-v2.md` | `67fb3bcb5b839cc50f3462990f1ef6056ca7c9d991851efc5e668fed9d0b3325` |
 | `docs/exl3-warp-staging-cpu-proof-v2.md` | `5c77b5721885da708d0240e9eeb6537e9ed74a25a6940cf92e00bc79de494b31` |
+| `fable-exl3-warp-decode-v2-r2.md` | `c26236ec0e57b56d90028edb8396dd5521e5cec75174401d04469eefd33990b5` |
 | `crates/glm-format/src/exl3.rs` | `f6fa1b25311d78e13e22a0c7c908da7abca636948218fef1987c89850e974edb` |
 | `crates/glm-format/src/exl3/warp_proof.rs` | `93dff6fc1e0190efb387e3ee9359bcf196ce6510550f11df73433ac06d34be73` |
-| `crates/glm-format/src/lib.rs` | `27aa8052ce18423b66bebe86ddbaafecfbaab989be661ab58c823e692b5d6c3d` |
-| `crates/glm-cli/src/main.rs` | `c2b3367e693be4c647692f87001811c0f8748ad155ccda435513fb88dfc9f21a` |
+| `crates/glm-format/src/lib.rs` | `3d527c9c185d58c176350daf0880676fdcad28b39a320d08c2cd4c1e5dbc7576` |
+| `crates/glm-cli/src/main.rs` | `e5e0fd98d222f8e6744de15901c67027ffd1ce7d81b2ca4fbca8f35297f76c77` |
 | `fixtures/exl3-warp-staging-proof-v2.json` | `cdc650dd2c70dcbb8c3cb2e5e5659b42f429dc84a62e32bacb0c629ad66f1f45` |
-| `scripts/local-checks.sh` | `95baea0a53d0ebb9f233fb644a593a3314bec3c12dc059f4e5841a505ad21300` |
+| `scripts/local-checks.sh` | `2d1882be9afd91f4a54c1d3ff9b9f02cd5087357eeb5668d4094c2114c3003ce` |
 
 Run:
 
 ```text
+proof_dir="$(mktemp -d "${TMPDIR:-/tmp}/glmaxx-exl3-warp-proof.XXXXXX")"
+trap 'rm -rf "${proof_dir}"' EXIT
 cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof docs/fable-exl3-warp-staging-cpu-v2-handoff.md
 cargo test --offline -p glm-format exl3::warp_proof
 cargo clippy --offline -p glm-format --all-targets -- -D warnings
 cargo run --release --offline -p glm-cli --bin glmaxx -- \
-  exl3-warp-proof /tmp/exl3-warp-staging-proof-v2.json
+  exl3-warp-proof "${proof_dir}/release.json"
 cmp fixtures/exl3-warp-staging-proof-v2.json \
-  /tmp/exl3-warp-staging-proof-v2.json
+  "${proof_dir}/release.json"
+cargo run --offline -p glm-cli --bin glmaxx -- \
+  exl3-warp-proof "${proof_dir}/debug.json"
+cmp fixtures/exl3-warp-staging-proof-v2.json \
+  "${proof_dir}/debug.json"
+cmp "${proof_dir}/release.json" "${proof_dir}/debug.json"
 ```
 
-Also run the proof with the debug binary and verify that its emitted bytes
-match the release fixture.
+The fresh directory prevents a prior review's output from being mistaken for
+either invocation. Both modes must independently match the canonical fixture
+and each other byte for byte.
 
 ## Review boundary
 
@@ -68,8 +77,10 @@ evidence.
 
 1. Do all candidate hashes match at review start and finish in a detached
    worktree, even if `main` advances?
-2. Does the proof bind the exact accepted design SHA-256 and only the
-   gate/up `6144x512` and down `512x6144` geometries allowed by that design?
+2. Does the pinned r2 design review contain both the exact design SHA-256 and
+   `exl3-warp-decode-v2-design-accepted` token, and does the proof bind that
+   design while allowing only its gate/up `6144x512` and down `512x6144`
+   geometries?
 3. Is the staged slot table actually derived from the forward scatter while
    the scalar decoder uses the inverse map, or do the two paths reduce to the
    same helper/tautology?
