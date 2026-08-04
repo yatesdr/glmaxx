@@ -93,7 +93,7 @@ review_handoffs=(
   docs/fable-exl3-warp-decode-v2-r2-handoff.md
   docs/fable-nvfp4-fused-routed-moe-v1-r3-handoff.md
   docs/fable-current-tree-review-acceptance-v3-handoff.md
-  docs/fable-sm120-profiler-package-v1-handoff.md
+  docs/fable-sm120-profiler-package-v1-r2-handoff.md
 )
 review_artifacts=()
 for review_env in "${review_envs[@]}"; do
@@ -145,6 +145,17 @@ if ! ncu --help | grep -Fq -- "--nvtx-include" ||
   echo "Installed Nsight tools lack the required capture/replay options" >&2
   exit 69
 fi
+for profiler_script in \
+  scripts/cn4-profiler-suite.sh \
+  scripts/cn4-ncu-capture.sh \
+  scripts/cn4-ncu-capture-selftest.sh; do
+  if [[ ! -x "${profiler_script}" ]]; then
+    echo "Profiler script is missing or not executable: ${profiler_script}" >&2
+    exit 69
+  fi
+  bash -n "${profiler_script}"
+done
+ncu_capture_selftest="$("${repo_dir}/scripts/cn4-ncu-capture-selftest.sh")"
 
 gpu_count="$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l | tr -d ' ')"
 sm120_count="$({ nvidia-smi --query-gpu=compute_cap --format=csv,noheader |
@@ -167,6 +178,7 @@ preflight_dir="${GLMAXX_EVIDENCE_DIR}/preflight"
 printf '%s\n' "${source_commit}" > "${preflight_dir}/source-commit.txt"
 printf '%s\n' "${GLMAXX_CONTAINER_DIGEST}" > "${preflight_dir}/container-digest.txt"
 printf '%s\n' "${build_root}" > "${preflight_dir}/build-root.txt"
+printf '%s\n' "${ncu_capture_selftest}" > "${preflight_dir}/ncu-capture-selftest.txt"
 git status --short --branch > "${preflight_dir}/source-status.txt"
 git ls-files --others --exclude-standard > "${preflight_dir}/untracked-names.txt"
 nvidia-smi --query-gpu=index,name,uuid,pci.bus_id,compute_cap,driver_version,memory.total,memory.free,clocks.current.sm,clocks.current.memory,power.draw,power.limit,temperature.gpu --format=csv,noheader > "${preflight_dir}/gpu-inventory.csv"

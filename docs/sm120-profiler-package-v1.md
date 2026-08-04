@@ -1,8 +1,15 @@
 # SM120 profiler package v1
 
-Status: implementation candidate; adversarial review and SM120 execution required
+Status: corrective implementation candidate; r2 adversarial review required
 
-GPU evidence: none
+GPU evidence: isolated EXL3 staged diagnostic only; no package qualification
+
+The first package handoff pinned an Nsight Compute command that treated the
+token `false` as the target executable. The corrected package omits the
+valueless overwrite flag, regression-tests the complete target boundary, and
+requires the corrective r2 review token in preflight. The isolated diagnostic
+in `docs/cn4-exl3-staged-k3-ncu-20260804.md` proves the corrected command form
+can retain an SM120 report, but it did not execute this complete package.
 
 ## Purpose
 
