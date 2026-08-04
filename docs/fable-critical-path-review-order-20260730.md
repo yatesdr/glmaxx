@@ -176,7 +176,7 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline after adding recurrent-MTP r3:
+Current verified baseline after the ten-arena physical-memory correction:
 
 ```text
 167 handoffs

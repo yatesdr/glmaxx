@@ -6,7 +6,7 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`3b709499e37c69e2e5411d382c56f21f8b3862a3`
+`f07b3e25716cd91112b48d3cc659fde51f667c50`
 
 On a clean tracked tree, `review-proof-all` must verify 167 current handoffs
 and skip the two historical umbrella handoffs
@@ -59,7 +59,9 @@ span/alias validation, predecessor-failure suppression, and the complete
 The rank-executor r5 handoff supersedes rows 90, 159, and 160. It retains
 r4's explicit validation-module handle, broadens arena role 5 to recurrent
 state, and binds every module capability to the physical graph-memory ABI.
-Do not issue an older token or implement against an older header.
+Candidate `f07b3e2` corrects the physical table to include all ten
+graph-visible arenas. Do not review the earlier seven-arena candidate, issue
+an older token, or implement against an older header.
 
 The recurrent-MTP r3 handoff supersedes row 146. It binds corrected sampling,
 pending-logit double buffers, exact rank-logit scratch, GraphProfile v3, the
@@ -273,9 +275,9 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 162 | `docs/fable-safetensors-index-total-size-v1-r3-handoff.md` | `9c772e1227784ab7f62fcf9f90a787e8cb37c424` | `docs/reviews/fable-safetensors-index-total-size-v1-r3.md` | `safetensors-index-total-size-v1-r3-design-accepted` |
 | 163 | `docs/fable-decode-benchmark-api-v1-handoff.md` | `d9515c648739454a58223a6531e230ddd4a5eded` | `docs/reviews/fable-decode-benchmark-api-v1.md` | `decode-benchmark-api-v1-design-accepted` |
 | 164 | `docs/fable-tentative-page-preflight-v1-handoff.md` | `c6ebdc97cf84a0349a689a1f816f82ada5e95203` | `docs/reviews/fable-tentative-page-preflight-v1.md` | `tentative-page-preflight-v1-accepted` |
-| 165 | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` | `50797043019efdd8908c9db333784ee049ddde69` | `fable-sm120-rank-executor-v1-r5.md` | `sm120-rank-executor-v1-r5-design-accepted` |
-| 166 | `docs/fable-target-graph-physical-memory-v1-handoff.md` | `50797043019efdd8908c9db333784ee049ddde69` | `fable-target-graph-physical-memory-v1.md` | `target-graph-physical-memory-v1-design-accepted` |
-| 167 | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` | `3b709499e37c69e2e5411d382c56f21f8b3862a3` | `fable-mtp-layer-execution-v1-r3.md` | `mtp-layer-execution-v1-r3-design-accepted` |
+| 165 | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` | `f07b3e25716cd91112b48d3cc659fde51f667c50` | `fable-sm120-rank-executor-v1-r5.md` | `sm120-rank-executor-v1-r5-design-accepted` |
+| 166 | `docs/fable-target-graph-physical-memory-v1-handoff.md` | `f07b3e25716cd91112b48d3cc659fde51f667c50` | `fable-target-graph-physical-memory-v1.md` | `target-graph-physical-memory-v1-design-accepted` |
+| 167 | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` | `f07b3e25716cd91112b48d3cc659fde51f667c50` | `fable-mtp-layer-execution-v1-r3.md` | `mtp-layer-execution-v1-r3-design-accepted` |
 
 ## Verification command
 

@@ -10,7 +10,7 @@ Do not connect to cn4, launch CUDA, create a context, or modify a runtime
 resource for this review.
 
 Review candidate commit:
-`3b709499e37c69e2e5411d382c56f21f8b3862a3`
+`f07b3e25716cd91112b48d3cc659fde51f667c50`
 
 Required result path:
 `fable-mtp-layer-execution-v1-r3.md` at the repository root.
@@ -33,17 +33,17 @@ start and finish. Any mismatch withholds the token.
 | `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `docs/mtp-layer-execution-v1.md` | `5ad5bf01cdbd5e183b5e50aa0940344b5aabc09bf05a90c57d58e3e5b28dd3a7` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
-| `docs/mtp-layer-execution-v1-r3.md` | `61bfa8e4f7991c1319ef98d3881df33c9bebf4ae247cb91b9ce06c201c8931d0` |
+| `docs/mtp-layer-execution-v1-r3.md` | `5440eb54c41b977a1fe5716357e32d99a05b1f279289c95b8ac89f24bb6d4d27` |
 | `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
 | `docs/distributed-sampling-abi-v1-r2.md` | `061903d0a0cf2a284f35b177da5f1c3484cb61dfd9020f627db7b5632a4f2b6b` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
-| `docs/target-graph-physical-memory-v1.md` | `9b7827850966e01c1b403bf14f9e717ac57e673d9fc760f1535b29a27ad85f1b` |
+| `docs/target-graph-physical-memory-v1.md` | `135e7d61f5ce7cc94d200648e9691b9d76edaee13025c21e88f0ad2c07018bc9` |
 | `docs/sm120-rank-executor-v1.md` | `e97c54b865ed50c40ff8b15f6580d0edc18dbd0783135bc1c17d11cc19986fd4` |
 | `docs/sm120-rank-executor-v1-r2.md` | `4f40ea7652858b4cebbe4093dc81149cb30aa26bedc69edef72fa627c987df89` |
 | `docs/sm120-rank-executor-v1-r3.md` | `1bdceee409ec871edc4e193d967848e401f965e6f45d7a99782a7e444352cee8` |
 | `docs/sm120-rank-executor-v1-r4.md` | `6397a07c5a00422b0e3a3941e880a0548fe21b1e5d7584967d5a2786d7f1e665` |
-| `docs/sm120-rank-executor-v1-r5.md` | `da87b4dbcb031e4f4cd20c7db372e06434af3b14981c9d01cec1a15eb5659974` |
+| `docs/sm120-rank-executor-v1-r5.md` | `85c1082575c4b4d9dbdf26affe499121339c8a3a3f7f914ff5957ff6bee7f565` |
 | `docs/sm120-rank-executor-native-abi-v1.h` | `25de8f1f2a81d3ff8f39cee71eb984bfd999abb08eaebb39e9690cbed49c71bb` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `docs/fixed-page-transaction-v1-r2.md` | `aa5e40db3902425735e43665bd104124970179d15b8354a783c3dd7eb90ca495` |
@@ -91,8 +91,9 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
    resource budget, physical plan, GraphProfile v3, and SystemMemoryPlan v3.
    Find every missing or double-counted byte.
 9. Build target-only and target-plus-MTP program-set/module-set identities.
-   Attack old executor roles, old graph profiles, single-program digests,
-   mixed module generations, and locally selected routes.
+   Attack old executor roles, old graph profiles, seven-arena plans, omitted
+   weight/metadata/page-table uses, single-program digests, mixed module
+   generations, and locally selected routes.
 10. Confirm the resource-order graph is acyclic and implementable without
     first-use allocation or descriptor-supplied pointers during capture.
 11. Run the coordinated CPU/mock-gate thought experiment for all D0..D6 and

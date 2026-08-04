@@ -11,7 +11,7 @@ resource. This is a source, serialization, checked-arithmetic, lifetime, and
 CPU-proof design review only.
 
 Review candidate commit:
-`50797043019efdd8908c9db333784ee049ddde69`
+`f07b3e25716cd91112b48d3cc659fde51f667c50`
 
 Required result path:
 `fable-target-graph-physical-memory-v1.md` at the repository root.
@@ -30,16 +30,17 @@ start and finish. Any mismatch withholds the token.
 | `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
-| `docs/target-graph-physical-memory-v1.md` | `9b7827850966e01c1b403bf14f9e717ac57e673d9fc760f1535b29a27ad85f1b` |
+| `docs/target-graph-physical-memory-v1.md` | `135e7d61f5ce7cc94d200648e9691b9d76edaee13025c21e88f0ad2c07018bc9` |
 | `docs/prefill-graph-profile-abi-v2.md` | `37154c9e31109acdf35a382c6be87b3a865e2b7f6ae8f801969526789dd41f91` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `docs/sm120-rank-executor-v1.md` | `e97c54b865ed50c40ff8b15f6580d0edc18dbd0783135bc1c17d11cc19986fd4` |
 | `docs/sm120-rank-executor-v1-r2.md` | `4f40ea7652858b4cebbe4093dc81149cb30aa26bedc69edef72fa627c987df89` |
 | `docs/sm120-rank-executor-v1-r3.md` | `1bdceee409ec871edc4e193d967848e401f965e6f45d7a99782a7e444352cee8` |
 | `docs/sm120-rank-executor-v1-r4.md` | `6397a07c5a00422b0e3a3941e880a0548fe21b1e5d7584967d5a2786d7f1e665` |
-| `docs/sm120-rank-executor-v1-r5.md` | `da87b4dbcb031e4f4cd20c7db372e06434af3b14981c9d01cec1a15eb5659974` |
+| `docs/sm120-rank-executor-v1-r5.md` | `85c1082575c4b4d9dbdf26affe499121339c8a3a3f7f914ff5957ff6bee7f565` |
 | `docs/sm120-rank-executor-native-abi-v1.h` | `25de8f1f2a81d3ff8f39cee71eb984bfd999abb08eaebb39e9690cbed49c71bb` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
+| `docs/mtp-layer-execution-v1-r3.md` | `5440eb54c41b977a1fe5716357e32d99a05b1f279289c95b8ac89f24bb6d4d27` |
 | `docs/sm120-w4a16-nf3-fused-moe-v1-r2.md` | `311d1214ad57e97c7bab45069fae5507602c0e21922b1fde677ba129e734f265` |
 | `docs/nvfp4-fused-routed-moe-v1-r3.md` | `f60d3adb777321ed715ae465abcf20895dbbf470c20970855636ed9b2b3a4db0` |
 | `docs/tp4-layer6-replay-v1.md` | `70157b10753c7e043e48566e219cca0ca1e29f596c198ff7a153f576192bee66` |
@@ -77,8 +78,8 @@ logical alias class as an allocation.
 2. Independently serialize every table/record and prove each self-hash excludes
    exactly its digest field with no native padding.
 3. Build a miniature graph with ordinary, dynamic-indexed, class-zero,
-   collective, status, and external uses; reconstruct every maximum end and
-   aligned class capacity.
+   collective, status, external, resident-weight, codec-metadata, and device
+   page-table uses; reconstruct every maximum end and aligned class capacity.
 4. Mutation-test count/order/enum/flag/reserved/hash fields, checked-add
    overflow, zero/invalid alignment, one-byte-short use/class/arena, and
    incorrect maximum-consumed values.
@@ -89,7 +90,10 @@ logical alias class as an allocation.
 6. Exercise classes 28..30 through immutable dynamic address tables and prove
    an active address cannot escape its static envelope.
 7. Exercise class-zero MTP state in recurrent arena 5 and prove it cannot
-   overlap live class-30 pending logits.
+   overlap live class-30 pending logits. Independently resolve every required
+   tensor plane through arenas 8/9 and the device page table through arena 10;
+   reject a missing plane, rank-layout drift, write access, stale generation,
+   or one-byte-short range.
 8. Reconstruct GraphProfile v3 and the resource-budget -> physical-plan ->
    profile -> final-memory-plan order. Prove there is no digest cycle and no
    byte can be omitted or charged twice.
@@ -110,10 +114,11 @@ Answer each with an unqualified `YES` or `NO`:
 
 1. Is the diagnosed target-layer launch blocker real and completely closed at
    the design/serialization boundary?
-2. Are all seven logical arenas, all 32 classes, all node uses, and every
+2. Are all ten logical arenas, all 32 classes, all node uses, and every
    common versus rank-local identity exact and implementable?
 3. Do dynamic-indexed external writes and arena-level recurrent/collective/
-   status uses remain complete and in bounds?
+   status/weight/metadata/page-table uses remain complete, read/write-correct,
+   generation-bound, and in bounds?
 4. Does the validator reject every undersized subrange independently of the
    aggregate scratch total?
 5. Is physical reuse limited to proven dead scratch intervals, with all
@@ -130,8 +135,9 @@ Answer each with an unqualified `YES` or `NO`:
     and performance nonclaims accurate?
 
 Only if every decision is `YES`, end with the requested token as the only bare
-acceptance line. Withhold for stale provenance, offset arithmetic drift,
-incomplete consumer reconstruction, dynamic-address escape, a live alias,
-aggregate-only capacity, a hash cycle, raw-pointer input, cross-rank fallback,
-an unbound module interpretation, incomplete CPU gates, or any execution/
-capacity/performance overstatement.
+acceptance line. Withhold for stale provenance, an omitted graph-visible
+arena or tensor plane, offset arithmetic drift, incomplete consumer
+reconstruction, dynamic-address escape, a live alias, aggregate-only
+capacity, a hash cycle, raw-pointer input, cross-rank fallback, an unbound
+module interpretation, incomplete CPU gates, or any execution/capacity/
+performance overstatement.

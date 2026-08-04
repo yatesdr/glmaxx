@@ -10,7 +10,7 @@ Do not connect to cn4, launch CUDA, create a context, or modify a runtime
 resource for this review.
 
 Review candidate commit:
-`50797043019efdd8908c9db333784ee049ddde69`
+`f07b3e25716cd91112b48d3cc659fde51f667c50`
 
 Required result path:
 `fable-sm120-rank-executor-v1-r5.md` at the repository root.
@@ -41,12 +41,13 @@ start and finish. Any mismatch withholds the token.
 | `docs/sm120-rank-executor-v1-r2.md` | `4f40ea7652858b4cebbe4093dc81149cb30aa26bedc69edef72fa627c987df89` |
 | `docs/sm120-rank-executor-v1-r3.md` | `1bdceee409ec871edc4e193d967848e401f965e6f45d7a99782a7e444352cee8` |
 | `docs/sm120-rank-executor-v1-r4.md` | `6397a07c5a00422b0e3a3941e880a0548fe21b1e5d7584967d5a2786d7f1e665` |
-| `docs/sm120-rank-executor-v1-r5.md` | `da87b4dbcb031e4f4cd20c7db372e06434af3b14981c9d01cec1a15eb5659974` |
+| `docs/sm120-rank-executor-v1-r5.md` | `85c1082575c4b4d9dbdf26affe499121339c8a3a3f7f914ff5957ff6bee7f565` |
 | `docs/sm120-rank-executor-native-abi-v1.h` | `25de8f1f2a81d3ff8f39cee71eb984bfd999abb08eaebb39e9690cbed49c71bb` |
-| `docs/target-graph-physical-memory-v1.md` | `9b7827850966e01c1b403bf14f9e717ac57e673d9fc760f1535b29a27ad85f1b` |
+| `docs/target-graph-physical-memory-v1.md` | `135e7d61f5ce7cc94d200648e9691b9d76edaee13025c21e88f0ad2c07018bc9` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
+| `docs/mtp-layer-execution-v1-r3.md` | `5440eb54c41b977a1fe5716357e32d99a05b1f279289c95b8ac89f24bb6d4d27` |
 | `docs/step-execution-abi-v3.md` | `1cde3bcabba0a0d861691b06ddb140cb64dfbefaab1129c8a04bc302c0ce609e` |
 | `crates/glm-engine/src/worker.rs` | `52dbb32ef45bfa652ea113b7c3db7e4fb200bfd778015abb1aebceabaddf89d6` |
 | `crates/glm-engine/src/startup.rs` | `1a5f1ac8aae94e6eb2aaf2cf4701dfc290604013103eacc1423046211609a5fc` |
@@ -86,7 +87,8 @@ hot-reload decisions.
    r4 validation-module handle plus r5 identities prevent cross-generation
    parser/program/arena mixing.
 8. Trace GraphProfile v3, physical plan, executor program set, module set,
-   resource budget, rank-local bindings, and validation input through graph
+   resource budget, all ten rank-local bindings, every immutable tensor
+   plane, the device page table, and validation input through graph
    construction. No identity may be selected locally or after capture.
 
 ## Required decisions
@@ -101,7 +103,8 @@ Answer each with an unqualified `YES` or `NO`:
 4. Are the graph-memory ABI, family-capability, and module-set digest formulas
    complete and substitution-resistant?
 5. Do explicit validation-module and program-set bindings compose with the
-   physical plan on one immutable module/graph/resource generation?
+   complete ten-arena physical plan on one immutable
+   weight/page/module/graph/resource generation?
 6. Are owner-thread construction, graph capture, hot reload, synchronization,
    failure, and destruction rules implementable and fail-closed?
 7. Is the combined r1-r5 design accepted for its coordinated CPU/mock proof?
