@@ -10,7 +10,7 @@ Do not connect to cn4, launch CUDA, create a context, or modify a runtime
 resource for this review.
 
 Review candidate commit:
-`f07b3e25716cd91112b48d3cc659fde51f667c50`
+`f94a272cfefdc76e974ebecb449ec6abf66d50ad`
 
 Required result path:
 `fable-mtp-layer-execution-v1-r3.md` at the repository root.
@@ -33,11 +33,12 @@ start and finish. Any mismatch withholds the token.
 | `spec/engine-v0.md` | `52497e022bde5278372a9bce168e87a602fca9341c4cb4e019b4a3c7ce63179b` |
 | `docs/mtp-layer-execution-v1.md` | `5ad5bf01cdbd5e183b5e50aa0940344b5aabc09bf05a90c57d58e3e5b28dd3a7` |
 | `docs/mtp-layer-execution-v1-r2.md` | `d75710b3b552f229cc3bef34a8977a7c30e5b03b4c4a268f27c0efb2a3d1f12c` |
-| `docs/mtp-layer-execution-v1-r3.md` | `5440eb54c41b977a1fe5716357e32d99a05b1f279289c95b8ac89f24bb6d4d27` |
+| `docs/mtp-layer-execution-v1-r3.md` | `cd66910cf8738042d0c5ec8c7fbee69f024db9bde543d379abc7cfba9264de96` |
 | `docs/distributed-sampling-abi-v1.md` | `383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b` |
 | `docs/distributed-sampling-abi-v1-r2.md` | `061903d0a0cf2a284f35b177da5f1c3484cb61dfd9020f627db7b5632a4f2b6b` |
 | `docs/target-layer-execution-v1.md` | `89c6cf7397a3dc6b0c01383e679dcc4b51e20e3c45057bef0928dc24b866a819` |
 | `docs/target-layer-execution-v1-r2.md` | `3b70e5d4b74aa66c41c855b71f282e64ed726c86ce78161260d12dca596934eb` |
+| `docs/target-layer-execution-v1-r3.md` | `97c2c3615384dddc6204e910fe3c498fdd7a26554ed8aecec790d62f72c2ad87` |
 | `docs/target-graph-physical-memory-v1.md` | `135e7d61f5ce7cc94d200648e9691b9d76edaee13025c21e88f0ad2c07018bc9` |
 | `docs/sm120-rank-executor-v1.md` | `e97c54b865ed50c40ff8b15f6580d0edc18dbd0783135bc1c17d11cc19986fd4` |
 | `docs/sm120-rank-executor-v1-r2.md` | `4f40ea7652858b4cebbe4093dc81149cb30aa26bedc69edef72fa627c987df89` |

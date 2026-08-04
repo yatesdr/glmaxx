@@ -1333,9 +1333,10 @@ verdicts:
 | strict production rank-manifest validation v2 | `4bf7bb5` | `docs/fable-production-rank-manifest-validation-v2-handoff.md` |
 | complete target-layer execution design | `83f5005` | `docs/fable-target-layer-execution-v1-handoff.md` |
 | corrective target-layer program, table, and control design r2 | `d4817ff` | `docs/fable-target-layer-execution-v1-r2-handoff.md` |
+| profile-specific TR3 58,794-binding and NVFP4/NF3 39,594-binding target programs r3 | `f94a272` | `docs/fable-target-layer-execution-v1-r3-handoff.md` |
 | target graph ten-arena physical-memory plan, class spans, node uses, and rank bindings | `f07b3e2` | `docs/fable-target-graph-physical-memory-v1-handoff.md` |
 | recurrent MTP0–6 execution corrective design r2, superseded | `83bd1ba` | `docs/fable-mtp-layer-execution-v1-r2-handoff.md` |
-| recurrent MTP0–6 sampling, pending-logit, ten-arena physical-memory, and executor integration r3 | `f07b3e2` | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` |
+| recurrent MTP0–6 sampling, pending-logit, ten-arena physical-memory, target-profile, and executor integration r3 | `f94a272` | `docs/fable-mtp-layer-execution-v1-r3-handoff.md` |
 | Rust-owned SM120 rank executor design, first review withheld | `b64cb6d` | `docs/fable-sm120-rank-executor-v1-handoff.md` |
 | corrected SM120 rank executor and exact native ABI | `a0f2bee` | `docs/fable-sm120-rank-executor-v1-r2-handoff.md` |
 | executor r5 recurrent-state role and complete ten-arena graph-memory capability binding | `f07b3e2` | `docs/fable-sm120-rank-executor-v1-r5-handoff.md` |

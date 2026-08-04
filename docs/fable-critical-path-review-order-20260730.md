@@ -176,11 +176,11 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline after the ten-arena physical-memory correction:
+Current verified baseline after the profile-specific target-program correction:
 
 ```text
-167 handoffs
-149 configured result paths
+168 handoffs
+150 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```
