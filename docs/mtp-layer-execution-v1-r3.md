@@ -32,7 +32,7 @@ The operative design is the conjunction of:
 - `mtp-layer-execution-v1-r2.md`;
 - this r3 amendment;
 - distributed sampling v1 plus its r2 amendment;
-- target-layer v1 plus its r2 amendment;
+- target-layer v1 plus its r2 and profile-program r3 amendments;
 - the physical target-graph memory v1 design and GraphProfile v3;
 - the SM120 rank-executor r1-r5 design and corrected native header; and
 - the applicable accepted physical target/MTP program.
