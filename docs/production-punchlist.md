@@ -16,7 +16,11 @@ Live evidence update through `46080db` on 2026-08-03:
   workspace versus 24,576 bytes available; the false metadata-only r1 design
   is superseded by the pending r2 scratch/probe contract,
   and real TR3 admission still fails closed on the pending safetensors
-  `total_size` contract. The first two mixed-K designs are superseded: a full
+  `total_size` contract. Its r3 candidate now makes the cross-shard boundary
+  executable with a publication sweep, revocable retained-descriptor lease,
+  exact directory membership, and read-only production sources; adversarial
+  acceptance is required before parser work. The first two mixed-K designs are
+  superseded: a full
   header census proved 75 mixed target layers plus one uniform-K3 recurrent
   draft layer, while r3 now freezes strict tier parsing, an exact rank-common
   K3/K4 partition receipt, and a functional K4 route independent of the

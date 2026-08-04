@@ -21,7 +21,7 @@ implementation-unblock sequence is:
 1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
 2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
 3. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`;
-4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
+4. `docs/fable-safetensors-index-total-size-v1-r3-handoff.md`;
 5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
 6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md`;
 7. `docs/fable-sm120-rank-executor-v1-r4-handoff.md`;
@@ -173,11 +173,11 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-Current verified baseline before the new grouped-r2 result lands:
+Current verified baseline after adding the safetensors r3 handoff:
 
 ```text
-161 handoffs
-143 configured result paths
+162 handoffs
+144 configured result paths
 39 machine-accepted results
 0 machine-withheld installed results
 ```

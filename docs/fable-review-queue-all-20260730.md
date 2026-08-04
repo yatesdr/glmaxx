@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f`
+`97c082bf840685dfa79db0356626649ca1e19234`
 
-On a clean tracked tree, `review-proof-all` must verify 159 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 162 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 141 configured result artifacts are tracked and all 39 are
+Thirty-nine of 144 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -20,10 +20,10 @@ The immediate source-to-first-batch review order is:
 1. `docs/fable-exl3-warp-staging-cpu-v2-handoff.md`;
 2. `docs/fable-exl3-warp-staged-v2-implementation-handoff.md`;
 3. `docs/fable-exl3-grouped-gate-up-sm120-v1-r2-handoff.md`;
-4. `docs/fable-safetensors-index-total-size-v1-r2-handoff.md`;
+4. `docs/fable-safetensors-index-total-size-v1-r3-handoff.md`;
 5. `docs/fable-tr3-325-publisher-manifest-reconciliation-v1-handoff.md`;
 6. `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md`;
-7. `docs/fable-sm120-rank-executor-v1-r3-handoff.md`;
+7. `docs/fable-sm120-rank-executor-v1-r4-handoff.md`;
 8. `docs/fable-distributed-sampling-abi-v1-r2-handoff.md`;
 9. `docs/fable-target-layer-execution-v1-r2-handoff.md`;
 10. `docs/fable-mtp-layer-execution-v1-r2-handoff.md`;
@@ -55,11 +55,16 @@ r2 amendment fixes rank-local pointer identity, exact route serialization,
 span/alias validation, predecessor-failure suppression, and the complete
 48-stage recurrence. Do not issue the v1 token or implement from the v1 bytes.
 
-The rank-executor r3 handoff supersedes row 90's unexecuted r2 handoff. Its
-header fixes C11 alignment/assertions, adds the missing fatal/shutdown context
-synchronization entry point, freezes flags/families/arena roles, and removes
-the unconstructible program-handle choice. Do not issue the r2 token or
-implement against its header bytes.
+The rank-executor r4 handoff supersedes rows 90 and 159. It retains r3's C11
+ABI and adds an explicit validation-module handle so the owner thread can
+construct the required validation launch. Do not issue an older token or
+implement against an older header.
+
+The safetensors r3 handoff supersedes rows 125 and 140. It replaces r2's
+unattainable global-stability implication with a canonical publication sweep,
+a revocable retained-descriptor lease, exact directory membership, and an
+explicit read-only production-source boundary. Do not issue either older
+token or implement from r2 alone.
 
 The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
@@ -250,6 +255,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 159 | `docs/fable-sm120-rank-executor-v1-r3-handoff.md` | `236dab0e7fe6d8e674b1666e3906d1bc0c9bbc8f` | `docs/reviews/fable-sm120-rank-executor-v1-r3.md` | superseded; do not issue `sm120-rank-executor-v1-r3-design-accepted` |
 | 160 | `docs/fable-sm120-rank-executor-v1-r4-handoff.md` | `688f5c7a4bfb79ed884693a968013a12a394d530` | `docs/reviews/fable-sm120-rank-executor-v1-r4.md` | `sm120-rank-executor-v1-r4-design-accepted` |
 | 161 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-r3-handoff.md` | `b4dc806db89076ac015bd25d942b3d2ebfb724b3` | `docs/reviews/fable-exl3-mixed-k-source-and-kernel-v1-r3.md` | `exl3-mixed-k-source-and-kernel-v1-r3-design-accepted` |
+| 162 | `docs/fable-safetensors-index-total-size-v1-r3-handoff.md` | `97c082bf840685dfa79db0356626649ca1e19234` | `docs/reviews/fable-safetensors-index-total-size-v1-r3.md` | `safetensors-index-total-size-v1-r3-design-accepted` |
 
 ## Verification command
 
@@ -260,5 +266,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 161 current handoffs and two
+The expected queue count for this document is 162 current handoffs and two
 explicitly skipped historical umbrella handoffs.
