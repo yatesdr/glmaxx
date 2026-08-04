@@ -6,12 +6,12 @@ Critical-path ordering for implementation unblock:
 `docs/fable-critical-path-review-order-20260730.md`
 
 Latest candidate included in the enumeration:
-`7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91`
+`b3ee484c8dda2cc0baed986362fbb6c83d78256a`
 
-On a clean tracked tree, `review-proof-all` must verify 156 current handoffs
+On a clean tracked tree, `review-proof-all` must verify 157 current handoffs
 and skip the two historical umbrella handoffs
 `docs/fable-phase-a-engine-handoff.md` and `docs/fable-review-handoff.md`.
-Thirty-nine of 138 configured result artifacts are tracked and all 39 are
+Thirty-nine of 139 configured result artifacts are tracked and all 39 are
 machine-accepted. The operator-owned untracked review inbox is not part of
 this count and must be linted separately before promotion.
 
@@ -35,7 +35,7 @@ The immediate source-to-first-batch review order is:
 16. `docs/fable-nf3-nvfp4-native-rank-manifest-v1-r2-handoff.md`;
 17. `docs/fable-sm120-w4a16-nf3-fused-moe-v1-r2-handoff.md`;
 18. `docs/fable-hybrid-mtp3-capacity-ledger-v1-r2-handoff.md`;
-19. `docs/fable-sm120-profiler-package-v1-handoff.md`; and
+19. `docs/fable-sm120-profiler-package-v1-r2-handoff.md`; and
 20. `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md`.
 
 Items 1 and 2 are sequential and open the measured staged K=3 route. Item 3
@@ -46,6 +46,9 @@ replay. Items 13 through 18 independently
 open the hybrid NVFP4/NF3 route and capacity ledger. The final two bind the
 bytes admitted to performance qualification. None conveys cn4 or CUDA
 authorization.
+
+The r2 profiler handoff supersedes row 124's unexecuted v1 handoff. Do not
+issue the v1 token; preflight requires the r2 artifact.
 
 The resident-generation design review is also queued. It is not ahead of the
 source-to-first-batch gates, but it must pass before implementing hot reload or
@@ -198,7 +201,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 121 | `docs/fable-direct-tier-checksum-authority-cpu-v1-handoff.md` | `7267b505fd4b83c9b421e5050277bf806a1e4867` | `docs/reviews/fable-direct-tier-checksum-authority-cpu-v1.md` | `direct-tier-checksum-authority-cpu-v1-accepted` |
 | 122 | `docs/fable-direct-tier-checksum-workers-cpu-v1-handoff.md` | `59f70da4dbeca8a5d542f3e5947002d3ee975bdb` | `docs/reviews/fable-direct-tier-checksum-workers-cpu-v1.md` | `direct-tier-checksum-workers-cpu-v1-accepted` |
 | 123 | `docs/fable-current-tree-review-acceptance-v3-r2-handoff.md` | `1efdf101f42439587b38c147f8a9ff5ee8b59ba5` | `fable-current-tree-review-acceptance-v3-r2.md` | `current-tree-review-acceptance-v3-r2-design-accepted` |
-| 124 | `docs/fable-sm120-profiler-package-v1-handoff.md` | `fdbd91647a3ea23031ebd562e3d57676d7eb5d9a` | `fable-sm120-profiler-package-v1.md` | `sm120-profiler-package-v1-accepted` |
+| 124 | `docs/fable-sm120-profiler-package-v1-handoff.md` | `fdbd91647a3ea23031ebd562e3d57676d7eb5d9a` | `fable-sm120-profiler-package-v1.md` | superseded; do not issue `sm120-profiler-package-v1-accepted` |
 | 125 | `docs/fable-safetensors-index-total-size-v1-handoff.md` | `bb8b7d6b9529b69bfaa3d9b981df7412e39bb30b` | `fable-safetensors-index-total-size-v1.md` | superseded; do not issue `safetensors-index-total-size-v1-design-accepted` |
 | 126 | `docs/fable-exl3-mixed-k-source-and-kernel-v1-handoff.md` | `849c1d12bf42d92aecffe9003530a2a13dcc3dfe` | `fable-exl3-mixed-k-source-and-kernel-v1.md` | superseded; do not issue `exl3-mixed-k-source-and-kernel-v1-design-accepted` |
 | 127 | `docs/fable-nf3-nvfp4-hybrid-source-and-kernel-v1-handoff.md` | `d3a5acd91422845a4665898405f05466763b8525` | `fable-nf3-nvfp4-hybrid-source-and-kernel-v1.md` | superseded; do not issue `nf3-nvfp4-hybrid-source-and-kernel-v1-design-accepted` |
@@ -231,6 +234,7 @@ until its explicitly required corrected warp-staging CPU review is accepted.
 | 154 | `docs/fable-distributed-sampling-abi-v1-r2-handoff.md` | `98ac16a98943d810cb3b8d86552e625aadc7be98` | `fable-distributed-sampling-abi-v1-r2.md` | `distributed-sampling-abi-v1-r2-design-accepted` |
 | 155 | `docs/fable-quality-acceptance-v1-r3-handoff.md` | `ab8dc028a708b2db78e276a8b01d9ad8c5d95703` | `fable-quality-acceptance-v1-r3.md` | `quality-acceptance-v1-r3-design-accepted` |
 | 156 | `docs/fable-exl3-grouped-gate-up-sm120-v1-handoff.md` | `7e2e4e360133fcf591c94bdf21eb8aa2ab1d6f91` | `fable-exl3-grouped-gate-up-sm120-v1.md` | `exl3-grouped-gate-up-sm120-v1-design-accepted` |
+| 157 | `docs/fable-sm120-profiler-package-v1-r2-handoff.md` | `b3ee484c8dda2cc0baed986362fbb6c83d78256a` | `fable-sm120-profiler-package-v1-r2.md` | `sm120-profiler-package-v1-r2-accepted` |
 
 ## Verification command
 
@@ -241,5 +245,5 @@ cargo run --offline -p glm-cli --bin glmaxx -- \
   review-proof-all . /tmp/glmaxx-review-provenance.json
 ```
 
-The expected queue count for this document is 156 current handoffs and two
+The expected queue count for this document is 157 current handoffs and two
 explicitly skipped historical umbrella handoffs.
