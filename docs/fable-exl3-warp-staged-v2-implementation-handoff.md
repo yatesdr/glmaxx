@@ -10,7 +10,7 @@ Review candidate commit:
 Required result path:
 `fable-exl3-warp-staged-v2-implementation.md` at the repository root.
 
-Requested acceptance token, only for an unqualified pass:
+Requested acceptance token, only if every blocker and major is resolved:
 `exl3-warp-staged-v2-implementation-accepted`
 
 GPU authorization conveyed by this handoff: none
