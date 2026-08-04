@@ -39,6 +39,16 @@ the provenance checker and the complete local gate (413 tests; 154 handoffs,
 39/136 configured results accepted, none withheld). This is review readiness,
 not design acceptance or implementation; probabilistic serving remains closed.
 
+The EXL3 mixed-K r2 candidate `23e6e26` also passed its exact 17-input
+preflight and complete 413-test local gate. A stronger read-only cn4
+diagnostic at `e75dc8b` joined all 233,472 trellis descriptors to the exact
+tier-map expert, projection, and rank with zero mismatches: target
+172,800 K3/57,600 K4 and draft 3,072 K3/zero K4. The sealed evidence manifest
+is `ef9fa61623f36d1966a61e6c30575c0bb15e123c41b85440d4ece6b1be6bf19c`;
+full provenance and the retained failed-wrapper attempt are in
+`docs/exl3-mixed-k-r2-preflight-20260804.md`. This strengthens discovery only;
+the design token and Rust K4 implementation remain absent.
+
 ## 2026-08-03 active-goal ledger
 
 Clean detached source `8a2a617a778a7cd528f5516660de681f94be22db`
