@@ -156,10 +156,27 @@ There are exactly two nonexpert bindings. The term for the head is always
 `vocabulary-axis-0 sharded`; “column parallel” and “vocabulary-row parallel”
 are not alternate ABI names.
 
-`distributed_sampling_abi_sha256` is the full-file SHA-256 of the exact
-`docs/distributed-sampling-abi-v1.md` bytes pinned by the accepted sampling
-review. An absent, unaccepted, differently hashed, or rank-local sampling
-contract prevents target-program construction.
+`distributed_sampling_abi_sha256` is the composite identity defined by the
+corrective sampling successor, not the hash of the retained v1 file alone:
+
+```text
+SHA256(
+  "glmaxx.distributed-sampling-abi.v1-r2\0" ||
+  SHA256(exact docs/distributed-sampling-abi-v1.md bytes) ||
+  SHA256(exact docs/distributed-sampling-abi-v1-r2.md bytes)
+)
+```
+
+For the exact pinned inner hashes
+`383e328a527cc780ed553af0b78382cf200ad60f97afb26d96a2a1494b57c89b`
+and
+`f2fb8ec8c81c63e76b7a0639fddc8c74719faff2a972bafcdf0b1d5de8db3db7`,
+the composite is
+`8edd0d940273ee2e242b8164b611b8d997f7616f4618b0c1d894ea4dc114aa0f`.
+An absent or unaccepted r2 successor, either changed inner file, a different
+composite, or a rank-local sampling contract prevents target-program
+construction. This dependency creates no hash cycle: sampling binds the two
+raw design files, while the final-head entry consumes only their composite.
 
 The top-level hash remains:
 
@@ -431,6 +448,17 @@ target_indexer_record =
   (((index_group_id * local_page_capacity + local_page_id) * 64 + token_offset)
     * 132)
 ```
+
+All ranks validate the complete rank-common table, but `local_page_id` is
+meaningful only in `owner_rank`'s arenas. Rank `r` may form and dereference
+either address above only for records with `valid=1 && owner_rank==r`.
+Nonowners form no target-KV or indexer destination pointer and perform no
+write for that row; a captured kernel receives the common owner mask plus its
+immutable executor rank and must make the nonowner lane a neutral no-write
+path. This ownership mask cannot alter a collective ordinal, participant
+mask, or route. A write by a nonowner, resolving the ID against the wrong
+rank's base, or using an arena generation other than the adopted owner arena
+is fatal before publication.
 
 This is the fixed layer/group-major layout in `spec/engine-v0.md`; a different
 layout hash or stride is incompatible. One maximum-sized active-step table
