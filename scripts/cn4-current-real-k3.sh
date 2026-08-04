@@ -151,8 +151,10 @@ docker "${docker_args[@]}" \
     >"${run}/container.stdout.txt" \
     2>"${run}/container.stderr.txt"
 
-sha256sum -c "${qualification}/artifact-manifest.txt" \
-    >"${run}/inner-manifest-verification.txt"
+(
+    cd "${qualification}"
+    sha256sum -c artifact-manifest.txt
+) >"${run}/inner-manifest-verification.txt"
 sha256sum "${qualification}/summary.json" \
     "${qualification}/artifact-manifest.txt" \
     "${qualification}/artifact-manifest.sha256" \
