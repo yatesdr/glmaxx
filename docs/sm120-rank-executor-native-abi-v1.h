@@ -9,21 +9,26 @@
  * not evidence that the functions have been implemented.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #if defined(__cplusplus)
 #define GLMAXX_EXECUTOR_ALIGN16 alignas(16)
 #define GLMAXX_EXECUTOR_NOEXCEPT noexcept
 extern "C" {
-#else
-#define GLMAXX_EXECUTOR_ALIGN16
+#elif defined(__clang__) || defined(__GNUC__)
+#define GLMAXX_EXECUTOR_ALIGN16 __attribute__((aligned(16)))
 #define GLMAXX_EXECUTOR_NOEXCEPT
+#else
+#error "GLMAXX executor ABI v1 requires C++17 alignas or a Clang/GNU C11 compiler"
 #endif
 
 enum {
   GLMAXX_EXECUTOR_ABI_VERSION = 1,
   GLMAXX_EXECUTOR_WORLD_SIZE = 4,
   GLMAXX_EXECUTOR_UNIQUE_ID_BYTES = 128,
+  GLMAXX_EXECUTOR_FLAGS_V1_NONE = 0,
+  GLMAXX_EXECUTOR_COMPUTE_CAPABILITY_SM120 = 120,
 };
 
 enum glmaxx_executor_status_v1 {
@@ -60,6 +65,27 @@ enum glmaxx_executor_arena_kind_v1 {
   GLMAXX_ARENA_HOST_PINNED = 2,
 };
 
+enum glmaxx_executor_arena_role_v1 {
+  GLMAXX_ARENA_ROLE_DEVICE_WEIGHTS = 1,
+  GLMAXX_ARENA_ROLE_DEVICE_CODEC_METADATA = 2,
+  GLMAXX_ARENA_ROLE_DEVICE_TARGET_KV = 3,
+  GLMAXX_ARENA_ROLE_DEVICE_TARGET_INDEXER = 4,
+  GLMAXX_ARENA_ROLE_DEVICE_DRAFT_SIDECAR = 5,
+  GLMAXX_ARENA_ROLE_DEVICE_PAGE_TABLE = 6,
+  GLMAXX_ARENA_ROLE_DEVICE_GRAPH_ARGUMENT = 7,
+  GLMAXX_ARENA_ROLE_DEVICE_GRAPH_SCRATCH = 8,
+  GLMAXX_ARENA_ROLE_DEVICE_COLLECTIVE = 9,
+  GLMAXX_ARENA_ROLE_DEVICE_TIER_TRANSFER = 10,
+  GLMAXX_ARENA_ROLE_DEVICE_COMPLETION_STATUS = 11,
+  GLMAXX_ARENA_ROLE_DEVICE_DIAGNOSTIC_STATUS = 12,
+  GLMAXX_ARENA_ROLE_HOST_CHECKPOINT_STAGING = 13,
+  GLMAXX_ARENA_ROLE_HOST_ARGUMENT_MIRROR = 14,
+  GLMAXX_ARENA_ROLE_HOST_COMPLETION_MIRROR = 15,
+  GLMAXX_ARENA_ROLE_HOST_TIER_IN = 16,
+  GLMAXX_ARENA_ROLE_HOST_TIER_OUT = 17,
+  GLMAXX_ARENA_ROLE_HOST_DIAGNOSTIC_STATUS = 18,
+};
+
 enum glmaxx_executor_copy_kind_v1 {
   GLMAXX_COPY_H2D = 1,
   GLMAXX_COPY_D2H = 2,
@@ -93,6 +119,12 @@ enum glmaxx_executor_node_kind_v1 {
   GLMAXX_NODE_MTP_PROGRAM = 3,
   GLMAXX_NODE_COLLECTIVE = 4,
   GLMAXX_NODE_STATUS_FINALIZE = 5,
+};
+
+enum glmaxx_executor_kernel_family_v1 {
+  GLMAXX_KERNEL_TARGET_PROGRAM = 1,
+  GLMAXX_KERNEL_MTP_PROGRAM = 2,
+  GLMAXX_KERNEL_DEVICE_VALIDATION = 3,
 };
 
 typedef uint64_t glmaxx_executor_handle_v1;
@@ -323,6 +355,7 @@ struct GLMAXX_EXECUTOR_ALIGN16 glmaxx_executor_graph_node_v1 {
   uint8_t collective_schedule_sha256[32];
   struct glmaxx_executor_span_v1 descriptor;
   struct glmaxx_executor_span_v1 status;
+  /* Module handle for TARGET/MTP, route handle for COLLECTIVE, zero for status. */
   glmaxx_executor_handle_v1 native_object;
   uint64_t reserved0;
 };
@@ -389,6 +422,9 @@ int32_t glmaxx_executor_context_memory_info_v1(
     glmaxx_executor_handle_v1 context,
     uint64_t* free_bytes,
     uint64_t* total_bytes,
+    struct glmaxx_executor_error_v1* error) GLMAXX_EXECUTOR_NOEXCEPT;
+int32_t glmaxx_executor_context_synchronize_v1(
+    glmaxx_executor_handle_v1 context,
     struct glmaxx_executor_error_v1* error) GLMAXX_EXECUTOR_NOEXCEPT;
 int32_t glmaxx_executor_peer_query_v1(
     glmaxx_executor_handle_v1 context,
@@ -526,47 +562,92 @@ int32_t glmaxx_executor_device_status_query_v1(
 
 #if defined(__cplusplus)
 }
-
-static_assert(sizeof(glmaxx_executor_error_v1) == 64);
-static_assert(sizeof(glmaxx_executor_context_config_v1) == 96);
-static_assert(sizeof(glmaxx_executor_device_caps_v1) == 128);
-static_assert(sizeof(glmaxx_executor_peer_desc_v1) == 80);
-static_assert(sizeof(glmaxx_executor_peer_caps_v1) == 64);
-static_assert(sizeof(glmaxx_executor_module_image_v1) == 128);
-static_assert(sizeof(glmaxx_executor_module_capability_v1) == 192);
-static_assert(sizeof(glmaxx_executor_arena_desc_v1) == 80);
-static_assert(sizeof(glmaxx_executor_arena_binding_v1) == 48);
-static_assert(sizeof(glmaxx_executor_span_v1) == 32);
-static_assert(sizeof(glmaxx_executor_copy_desc_v1) == 112);
-static_assert(sizeof(glmaxx_executor_communicator_desc_v1) == 256);
-static_assert(sizeof(glmaxx_executor_route_desc_v1) == 256);
-static_assert(sizeof(glmaxx_executor_graph_desc_v1) == 192);
-static_assert(sizeof(glmaxx_executor_graph_node_v1) == 192);
-static_assert(sizeof(glmaxx_executor_validation_desc_v1) == 192);
-static_assert(sizeof(glmaxx_executor_launch_desc_v1) == 96);
-static_assert(sizeof(glmaxx_executor_device_status_v1) == 128);
-
-static_assert(alignof(glmaxx_executor_error_v1) == 16);
-static_assert(alignof(glmaxx_executor_context_config_v1) == 16);
-static_assert(alignof(glmaxx_executor_device_caps_v1) == 16);
-static_assert(alignof(glmaxx_executor_peer_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_peer_caps_v1) == 16);
-static_assert(alignof(glmaxx_executor_module_image_v1) == 16);
-static_assert(alignof(glmaxx_executor_module_capability_v1) == 16);
-static_assert(alignof(glmaxx_executor_arena_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_arena_binding_v1) == 16);
-static_assert(alignof(glmaxx_executor_span_v1) == 16);
-static_assert(alignof(glmaxx_executor_copy_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_communicator_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_route_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_graph_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_graph_node_v1) == 16);
-static_assert(alignof(glmaxx_executor_validation_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_launch_desc_v1) == 16);
-static_assert(alignof(glmaxx_executor_device_status_v1) == 16);
+#define GLMAXX_EXECUTOR_STATIC_ASSERT(condition, message) \
+  static_assert((condition), message)
+#define GLMAXX_EXECUTOR_ALIGNOF(type) alignof(type)
+#else
+#define GLMAXX_EXECUTOR_STATIC_ASSERT(condition, message) \
+  _Static_assert((condition), message)
+#define GLMAXX_EXECUTOR_ALIGNOF(type) _Alignof(type)
 #endif
 
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_error_v1) == 64,
+                              "error size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_context_config_v1) == 96,
+                              "context config size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_device_caps_v1) == 128,
+                              "device caps size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_peer_desc_v1) == 80,
+                              "peer descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_peer_caps_v1) == 64,
+                              "peer caps size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_module_image_v1) == 128,
+                              "module image size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_module_capability_v1) == 192,
+                              "module capability size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_arena_desc_v1) == 80,
+                              "arena descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_arena_binding_v1) == 48,
+                              "arena binding size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_span_v1) == 32,
+                              "span size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_copy_desc_v1) == 112,
+                              "copy descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_communicator_desc_v1) == 256,
+                              "communicator descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_route_desc_v1) == 256,
+                              "route descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_graph_desc_v1) == 192,
+                              "graph descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_graph_node_v1) == 192,
+                              "graph node size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_validation_desc_v1) == 192,
+                              "validation descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_launch_desc_v1) == 96,
+                              "launch descriptor size");
+GLMAXX_EXECUTOR_STATIC_ASSERT(sizeof(struct glmaxx_executor_device_status_v1) == 128,
+                              "device status size");
+
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_error_v1) == 16,
+                              "error alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_context_config_v1) == 16,
+                              "context config alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_device_caps_v1) == 16,
+                              "device caps alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_peer_desc_v1) == 16,
+                              "peer descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_peer_caps_v1) == 16,
+                              "peer caps alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_module_image_v1) == 16,
+                              "module image alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_module_capability_v1) == 16,
+                              "module capability alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_arena_desc_v1) == 16,
+                              "arena descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_arena_binding_v1) == 16,
+                              "arena binding alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_span_v1) == 16,
+                              "span alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_copy_desc_v1) == 16,
+                              "copy descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_communicator_desc_v1) == 16,
+                              "communicator descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_route_desc_v1) == 16,
+                              "route descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_graph_desc_v1) == 16,
+                              "graph descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_graph_node_v1) == 16,
+                              "graph node alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_validation_desc_v1) == 16,
+                              "validation descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_launch_desc_v1) == 16,
+                              "launch descriptor alignment");
+GLMAXX_EXECUTOR_STATIC_ASSERT(GLMAXX_EXECUTOR_ALIGNOF(struct glmaxx_executor_device_status_v1) == 16,
+                              "device status alignment");
+
 #undef GLMAXX_EXECUTOR_ALIGN16
+#undef GLMAXX_EXECUTOR_ALIGNOF
 #undef GLMAXX_EXECUTOR_NOEXCEPT
+#undef GLMAXX_EXECUTOR_STATIC_ASSERT
 
 #endif  /* GLMAXX_SM120_RANK_EXECUTOR_NATIVE_ABI_V1_H_ */
