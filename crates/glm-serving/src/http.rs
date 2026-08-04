@@ -21,6 +21,7 @@ use glm_tokenizer::{ChatTemplateError, ChatTemplateOptions, render_chat};
 
 pub const GLMAXX_MODEL_ID: &str = "glm-5.2";
 pub const GLMAXX_MODEL_REVISION: &str = "b4734de4facf877f85769a911abafc5283eab3d9";
+pub const GLMAXX_MODEL_CONTEXT_LENGTH: u32 = 1_048_576;
 const MAXIMUM_MESSAGES: usize = 4_096;
 const MAXIMUM_STOP_SEQUENCES: usize = 16;
 const MAXIMUM_STOP_BYTES: usize = 256;
@@ -44,6 +45,46 @@ pub struct ApiHealth {
     pub backend: &'static str,
     pub tp: u8,
     pub sm: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ApiModelCard {
+    pub id: &'static str,
+    pub object: &'static str,
+    pub created: u64,
+    pub owned_by: &'static str,
+    pub max_model_len: u32,
+    pub model_revision: &'static str,
+}
+
+impl ApiModelCard {
+    #[must_use]
+    pub const fn glm52() -> Self {
+        Self {
+            id: GLMAXX_MODEL_ID,
+            object: "model",
+            created: 0,
+            owned_by: "glmaxx",
+            max_model_len: GLMAXX_MODEL_CONTEXT_LENGTH,
+            model_revision: GLMAXX_MODEL_REVISION,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ApiModelList {
+    pub object: &'static str,
+    pub data: [ApiModelCard; 1],
+}
+
+impl ApiModelList {
+    #[must_use]
+    pub const fn glm52() -> Self {
+        Self {
+            object: "list",
+            data: [ApiModelCard::glm52()],
+        }
+    }
 }
 
 impl ApiHealth {
@@ -686,6 +727,13 @@ fn handle_connection(
                 backend.metrics().as_bytes(),
             )
             .map_err(internal_io)
+        }
+        ("GET", "/v1/models") => {
+            if !backend.health().is_production_healthy() {
+                return Err(backend_unavailable());
+            }
+            authenticate(&request.headers, &config.api_keys)?;
+            write_json(stream, 200, &ApiModelList::glm52()).map_err(internal_io)
         }
         ("POST", "/v1/chat/completions") => {
             if !backend.health().is_production_healthy() {
@@ -1466,6 +1514,44 @@ mod tests {
             missing_parent.validate().unwrap_err().body.error.code,
             "INVALID_STREAM_OPTIONS"
         );
+    }
+
+    #[test]
+    fn pinned_decode_benchmark_discovers_exact_model_and_openai_route() {
+        let backend = MockBackend::healthy();
+        let Some(server) = bind_or_skip(backend) else {
+            return;
+        };
+
+        let unauthorized = request(server.local_addr(), "GET", "/v1/models", false, "");
+        assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized"));
+
+        let response = request(server.local_addr(), "GET", "/v1/models", true, "");
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        let models: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(models["object"], "list");
+        assert_eq!(models["data"].as_array().unwrap().len(), 1);
+        assert_eq!(models["data"][0]["id"], GLMAXX_MODEL_ID);
+        assert_eq!(models["data"][0]["object"], "model");
+        assert_eq!(models["data"][0]["owned_by"], "glmaxx");
+        assert_eq!(
+            models["data"][0]["max_model_len"],
+            GLMAXX_MODEL_CONTEXT_LENGTH
+        );
+        assert_eq!(models["data"][0]["model_revision"], GLMAXX_MODEL_REVISION);
+
+        // These are the pinned driver's SGLang and vLLM probes. Both must
+        // remain absent so its final metrics-prefix check classifies GLMAXX
+        // honestly as a generic OpenAI-compatible engine.
+        let sglang = request(server.local_addr(), "GET", "/get_server_info", true, "");
+        assert!(sglang.starts_with("HTTP/1.1 404 Not Found"));
+        let vllm = request(server.local_addr(), "GET", "/version", true, "");
+        assert!(vllm.starts_with("HTTP/1.1 404 Not Found"));
+        let metrics = request(server.local_addr(), "GET", "/metrics", true, "");
+        assert!(metrics.starts_with("HTTP/1.1 200 OK"));
+        assert!(!metrics.contains("sglang:"));
+        assert!(!metrics.contains("vllm:"));
     }
 
     #[test]

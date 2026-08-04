@@ -41,7 +41,8 @@ pub use cache::{
 };
 pub use http::{
     ApiBackend, ApiBackendError, ApiCompletionEvent, ApiCompletionHandle, ApiErrorBody, ApiHealth,
-    ApiHealthState, ApiHttpServer, ApiServerConfig, ApiUsage, ChatCompletionRequest, ChatMessage,
+    ApiHealthState, ApiHttpServer, ApiModelCard, ApiModelList, ApiServerConfig, ApiUsage,
+    ChatCompletionRequest, ChatMessage, GLMAXX_MODEL_CONTEXT_LENGTH, GLMAXX_MODEL_ID,
     GLMAXX_MODEL_REVISION, SamplingParameters, StopSequences, StreamOptions, ValidatedChatRequest,
 };
 
