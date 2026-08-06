@@ -6,6 +6,7 @@
 
 mod checkpoint_cuda;
 mod checkpoint_load;
+mod execution_binding;
 mod graph;
 mod input;
 mod memory;
@@ -34,6 +35,10 @@ pub use checkpoint_load::{
     RankSetLoadCoordinator, RankSetLoadCoordinatorState, RankSetLoadEnvironment, RankSetLoadPlan,
     RankSetLoadPlanHeader, TENSOR_ARENA_ENTRY_BYTES, TensorArenaEntry, WeightArenaExecutionPermit,
     arena_layout_sha256, build_rank_set_load_plan,
+};
+pub use execution_binding::{
+    STEP_PROGRAM_BINDING_RECORD_BYTES, StepProgramBinding, StepProgramBindingError,
+    executor_program_set_sha256,
 };
 pub use graph::{GraphEntry, GraphKey, GraphProfile, GraphProfileError};
 pub use input::{
@@ -86,8 +91,9 @@ pub use weight::{
     ProtectedAllocation, ProtectedPrecision, WeightPolicy, WeightPolicyError, WeightProfile,
 };
 pub use worker::{
-    MockWorkerFault, PageDeltaAck, RankExecutionError, RankExecutor, RankExecutorFactory,
-    RankStepAck, RankWeightCleanupAck, RankWeightFinalizeAck, RankWeightPhase, StepHandle,
-    StepOutcome, Tp4WorkerPool, WeightLoadFailure, WeightLoadFailureCause, WeightLoadOutcome,
-    WeightShutdownFailure, WeightShutdownOutcome, WorkerError, WorkerExecutionPosture,
+    MockWorkerFault, PageDeltaAck, ProgramBoundStepOutput, RankExecutionError, RankExecutor,
+    RankExecutorFactory, RankStepAck, RankWeightCleanupAck, RankWeightFinalizeAck, RankWeightPhase,
+    StepHandle, StepOutcome, Tp4WorkerPool, WeightLoadFailure, WeightLoadFailureCause,
+    WeightLoadOutcome, WeightShutdownFailure, WeightShutdownOutcome, WorkerError,
+    WorkerExecutionPosture,
 };

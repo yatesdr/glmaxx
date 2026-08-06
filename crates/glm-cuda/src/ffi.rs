@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::thread::ThreadId;
 use std::time::Instant;
 
-use glm_format::{Codec, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4};
+use glm_format::{Codec, Exl3Metadata, Exl3Projection, Exl3Trellis, KERNEL_ABI, PackedNvfp4};
 use sha2::{Digest, Sha256};
 
 use crate::abi::active_experts_for_grouped;
@@ -183,6 +183,10 @@ impl NativeDeviceIdentity {
 /// Construct this object on the persistent rank thread. Every method verifies
 /// that it is still called by that same thread.
 pub struct NativeRankContext {
+    inner: Rc<NativeRankContextInner>,
+}
+
+struct NativeRankContextInner {
     identity: NativeDeviceIdentity,
     stream: NativeStream,
     owner: ThreadId,
@@ -220,44 +224,46 @@ impl NativeRankContext {
         }
         let stream = NativeStream::create()?;
         Ok(Self {
-            identity: NativeDeviceIdentity {
-                visible_devices: u32::try_from(visible_devices)
-                    .map_err(|_| KernelError::Topology)?,
-                device_index: u32::from(rank),
-                compute_capability: u32::try_from(compute_capability)
-                    .map_err(|_| KernelError::Topology)?,
-                multiprocessor_count: u32::try_from(multiprocessor_count)
-                    .map_err(|_| KernelError::Topology)?,
-                total_memory_bytes,
-                device_uuid,
-            },
-            stream,
-            owner: std::thread::current().id(),
+            inner: Rc::new(NativeRankContextInner {
+                identity: NativeDeviceIdentity {
+                    visible_devices: u32::try_from(visible_devices)
+                        .map_err(|_| KernelError::Topology)?,
+                    device_index: u32::from(rank),
+                    compute_capability: u32::try_from(compute_capability)
+                        .map_err(|_| KernelError::Topology)?,
+                    multiprocessor_count: u32::try_from(multiprocessor_count)
+                        .map_err(|_| KernelError::Topology)?,
+                    total_memory_bytes,
+                    device_uuid,
+                },
+                stream,
+                owner: std::thread::current().id(),
+            }),
         })
     }
 
     #[must_use]
-    pub const fn identity(&self) -> NativeDeviceIdentity {
-        self.identity
+    pub fn identity(&self) -> NativeDeviceIdentity {
+        self.inner.identity
     }
 
     pub fn stream(&self) -> Result<u64, KernelError> {
         self.require_owner()?;
-        Ok(self.stream.0)
+        Ok(self.inner.stream.0)
     }
 
     pub fn synchronize(&self) -> Result<(), KernelError> {
         self.require_owner()?;
         // SAFETY: this context owns the stream and the owner-thread check
         // prevents cross-thread rank-state access.
-        check(unsafe { glmaxx_stream_synchronize(self.stream.0) })
+        check(unsafe { glmaxx_stream_synchronize(self.inner.stream.0) })
     }
 
     pub fn checkpoint_load_backend(&self) -> Result<NativeRankLoadBackend, KernelError> {
         self.require_owner()?;
         Ok(NativeRankLoadBackend {
-            owner: self.owner,
-            device_identity_sha256: self.identity.identity_sha256(),
+            owner: self.inner.owner,
+            device_identity_sha256: self.inner.identity.identity_sha256(),
             device_allocations: BTreeMap::new(),
             pinned_allocations: BTreeMap::new(),
             streams: BTreeSet::new(),
@@ -280,7 +286,7 @@ impl NativeRankContext {
             )
         })?;
         if free_memory_bytes == 0
-            || total_memory_bytes != self.identity.total_memory_bytes
+            || total_memory_bytes != self.inner.identity.total_memory_bytes
             || free_memory_bytes > total_memory_bytes
         {
             return Err(KernelError::Topology);
@@ -289,7 +295,388 @@ impl NativeRankContext {
     }
 
     fn require_owner(&self) -> Result<(), KernelError> {
+        self.inner.require_owner()
+    }
+
+    /// Allocates one zeroed, owner-thread-affine execution buffer on this
+    /// rank's persistent stream. The buffer retains the context/stream until
+    /// it is dropped and cannot cross a Rust thread boundary.
+    pub fn allocate_execution_buffer(
+        &self,
+        bytes: u64,
+    ) -> Result<NativeExecutionBuffer, KernelError> {
+        self.require_owner()?;
+        NativeExecutionBuffer::allocate(Rc::clone(&self.inner), bytes)
+    }
+}
+
+impl NativeRankContextInner {
+    fn require_owner(&self) -> Result<(), KernelError> {
         if std::thread::current().id() == self.owner {
+            Ok(())
+        } else {
+            Err(KernelError::Topology)
+        }
+    }
+}
+
+/// Device allocation tied to one persistent native rank context.
+///
+/// Pointer values are deliberately not exposed. Kernel-specific builders in
+/// this module can borrow the allocation only after proving context identity
+/// and exact byte bounds.
+pub struct NativeExecutionBuffer {
+    inner: Rc<NativeRankContextInner>,
+    pointer: u64,
+    bytes: u64,
+}
+
+impl NativeExecutionBuffer {
+    fn allocate(inner: Rc<NativeRankContextInner>, bytes: u64) -> Result<Self, KernelError> {
+        inner.require_owner()?;
+        if bytes == 0 {
+            return Err(KernelError::Shape);
+        }
+        let mut pointer = 0_u64;
+        // SAFETY: `pointer` is a valid out-parameter on the selected owner
+        // thread and the returned allocation is retained by this object.
+        check(unsafe { glmaxx_device_alloc(bytes, std::ptr::from_mut(&mut pointer)) })?;
+        if pointer == 0 {
+            return Err(KernelError::Null);
+        }
+        // SAFETY: the new allocation covers `bytes` and the retained stream is
+        // live for this object's complete lifetime.
+        if let Err(error) = check(unsafe { glmaxx_memset_zero(pointer, bytes, inner.stream.0) }) {
+            // SAFETY: no work can reference the allocation after a failed
+            // zero enqueue.
+            let _ = unsafe { glmaxx_device_free(pointer) };
+            return Err(error);
+        }
+        Ok(Self {
+            inner,
+            pointer,
+            bytes,
+        })
+    }
+
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn upload_exact(
+        &self,
+        context: &NativeRankContext,
+        bytes: &[u8],
+    ) -> Result<(), KernelError> {
+        self.require_context(context)?;
+        if u64::try_from(bytes.len()).map_err(|_| KernelError::Overflow)? != self.bytes {
+            return Err(KernelError::Shape);
+        }
+        // SAFETY: the allocation and retained stream are live and the source
+        // slice covers the exact transfer.
+        check(unsafe {
+            glmaxx_memcpy_h2d(
+                self.pointer,
+                bytes.as_ptr().cast(),
+                self.bytes,
+                self.inner.stream.0,
+            )
+        })
+    }
+
+    pub fn zero(&self, context: &NativeRankContext) -> Result<(), KernelError> {
+        self.require_context(context)?;
+        // SAFETY: the allocation covers the exact byte count.
+        check(unsafe { glmaxx_memset_zero(self.pointer, self.bytes, self.inner.stream.0) })
+    }
+
+    pub fn download(&self, context: &NativeRankContext) -> Result<Vec<u8>, KernelError> {
+        self.require_context(context)?;
+        let mut output =
+            vec![0_u8; usize::try_from(self.bytes).map_err(|_| KernelError::Overflow)?];
+        // SAFETY: the destination vector and source allocation both cover the
+        // exact byte count and remain live through synchronization.
+        check(unsafe {
+            glmaxx_memcpy_d2h(
+                output.as_mut_ptr().cast(),
+                self.pointer,
+                self.bytes,
+                self.inner.stream.0,
+            )
+        })?;
+        check(unsafe { glmaxx_stream_synchronize(self.inner.stream.0) })?;
+        Ok(output)
+    }
+
+    fn require_context(&self, context: &NativeRankContext) -> Result<(), KernelError> {
+        self.inner.require_owner()?;
+        if Rc::ptr_eq(&self.inner, &context.inner) {
+            Ok(())
+        } else {
+            Err(KernelError::Topology)
+        }
+    }
+}
+
+impl Drop for NativeExecutionBuffer {
+    fn drop(&mut self) {
+        if self.inner.require_owner().is_err() {
+            return;
+        }
+        // A failed synchronization deliberately leaks rather than freeing a
+        // possibly borrowed allocation.
+        if check(unsafe { glmaxx_stream_synchronize(self.inner.stream.0) }).is_ok() {
+            // SAFETY: this object owns the allocation and drops exactly once.
+            let _ = unsafe { glmaxx_device_free(self.pointer) };
+            self.pointer = 0;
+        }
+    }
+}
+
+/// Authenticated direct-source EXL3 planes resident in the adopted checkpoint
+/// arena. This object borrows no host file bytes and owns no weight storage.
+pub struct NativeResidentExl3Projection<'arena> {
+    inner: Rc<NativeRankContextInner>,
+    metadata: Exl3Metadata,
+    trellis_pointer: u64,
+    suh_pointer: u64,
+    svh_pointer: u64,
+    _arena: PhantomData<&'arena ()>,
+}
+
+impl NativeResidentExl3Projection<'_> {
+    /// Creates a projection view over owner-derived checkpoint spans.
+    ///
+    /// # Safety
+    ///
+    /// `trellis_pointer..trellis_bytes` and `aux_pointer..aux_bytes` must be
+    /// live immutable device ranges from the adopted arena for `context` and
+    /// must remain live until every launch using this view has synchronized.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn from_authenticated_checkpoint(
+        context: &NativeRankContext,
+        metadata: Exl3Metadata,
+        trellis_pointer: u64,
+        trellis_bytes: u64,
+        aux_pointer: u64,
+        aux_bytes: u64,
+    ) -> Result<Self, KernelError> {
+        context.require_owner()?;
+        metadata.validate().map_err(|_| KernelError::Shape)?;
+        let expected_trellis = metadata
+            .trellis_words
+            .checked_mul(2)
+            .ok_or(KernelError::Overflow)?;
+        let expected_aux = metadata
+            .rotation_words
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or(KernelError::Overflow)?;
+        if metadata.rank != context.inner.identity.device_index as u8
+            || trellis_pointer == 0
+            || aux_pointer == 0
+            || !trellis_pointer.is_multiple_of(2)
+            || !aux_pointer.is_multiple_of(4)
+            || trellis_bytes != expected_trellis
+            || aux_bytes != expected_aux
+        {
+            return Err(KernelError::Shape);
+        }
+        let suh_pointer = aux_pointer.checked_add(4).ok_or(KernelError::Overflow)?;
+        let svh_pointer = suh_pointer
+            .checked_add(
+                u64::from(metadata.logical_k)
+                    .checked_mul(2)
+                    .ok_or(KernelError::Overflow)?,
+            )
+            .ok_or(KernelError::Overflow)?;
+        let end = svh_pointer
+            .checked_add(
+                u64::from(metadata.logical_n)
+                    .checked_mul(2)
+                    .ok_or(KernelError::Overflow)?,
+            )
+            .ok_or(KernelError::Overflow)?;
+        if end
+            != aux_pointer
+                .checked_add(aux_bytes)
+                .ok_or(KernelError::Overflow)?
+        {
+            return Err(KernelError::Shape);
+        }
+        Ok(Self {
+            inner: Rc::clone(&context.inner),
+            metadata,
+            trellis_pointer,
+            suh_pointer,
+            svh_pointer,
+            _arena: PhantomData,
+        })
+    }
+
+    pub fn run_host_f16(
+        &self,
+        context: &NativeRankContext,
+        input_f16: &[u16],
+        rows: u32,
+        sequence: u64,
+    ) -> Result<Vec<u16>, KernelError> {
+        self.require_context(context)?;
+        let input_words = u64::from(rows)
+            .checked_mul(u64::from(self.metadata.logical_k))
+            .ok_or(KernelError::Overflow)?;
+        if u64::try_from(input_f16.len()).map_err(|_| KernelError::Overflow)? != input_words {
+            return Err(KernelError::Shape);
+        }
+        let input = context
+            .allocate_execution_buffer(input_words.checked_mul(2).ok_or(KernelError::Overflow)?)?;
+        input.upload_exact(context, words_as_bytes(input_f16))?;
+        let workspace = NativeResidentExl3Workspace::allocate(context, self, rows)?;
+        self.launch(context, &input, &workspace, rows, sequence)?;
+        workspace.download_output(context)
+    }
+
+    pub fn allocate_workspace(
+        &self,
+        context: &NativeRankContext,
+        rows: u32,
+    ) -> Result<NativeResidentExl3Workspace, KernelError> {
+        NativeResidentExl3Workspace::allocate(context, self, rows)
+    }
+
+    pub fn launch(
+        &self,
+        context: &NativeRankContext,
+        input_f16: &NativeExecutionBuffer,
+        workspace: &NativeResidentExl3Workspace,
+        rows: u32,
+        sequence: u64,
+    ) -> Result<(), KernelError> {
+        self.require_context(context)?;
+        input_f16.require_context(context)?;
+        workspace.require_projection(context, self, rows)?;
+        if sequence == 0
+            || input_f16.bytes
+                != u64::from(rows)
+                    .checked_mul(u64::from(self.metadata.logical_k))
+                    .and_then(|words| words.checked_mul(2))
+                    .ok_or(KernelError::Overflow)?
+        {
+            return Err(KernelError::Shape);
+        }
+        workspace.validation_error.zero(context)?;
+        let projection = match self.metadata.projection {
+            Exl3Projection::Gate => Exl3KernelProjection::Gate,
+            Exl3Projection::Up => Exl3KernelProjection::Up,
+            Exl3Projection::Down => Exl3KernelProjection::Down,
+        };
+        let mut descriptor = Exl3Descriptor::new(rows, projection);
+        if descriptor.logical_k != self.metadata.logical_k
+            || descriptor.logical_n != self.metadata.logical_n
+        {
+            return Err(KernelError::Shape);
+        }
+        descriptor.input_f16 = input_f16.pointer;
+        descriptor.trellis_u16 = self.trellis_pointer;
+        descriptor.suh_f16 = self.suh_pointer;
+        descriptor.svh_f16 = self.svh_pointer;
+        descriptor.rotated_input_f16 = workspace.rotated_input.pointer;
+        descriptor.projected_f16 = workspace.projected.pointer;
+        descriptor.output_f16 = workspace.output.pointer;
+        descriptor.validation_error_u32 = workspace.validation_error.pointer;
+        descriptor.workspace_bytes =
+            exl3_workspace_bytes(rows, self.metadata.logical_k, self.metadata.logical_n)?;
+        descriptor.sequence = sequence;
+        validate_exl3_descriptor(&descriptor)?;
+        launch_native_exl3(&descriptor, self.inner.stream.0)
+    }
+
+    fn require_context(&self, context: &NativeRankContext) -> Result<(), KernelError> {
+        self.inner.require_owner()?;
+        if Rc::ptr_eq(&self.inner, &context.inner) {
+            Ok(())
+        } else {
+            Err(KernelError::Topology)
+        }
+    }
+}
+
+pub struct NativeResidentExl3Workspace {
+    inner: Rc<NativeRankContextInner>,
+    rotated_input: NativeExecutionBuffer,
+    projected: NativeExecutionBuffer,
+    output: NativeExecutionBuffer,
+    validation_error: NativeExecutionBuffer,
+    rows: u32,
+    logical_k: u32,
+    logical_n: u32,
+}
+
+impl NativeResidentExl3Workspace {
+    fn allocate(
+        context: &NativeRankContext,
+        projection: &NativeResidentExl3Projection,
+        rows: u32,
+    ) -> Result<Self, KernelError> {
+        projection.require_context(context)?;
+        if rows == 0 {
+            return Err(KernelError::Shape);
+        }
+        let k_bytes = u64::from(rows)
+            .checked_mul(u64::from(projection.metadata.logical_k))
+            .and_then(|words| words.checked_mul(2))
+            .ok_or(KernelError::Overflow)?;
+        let n_bytes = u64::from(rows)
+            .checked_mul(u64::from(projection.metadata.logical_n))
+            .and_then(|words| words.checked_mul(2))
+            .ok_or(KernelError::Overflow)?;
+        Ok(Self {
+            inner: Rc::clone(&context.inner),
+            rotated_input: context.allocate_execution_buffer(k_bytes)?,
+            projected: context.allocate_execution_buffer(n_bytes)?,
+            output: context.allocate_execution_buffer(n_bytes)?,
+            validation_error: context.allocate_execution_buffer(4)?,
+            rows,
+            logical_k: projection.metadata.logical_k,
+            logical_n: projection.metadata.logical_n,
+        })
+    }
+
+    pub fn download_output(&self, context: &NativeRankContext) -> Result<Vec<u16>, KernelError> {
+        self.require_context(context)?;
+        let validation = self.validation_error.download(context)?;
+        let error = u32::from_le_bytes(validation.try_into().map_err(|_| KernelError::Shape)?);
+        if error != 0 {
+            return Err(KernelError::Async(i32::try_from(error).unwrap_or(-1)));
+        }
+        let output = self.output.download(context)?;
+        Ok(output
+            .chunks_exact(2)
+            .map(|word| u16::from_le_bytes([word[0], word[1]]))
+            .collect())
+    }
+
+    fn require_projection(
+        &self,
+        context: &NativeRankContext,
+        projection: &NativeResidentExl3Projection,
+        rows: u32,
+    ) -> Result<(), KernelError> {
+        self.require_context(context)?;
+        if !Rc::ptr_eq(&self.inner, &projection.inner)
+            || self.rows != rows
+            || self.logical_k != projection.metadata.logical_k
+            || self.logical_n != projection.metadata.logical_n
+        {
+            return Err(KernelError::Shape);
+        }
+        Ok(())
+    }
+
+    fn require_context(&self, context: &NativeRankContext) -> Result<(), KernelError> {
+        self.inner.require_owner()?;
+        if Rc::ptr_eq(&self.inner, &context.inner) {
             Ok(())
         } else {
             Err(KernelError::Topology)

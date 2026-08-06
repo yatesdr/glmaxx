@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use sha2::{Digest, Sha256};
 
-use crate::{AttentionTransport, Digest32, MAX_MTP_DEPTH};
+use crate::{AttentionTransport, Digest32, MAX_MTP_DEPTH, StepMode, StepPlan};
 
 pub const GRAPH_ARENA_COUNT: usize = 10;
 pub const GRAPH_CLASS_SPAN_COUNT: usize = 32;
@@ -732,6 +732,53 @@ impl GraphMemoryPlan {
         self.digest
     }
 
+    #[must_use]
+    pub const fn request(self) -> GraphMemoryPlanRequest {
+        self.request
+    }
+
+    /// Admits one logical step to this exact physical graph shape.
+    ///
+    /// Buckets are exact identities, not upper bounds selected independently
+    /// by each rank. Prefill permits fewer real query/token rows than the
+    /// captured ceilings; decode and verify use the exact verifier row bucket.
+    pub fn admit_step(self, plan: &StepPlan) -> Result<(), PhysicalPlanError> {
+        let expected_kind = match plan.mode {
+            StepMode::Prefill => ExecutorGraphKind::Prefill,
+            StepMode::Decode => ExecutorGraphKind::Decode,
+            StepMode::Verify => ExecutorGraphKind::Verify,
+            StepMode::Mixed | StepMode::CacheOnly => return Err(PhysicalPlanError::GraphKind),
+        };
+        if self.request.graph_id != plan.graph_id
+            || self.request.graph_kind != expected_kind
+            || self.request.attention_transport != plan.attention_transport
+            || self.request.mtp_depth != plan.mtp_depth
+            || self.request.sequence_bucket != plan.sequence_bucket
+        {
+            return Err(PhysicalPlanError::Binding);
+        }
+        match expected_kind {
+            ExecutorGraphKind::Prefill => {
+                if plan.verifier_row_bucket != 0
+                    || plan.query_rows > self.request.row_bucket
+                    || plan.scheduled_prompt_tokens > self.request.token_bucket
+                {
+                    return Err(PhysicalPlanError::Binding);
+                }
+            }
+            ExecutorGraphKind::Decode | ExecutorGraphKind::Verify => {
+                if plan.scheduled_prompt_tokens != 0
+                    || self.request.token_bucket != 0
+                    || plan.query_rows > self.request.row_bucket
+                    || plan.verifier_row_bucket != self.request.row_bucket
+                {
+                    return Err(PhysicalPlanError::Binding);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn verify(
         self,
         arenas: &GraphArenaTable,
@@ -875,6 +922,11 @@ impl GraphProfileV3 {
     #[must_use]
     pub const fn digest(&self) -> Digest32 {
         self.digest
+    }
+
+    #[must_use]
+    pub const fn parent_profile_sha256(&self) -> Digest32 {
+        self.parent_profile_sha256
     }
 
     pub fn admit(&self, graph_id: u32, plan_sha256: Digest32) -> Result<(), PhysicalPlanError> {

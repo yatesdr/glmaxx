@@ -6,19 +6,23 @@ use std::{
 };
 
 use glm_cuda::{
-    KernelError, NativeRankContext, NativeRankLoadBackend,
+    KernelError, NativeRankContext, NativeRankLoadBackend, NativeResidentExl3Projection,
     native_checkpoint_codec_capability_sha256,
 };
-use glm_format::{NativeRankReader, NativeRankReaderError, pinned_exl3_weight_policy_sha256};
+use glm_format::{
+    CODEC_EXL3_SOURCE, Exl3Metadata, NativeRankReader, NativeRankReaderError,
+    pinned_exl3_weight_policy_sha256,
+};
 
 use crate::{
     AcknowledgedCudaRank, AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule,
     CudaWeightArena, LoadPlanError, LoadProfile, LoadVerificationMode, PreparedCudaRank,
-    PreparedRankReceipt, PreparedRankSet, RANK_SET_SIZE, RankCheckpointLoadError,
-    RankExecutionError, RankExecutor, RankExecutorFactory, RankLoadVerificationEvidence,
-    RankSetAbortCommand, RankSetLoadEnvironment, RankSetLoadPlan, StepInput, StepOutput, StepPlan,
-    SystemMemoryPlan, Tp4WorkerPool, WeightLoadFailure, WeightLoadOutcome, WeightShutdownFailure,
-    WeightShutdownOutcome, WorkerError, WorkerExecutionPosture, build_rank_set_load_plan,
+    PreparedRankReceipt, PreparedRankSet, ProgramBoundStepOutput, RANK_SET_SIZE,
+    RankCheckpointLoadError, RankExecutionError, RankExecutor, RankExecutorFactory,
+    RankLoadVerificationEvidence, RankSetAbortCommand, RankSetLoadEnvironment, RankSetLoadPlan,
+    StepInput, StepOutput, StepPlan, StepProgramBinding, SystemMemoryPlan, Tp4WorkerPool,
+    WeightLoadFailure, WeightLoadOutcome, WeightShutdownFailure, WeightShutdownOutcome,
+    WorkerError, WorkerExecutionPosture, build_rank_set_load_plan,
 };
 
 const NATIVE_PROGRAM_NOT_IMPLEMENTED: i32 = -1;
@@ -304,6 +308,53 @@ impl NativeCheckpointRankExecutor {
         Ok(self.context.identity().identity_sha256())
     }
 
+    /// Resolves one authenticated resident EXL3 tensor without accepting a
+    /// caller-provided pointer or offset. The immutable arena and retained
+    /// rank reader are the only address and metadata authorities.
+    pub fn resident_exl3_projection(
+        &self,
+        tensor_id: u32,
+    ) -> Result<NativeResidentExl3Projection<'_>, RankExecutionError> {
+        let NativeWeightState::Resident(arena) = &self.weights else {
+            return Err(RankExecutionError::Invariant);
+        };
+        let binding = arena
+            .tensor_binding(tensor_id)
+            .map_err(|_| RankExecutionError::Invariant)?;
+        if binding.tensor_id() != tensor_id
+            || binding.codec_id() != CODEC_EXL3_SOURCE
+            || binding
+                .metadata()
+                .is_none_or(|span| span.bytes() != Exl3Metadata::BYTES as u64)
+        {
+            return Err(RankExecutionError::Invariant);
+        }
+        let metadata = Exl3Metadata::decode(
+            self.reader
+                .tensor_codec_metadata(
+                    usize::try_from(tensor_id).map_err(|_| RankExecutionError::Invariant)?,
+                )
+                .map_err(|_| RankExecutionError::Invariant)?,
+        )
+        .map_err(|_| RankExecutionError::Invariant)?;
+        let primary = binding.primary();
+        let auxiliary = binding.auxiliary().ok_or(RankExecutionError::Invariant)?;
+        // SAFETY: the spans are resolved only from the globally adopted,
+        // immutable arena's authenticated tensor layout. `self.weights`
+        // retains that arena through every owner-thread launch and sync.
+        unsafe {
+            NativeResidentExl3Projection::from_authenticated_checkpoint(
+                &self.context,
+                metadata,
+                primary.pointer(),
+                primary.bytes(),
+                auxiliary.pointer(),
+                auxiliary.bytes(),
+            )
+        }
+        .map_err(|_| RankExecutionError::Invariant)
+    }
+
     fn validate_active(
         &self,
         rank: u8,
@@ -359,6 +410,30 @@ impl RankExecutor for NativeCheckpointRankExecutor {
         _input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError> {
         self.fail_closed_execute(rank, plan, schedule)
+    }
+
+    fn execute_program_bound(
+        &mut self,
+        rank: u8,
+        plan: &StepPlan,
+        schedule: &CollectiveSchedule,
+        _input: &StepInput,
+        program: &StepProgramBinding,
+    ) -> Result<ProgramBoundStepOutput, RankExecutionError> {
+        if rank != self.rank {
+            return Err(RankExecutionError::Invariant);
+        }
+        let NativeWeightState::Resident(arena) = &self.weights else {
+            return Err(RankExecutionError::Invariant);
+        };
+        if arena.rank() != rank
+            || arena.owner_allocation_generation() != program.resident_generation()
+            || program.verify_step(plan, schedule).is_err()
+            || self.context.stream().is_err()
+        {
+            return Err(RankExecutionError::Invariant);
+        }
+        Err(RankExecutionError::Backend(NATIVE_PROGRAM_NOT_IMPLEMENTED))
     }
 
     fn checkpoint_device_identity_sha256(&mut self, rank: u8) -> Result<[u8; 32], LoadPlanError> {

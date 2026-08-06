@@ -373,6 +373,66 @@ impl BatchSmokeProgram {
         self.prefill_row_bucket
     }
 
+    #[must_use]
+    pub const fn operation_manifest_sha256(self) -> Digest32 {
+        self.identities[0]
+    }
+
+    #[must_use]
+    pub const fn checkpoint_sha256(self) -> Digest32 {
+        self.identities[1]
+    }
+
+    #[must_use]
+    pub const fn rank_set_load_plan_sha256(self) -> Digest32 {
+        self.identities[2]
+    }
+
+    #[must_use]
+    pub const fn resident_weight_generation_sha256(self) -> Digest32 {
+        self.identities[3]
+    }
+
+    #[must_use]
+    pub const fn target_program_sha256(self) -> Digest32 {
+        self.identities[4]
+    }
+
+    #[must_use]
+    pub const fn graph_profile_v3_sha256(self) -> Digest32 {
+        self.identities[5]
+    }
+
+    #[must_use]
+    pub const fn graph_memory_plan_set_sha256(self) -> Digest32 {
+        self.identities[6]
+    }
+
+    #[must_use]
+    pub const fn executor_program_set_sha256(self) -> Digest32 {
+        self.identities[7]
+    }
+
+    #[must_use]
+    pub const fn module_set_capability_sha256(self) -> Digest32 {
+        self.identities[8]
+    }
+
+    #[must_use]
+    pub const fn rank_set_resource_budget_sha256(self) -> Digest32 {
+        self.identities[9]
+    }
+
+    #[must_use]
+    pub const fn system_memory_plan_sha256(self) -> Digest32 {
+        self.identities[10]
+    }
+
+    #[must_use]
+    pub const fn collective_schedule_set_sha256(self) -> Digest32 {
+        self.identities[11]
+    }
+
     pub fn validate(self) -> Result<(), ProgramRecordError> {
         if self.prefill_row_bucket == 0 || self.prefill_row_bucket < 4 {
             return Err(ProgramRecordError::Shape);

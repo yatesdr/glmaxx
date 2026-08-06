@@ -18,7 +18,8 @@ use crate::{
     AdoptedRankSetReceipt, AdoptionAcknowledgement, CollectiveSchedule, CommittedTokens,
     GLM_52_OUTPUT_VOCABULARY, LoadPlanError, OutputError, PlanError, PreparedRankReceipt,
     PreparedRankSet, RANK_SET_SIZE, RankSetAbortCommand, RankSetLoadAction, RankSetLoadCoordinator,
-    RankSetLoadPlan, StepInput, StepInputError, StepMode, StepOutput, StepPlan,
+    RankSetLoadPlan, StepInput, StepInputError, StepMode, StepOutput, StepPlan, StepProgramBinding,
+    StepProgramBindingError,
 };
 
 const CPU_TOKEN_DOMAIN: &[u8] = b"glmaxx.cpu-worker-token.v1\0";
@@ -51,6 +52,20 @@ pub trait RankExecutor: 'static {
         schedule: &CollectiveSchedule,
         input: &StepInput,
     ) -> Result<StepOutput, RankExecutionError>;
+
+    /// Executes a row payload whose target program, resident weights, module
+    /// generation, physical graph, memory plan, and schedule are bound by one
+    /// exact rank-common digest. Native model execution must use this entry.
+    fn execute_program_bound(
+        &mut self,
+        _rank: u8,
+        _plan: &StepPlan,
+        _schedule: &CollectiveSchedule,
+        _input: &StepInput,
+        _program: &StepProgramBinding,
+    ) -> Result<ProgramBoundStepOutput, RankExecutionError> {
+        Err(RankExecutionError::Invariant)
+    }
 
     /// Returns the checkpoint device identity observed by this owner thread.
     fn checkpoint_device_identity_sha256(&mut self, _rank: u8) -> Result<[u8; 32], LoadPlanError> {
@@ -125,6 +140,41 @@ where
 pub enum RankExecutionError {
     Backend(i32),
     Invariant,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProgramBoundStepOutput {
+    output: StepOutput,
+    observed_program_binding_sha256: [u8; 32],
+}
+
+impl ProgramBoundStepOutput {
+    pub fn new(
+        output: StepOutput,
+        observed_program_binding_sha256: [u8; 32],
+    ) -> Result<Self, RankExecutionError> {
+        if observed_program_binding_sha256 == [0; 32] {
+            return Err(RankExecutionError::Invariant);
+        }
+        Ok(Self {
+            output,
+            observed_program_binding_sha256,
+        })
+    }
+
+    #[must_use]
+    pub const fn output(&self) -> &StepOutput {
+        &self.output
+    }
+
+    #[must_use]
+    pub const fn observed_program_binding_sha256(&self) -> [u8; 32] {
+        self.observed_program_binding_sha256
+    }
+
+    fn into_parts(self) -> (StepOutput, [u8; 32]) {
+        (self.output, self.observed_program_binding_sha256)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,6 +414,7 @@ pub struct RankStepAck {
     pub input_hash: [u8; 32],
     pub page_table_global_digest: [u8; 32],
     pub page_table_local_digest: [u8; 32],
+    pub program_binding_sha256: [u8; 32],
     pub output_digest: [u8; 32],
 }
 
@@ -466,6 +517,7 @@ struct RankCommand {
 struct StepBinding {
     input: Arc<StepInput>,
     delta: Arc<PageTableDelta>,
+    program: Option<Arc<StepProgramBinding>>,
 }
 
 struct WeightLoadCommand {
@@ -748,7 +800,36 @@ impl Tp4WorkerPool {
         delta: Arc<PageTableDelta>,
     ) -> Result<StepHandle, WorkerError> {
         input.verify(&plan, &schedule, &delta)?;
-        self.try_submit_inner(plan, schedule, Some(StepBinding { input, delta }))
+        self.try_submit_inner(
+            plan,
+            schedule,
+            Some(StepBinding {
+                input,
+                delta,
+                program: None,
+            }),
+        )
+    }
+
+    pub fn try_submit_program_bound(
+        &self,
+        plan: StepPlan,
+        schedule: CollectiveSchedule,
+        input: Arc<StepInput>,
+        delta: Arc<PageTableDelta>,
+        program: Arc<StepProgramBinding>,
+    ) -> Result<StepHandle, WorkerError> {
+        input.verify(&plan, &schedule, &delta)?;
+        program.verify_step(&plan, &schedule)?;
+        self.try_submit_inner(
+            plan,
+            schedule,
+            Some(StepBinding {
+                input,
+                delta,
+                program: Some(program),
+            }),
+        )
     }
 
     fn try_submit_inner(
@@ -1976,6 +2057,11 @@ fn dispatch_one(
                 || result.ack.page_table_global_digest != binding.delta.global_digest()
                 || result.ack.page_table_local_digest
                     != binding.delta.rank_local_digest(result.ack.rank)?
+                || result.ack.program_binding_sha256
+                    != binding
+                        .program
+                        .as_deref()
+                        .map_or([0; 32], |program| program.digest())
             {
                 return Err(WorkerError::Consensus);
             }
@@ -1988,6 +2074,7 @@ fn dispatch_one(
             || result.ack.schedule_hash != first.ack.schedule_hash
             || result.ack.input_hash != first.ack.input_hash
             || result.ack.page_table_global_digest != first.ack.page_table_global_digest
+            || result.ack.program_binding_sha256 != first.ack.program_binding_sha256
             || result.ack.output_digest != first.ack.output_digest
             || result.output != first.output
     }) {
@@ -2149,12 +2236,28 @@ fn execute_rank(
         } else {
             ([0; 32], [0; 32], [0; 32])
         };
-    let output = if let Some(binding) = binding {
-        executor.execute_bound(rank, plan, schedule, &binding.input)
+    let (output, program_binding_sha256) = if let Some(binding) = binding {
+        if let Some(program) = &binding.program {
+            program.verify_step(plan, schedule)?;
+            let observed =
+                executor.execute_program_bound(rank, plan, schedule, &binding.input, program);
+            let (output, observed_digest) = observed
+                .map_err(|error| WorkerError::RankExecution { rank, error })?
+                .into_parts();
+            if observed_digest != program.digest() {
+                return Err(WorkerError::Consensus);
+            }
+            (Ok(output), observed_digest)
+        } else {
+            (
+                executor.execute_bound(rank, plan, schedule, &binding.input),
+                [0; 32],
+            )
+        }
     } else {
-        executor.execute(rank, plan, schedule)
-    }
-    .map_err(|error| WorkerError::RankExecution { rank, error })?;
+        (executor.execute(rank, plan, schedule), [0; 32])
+    };
+    let output = output.map_err(|error| WorkerError::RankExecution { rank, error })?;
     output
         .validate(plan)
         .map_err(|error| WorkerError::RankOutput { rank, error })?;
@@ -2168,6 +2271,7 @@ fn execute_rank(
             input_hash,
             page_table_global_digest,
             page_table_local_digest,
+            program_binding_sha256,
             output_digest,
         },
         output,
@@ -2261,6 +2365,7 @@ pub enum WorkerError {
         error: OutputError,
     },
     StepInput(StepInputError),
+    StepProgramBinding(StepProgramBindingError),
     PageDelta(PageTableDeltaError),
     PageTableUninitialized,
     PageTableInitialized,
@@ -2287,6 +2392,12 @@ impl From<PlanError> for WorkerError {
 impl From<StepInputError> for WorkerError {
     fn from(value: StepInputError) -> Self {
         Self::StepInput(value)
+    }
+}
+
+impl From<StepProgramBindingError> for WorkerError {
+    fn from(value: StepProgramBindingError) -> Self {
+        Self::StepProgramBinding(value)
     }
 }
 

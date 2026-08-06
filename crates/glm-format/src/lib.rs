@@ -24,8 +24,8 @@ pub use checkpoint::{
     protected_tensor_contracts, validate_pinned_exl3_checkpoint, verify_pinned_source_files,
 };
 pub use container::{
-    HEADER_BYTES, NATIVE_PAYLOAD_ALIGNMENT, PlainDtype, PlainTensor, RankFile, RankFileBuilder,
-    RankFileError, TensorDescriptor, TensorPayload, TensorRecord,
+    CODEC_EXL3_SOURCE, HEADER_BYTES, NATIVE_PAYLOAD_ALIGNMENT, PlainDtype, PlainTensor, RankFile,
+    RankFileBuilder, RankFileError, TensorDescriptor, TensorPayload, TensorRecord,
 };
 pub use crc32c::crc32c;
 pub use exl3::{
