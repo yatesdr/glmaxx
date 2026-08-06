@@ -19,11 +19,11 @@ use glm_cuda::{
     fc2_workspace_bytes, workspace_bytes,
 };
 use glm_engine::{
-    AttentionTransport, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB, GraphEntry,
-    GraphKey, GraphProfile, MIN_MTP_TENTATIVE_SLOTS_PER_RANK, MIN_PAGE_SLACK_SLOTS_PER_RANK,
-    ProfileBudgetArtifact, ProfileClass, RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES,
-    StepMode, StepPlan, StepPlanRequest, SystemMemoryPlan, TP_RANK_MASK, Tp4WorkerPool,
-    plan_system_memory,
+    AttentionTransport, BatchSmokeProgram, CollectiveKind, CollectiveOp, CollectiveSchedule, GIB,
+    GraphEntry, GraphKey, GraphProfile, MIN_MTP_TENTATIVE_SLOTS_PER_RANK,
+    MIN_PAGE_SLACK_SLOTS_PER_RANK, ProductionProfile, ProfileBudgetArtifact, ProfileClass,
+    RankMemoryInput, STEP_PLAN_ABI, STEP_PLAN_RECORD_BYTES, StepMode, StepPlan, StepPlanRequest,
+    SystemMemoryPlan, TP_RANK_MASK, Tp4WorkerPool, plan_system_memory, run_cpu_mtp0_batch_smoke,
 };
 #[cfg(feature = "cuda-ffi")]
 use glm_engine::{
@@ -104,6 +104,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some("cpu-proof") => cpu_proof()?,
+        Some("cpu-batch-smoke") => {
+            if arguments.len() > 3 {
+                return Err("cpu-batch-smoke accepts only an optional output path".into());
+            }
+            let identities = std::array::from_fn(|index| {
+                let mut hasher = Sha256::new();
+                hasher.update(b"glmaxx.cpu-batch-smoke-fixture-identity.v1\0");
+                hasher.update(
+                    u32::try_from(index)
+                        .expect("twenty identities fit u32")
+                        .to_le_bytes(),
+                );
+                hasher.finalize().into()
+            });
+            let program = BatchSmokeProgram::new(ProductionProfile::CapacityExl3, 64, identities)?;
+            let pool = Tp4WorkerPool::spawn_cpu(2, None)?;
+            let evidence = run_cpu_mtp0_batch_smoke(
+                &pool,
+                program,
+                [10_001, 10_002, 10_003, 10_004],
+                [
+                    vec![101, 102, 103],
+                    vec![201, 202, 203, 204],
+                    vec![301, 302, 303, 304, 305],
+                    vec![401, 402],
+                ],
+            )?;
+            let mut json = serde_json::to_vec_pretty(&evidence)?;
+            json.push(b'\n');
+            if let Some(path) = arguments.get(2) {
+                fs::write(path, &json)?;
+                println!("wrote {} bytes to {path}", json.len());
+            } else {
+                println!("{}", String::from_utf8(json)?);
+            }
+        }
         Some("direct-tier-proof") => {
             let report = direct_tier_proof()?;
             let mut json = serde_json::to_vec_pretty(&report)?;
@@ -637,7 +673,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: glmaxx <manifest [path]|cpu-proof|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|serving-host-profile evidence-dir source-commit warmups iterations|page-transaction-profile evidence-dir source-commit warmups iterations|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-fc1-reduction-probe evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
+                "usage: glmaxx <manifest [path]|cpu-proof|cpu-batch-smoke [path]|direct-tier-proof [path]|direct-tier-state-proof [path]|direct-tier-checksum-proof [path]|direct-tier-checksum-worker-proof [path]|exl3-warp-proof [path]|matrix-proof [path]|pack-actual path|inspect path|budget|abi-check|engine-proof [path]|serving-proof evidence-dir|serving-host-profile evidence-dir source-commit warmups iterations|page-transaction-profile evidence-dir source-commit warmups iterations|cache-lifecycle-proof evidence-dir|tokenizer-proof pinned-tokenizer-dir [path]|exl3-proof source-payload|safetensors-inventory file-or-index|exl3-safetensors-proof file-or-index layer expert rank gate|up|down|checkpoint-proof pinned-index|checkpoint-source-proof pinned-index|native-rank-proof rank-set-dir [path]|convert-pinned-exl3 pinned-index output-dir conversion-commit profile-budget-v0.json review-artifact|review-proof handoff [review-artifact]|review-acceptance-lint handoff staged-review-artifact|review-acceptance-lint-all staging-directory [path]|review-proof-all [repository] [path]|profile-plan [path]|profile-plan-validate path|profile-evidence-manifest root source-commit|profile-evidence-validate root|gpu-rank-bind-smoke|gpu-rank-memory-baseline|gpu-checkpoint-load-smoke rank-set-dir profile-budget-v0.json evidence-dir [phase-timeout-seconds]|gpu-smoke [rows]|gpu-fc2-smoke [rows]|gpu-exl3-smoke [gate|up|down] [rows]|gpu-matrix evidence-dir|gpu-graph evidence-dir|gpu-dense-control evidence-dir|gpu-fc1-reduction-probe evidence-dir|gpu-grouped-control evidence-dir|gpu-bench evidence-dir|gpu-grouped-bench evidence-dir|gpu-time-case backend mode phase routing rows warmups iterations evidence-dir|gpu-profile-case backend mode phase routing rows warmups iterations evidence-dir>"
                     .into(),
             );
         }

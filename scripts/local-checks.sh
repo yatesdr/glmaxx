@@ -16,6 +16,12 @@ GLMAXX_KERNEL_LIB_DIR="${proof_dir}" \
   cargo clippy --offline -p glm-cli --features cuda-ffi -- -D warnings
 cargo run --release --offline -p glm-cli --bin glmaxx -- cpu-proof
 cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  cpu-batch-smoke "${proof_dir}/cpu-batch-smoke-a.json"
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
+  cpu-batch-smoke "${proof_dir}/cpu-batch-smoke-b.json"
+cmp "${proof_dir}/cpu-batch-smoke-a.json" \
+  "${proof_dir}/cpu-batch-smoke-b.json"
+cargo run --release --offline -p glm-cli --bin glmaxx -- \
   direct-tier-proof "${proof_dir}/direct-tier-extent-proof-v1.json"
 cmp fixtures/direct-tier-extent-proof-v1.json \
   "${proof_dir}/direct-tier-extent-proof-v1.json"

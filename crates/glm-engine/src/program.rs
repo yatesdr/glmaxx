@@ -363,6 +363,16 @@ impl BatchSmokeProgram {
         digest(BATCH_SMOKE_DIGEST_DOMAIN, &self.to_bytes())
     }
 
+    #[must_use]
+    pub const fn profile(self) -> ProductionProfile {
+        self.profile
+    }
+
+    #[must_use]
+    pub const fn prefill_row_bucket(self) -> u32 {
+        self.prefill_row_bucket
+    }
+
     pub fn validate(self) -> Result<(), ProgramRecordError> {
         if self.prefill_row_bucket == 0 || self.prefill_row_bucket < 4 {
             return Err(ProgramRecordError::Shape);

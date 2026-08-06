@@ -14,6 +14,7 @@ mod native_worker;
 mod output;
 mod physical;
 mod program;
+mod smoke;
 mod startup;
 mod step;
 mod weight;
@@ -67,6 +68,10 @@ pub use program::{
     BATCH_SMOKE_PROGRAM_RECORD_BYTES, BatchSmokeProgram, Digest32, ExecutionPath,
     M4_PROGRAM_RECORD_BYTES, M4Program, ProductionProfile, ProgramMode, ProgramRecordError,
     REPLAY_PROGRAM_RECORD_BYTES, ReplayProfile, ReplayProgram,
+};
+pub use smoke::{
+    BATCH_SMOKE_DECODE_STEPS, BATCH_SMOKE_ROWS, BatchSmokeError, CpuBatchSmokeEvidence,
+    run_cpu_mtp0_batch_smoke,
 };
 pub use startup::{
     MockFault, RankStartupReport, StartupCoordinator, StartupError, StartupState, run_mock_startup,
