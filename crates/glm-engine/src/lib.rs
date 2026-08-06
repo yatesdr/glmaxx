@@ -12,6 +12,8 @@ mod memory;
 #[cfg(feature = "cuda-ffi")]
 mod native_worker;
 mod output;
+mod physical;
+mod program;
 mod startup;
 mod step;
 mod weight;
@@ -52,6 +54,19 @@ pub use native_worker::{
 pub use output::{
     CommittedTokens, GLM_52_OUTPUT_VOCABULARY, MAX_COMMITTED_TOKENS_PER_SEQUENCE, OutputError,
     StepOutput,
+};
+pub use physical::{
+    DEVICE_ARENA_BINDING_RECORD_BYTES, DeviceArenaBinding, ExecutorArenaRole, ExecutorGraphKind,
+    GRAPH_ARENA_COUNT, GRAPH_ARENA_RECORD_BYTES, GRAPH_BUFFER_USE_RECORD_BYTES,
+    GRAPH_CLASS_SPAN_COUNT, GRAPH_CLASS_SPAN_RECORD_BYTES, GRAPH_MEMORY_PLAN_RECORD_BYTES,
+    GraphArena, GraphArenaTable, GraphBufferUse, GraphBufferUseTable, GraphClassSpan,
+    GraphClassSpanTable, GraphMemoryPlan, GraphMemoryPlanRequest, GraphProfileV3,
+    PhysicalPlanError, device_arena_binding_digest,
+};
+pub use program::{
+    BATCH_SMOKE_PROGRAM_RECORD_BYTES, BatchSmokeProgram, Digest32, ExecutionPath,
+    M4_PROGRAM_RECORD_BYTES, M4Program, ProductionProfile, ProgramMode, ProgramRecordError,
+    REPLAY_PROGRAM_RECORD_BYTES, ReplayProfile, ReplayProgram,
 };
 pub use startup::{
     MockFault, RankStartupReport, StartupCoordinator, StartupError, StartupState, run_mock_startup,
